@@ -20,14 +20,14 @@
 #qig-status {
     display: none;
     position: fixed;
-    bottom: 80px;
+    bottom: 20px;
     left: 50%;
     transform: translateX(-50%);
     background: var(--SmartThemeBlurTintColor);
-    padding: 12px 24px;
+    padding: 10px 20px;
     border-radius: 8px;
     z-index: 9998;
-    font-size: 14px;
+    font-size: 13px;
     box-shadow: 0 4px 12px rgba(0,0,0,0.3);
     animation: qig-pulse 1.5s infinite;
 }
