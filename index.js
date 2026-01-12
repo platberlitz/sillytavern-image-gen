@@ -6,7 +6,9 @@ const defaultSettings = {
     provider: "pollinations",
     // Common
     prompt: "{{char}} in the current scene",
-    negativePrompt: "",
+    negativePrompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, deformed, ugly, duplicate, morbid, mutilated, out of frame, mutation, disfigured",
+    qualityTags: "masterpiece, best quality, highly detailed, sharp focus, 8k",
+    appendQuality: true,
     width: 512,
     height: 512,
     steps: 25,
@@ -51,7 +53,10 @@ function resolvePrompt(template) {
 
 async function generateImage() {
     const s = getSettings();
-    const prompt = resolvePrompt(s.prompt);
+    let prompt = resolvePrompt(s.prompt);
+    if (s.appendQuality && s.qualityTags) {
+        prompt = `${s.qualityTags}, ${prompt}`;
+    }
     const negative = resolvePrompt(s.negativePrompt);
     
     const btn = document.getElementById("qig-generate-btn");
@@ -259,6 +264,13 @@ function createUI() {
                 <label>Negative Prompt</label>
                 <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
                 
+                <label>Quality Tags</label>
+                <textarea id="qig-quality" rows="1">${s.qualityTags}</textarea>
+                <label class="checkbox_label">
+                    <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
+                    <span>Prepend quality tags to prompt</span>
+                </label>
+                
                 <label>Size</label>
                 <div class="qig-row">
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
@@ -298,6 +310,8 @@ function createUI() {
     bind("qig-proxy-model", "proxyModel");
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
+    bind("qig-quality", "qualityTags");
+    document.getElementById("qig-append-quality").onchange = (e) => { getSettings().appendQuality = e.target.checked; saveSettingsDebounced(); };
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     bind("qig-steps", "steps", true);
