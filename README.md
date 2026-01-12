@@ -14,7 +14,7 @@ One-click image generation for SillyTavern with multiple provider support. Image
 ### Via Git (Recommended)
 ```bash
 cd SillyTavern/public/scripts/extensions/third-party
-git clone https://github.com/YOUR_USERNAME/sillytavern-image-gen.git
+git clone https://github.com/platberlitz/sillytavern-image-gen.git
 ```
 
 ### Manual
