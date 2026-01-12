@@ -30,7 +30,7 @@ const defaultSettings = {
     arliKey: "",
     arliModel: "arliai-realistic-v1",
     // Pollinations
-    pollinationsModel: "flux",
+    pollinationsModel: "",
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:7860",
     localType: "a1111"
@@ -57,17 +57,8 @@ const STYLES = {
 };
 
 const PROVIDER_MODELS = {
-    novelai: [
-        { id: "nai-diffusion-3", name: "NAI Diffusion 3 (Anime)" },
-        { id: "nai-diffusion-2", name: "NAI Diffusion 2" },
-        { id: "nai-diffusion-furry-3", name: "NAI Diffusion Furry 3" },
-        { id: "nai-diffusion", name: "NAI Diffusion 1" }
-    ],
-    arliai: [
-        { id: "arliai-realistic-v1", name: "ArliAI Realistic v1" },
-        { id: "arliai-anime-v1", name: "ArliAI Anime v1" }
-    ],
     pollinations: [
+        { id: "", name: "Default" },
         { id: "flux", name: "Flux" },
         { id: "turbo", name: "Turbo" }
     ]
@@ -164,9 +155,11 @@ async function generateLLMPrompt(s, basePrompt) {
 
 async function genPollinations(prompt, negative, s) {
     const seed = s.seed === -1 ? Date.now() : s.seed;
-    const neg = negative ? `&negative=${encodeURIComponent(negative)}` : "";
-    const model = s.pollinationsModel ? `&model=${s.pollinationsModel}` : "";
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true${neg}${model}`;
+    let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
+    if (negative) url += `&negative=${encodeURIComponent(negative)}`;
+    if (s.pollinationsModel && s.pollinationsModel !== "flux") url += `&model=${s.pollinationsModel}`;
+    log(`Pollinations URL: ${url.substring(0, 100)}...`);
+    return url;
 }
 
 async function genNovelAI(prompt, negative, s) {
