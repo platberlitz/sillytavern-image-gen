@@ -130,7 +130,19 @@ async function generateLLMPrompt(s, basePrompt) {
     showStatus("🤖 Creating image prompt...");
     
     try {
-        const instruction = `Convert this scene description into a concise image generation prompt (tags/keywords style, no sentences). Focus on visual elements, character appearance, pose, setting, lighting. Output ONLY the prompt, nothing else.\n\nScene:\n${basePrompt}`;
+        const instruction = `Convert this scene into danbooru/booru-style tags for anime image generation (like NovelAI/PixAI).
+
+Rules:
+- Output ONLY comma-separated tags, no sentences or explanations
+- Use underscores for multi-word tags (e.g. long_hair, red_eyes)
+- Include: character features (hair color/style, eye color, body type), clothing, pose, expression, setting/background, lighting/atmosphere
+- Order: subject tags first, then scene/setting, then style/quality tags
+- Be specific (e.g. "pleated_skirt" not just "skirt")
+
+Scene:
+${basePrompt}
+
+Tags:`;
         const llmPrompt = await generateQuietPrompt(instruction, false, false);
         log(`LLM prompt: ${llmPrompt}`);
         return llmPrompt?.trim() || basePrompt;
