@@ -19,6 +19,7 @@ const defaultSettings = {
     cfgScale: 7,
     sampler: "euler_a",
     seed: -1,
+    autoGenerate: false,
     // Reverse Proxy
     proxyUrl: "",
     proxyKey: "",
@@ -44,6 +45,10 @@ const defaultSettings = {
     localUrl: "http://127.0.0.1:7860",
     localType: "a1111"
 };
+
+let sessionGallery = [];
+let lastPrompt = "";
+let lastNegative = "";
 
 const PROVIDERS = {
     pollinations: { name: "Pollinations (Free)", needsKey: false },
@@ -409,6 +414,10 @@ function showLogs() {
 }
 
 function displayImage(url) {
+    // Add to session gallery
+    sessionGallery.unshift({ url, date: Date.now() });
+    if (sessionGallery.length > 20) sessionGallery.pop();
+    
     let popup = document.getElementById("qig-popup");
     if (!popup) {
         popup = document.createElement("div");
@@ -423,6 +432,8 @@ function displayImage(url) {
                 </div>
                 <img id="qig-result-img" src="">
                 <div class="qig-popup-actions">
+                    <button id="qig-regenerate-btn">🔄 Regenerate</button>
+                    <button id="qig-gallery-btn">🖼️ Gallery</button>
                     <button id="qig-download-btn">💾 Download</button>
                     <button id="qig-close-popup">Close</button>
                 </div>
@@ -438,9 +449,66 @@ function displayImage(url) {
             a.download = `generated-${Date.now()}.png`;
             a.click();
         };
+        document.getElementById("qig-regenerate-btn").onclick = (e) => {
+            e.stopPropagation();
+            popup.style.display = "none";
+            regenerateImage();
+        };
+        document.getElementById("qig-gallery-btn").onclick = (e) => {
+            e.stopPropagation();
+            showGallery();
+        };
     }
     document.getElementById("qig-result-img").src = url;
     popup.style.display = "flex";
+}
+
+function showGallery() {
+    let gallery = document.getElementById("qig-gallery-popup");
+    if (!gallery) {
+        gallery = document.createElement("div");
+        gallery.id = "qig-gallery-popup";
+        gallery.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
+        gallery.innerHTML = `
+            <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
+                    <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+                </div>
+                <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
+            </div>`;
+        document.body.appendChild(gallery);
+        document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
+        gallery.onclick = () => gallery.style.display = "none";
+    }
+    
+    const grid = document.getElementById("qig-gallery-grid");
+    grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => 
+        `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
+    ).join('') : '<p style="color:#888;">No images yet this session</p>';
+    gallery.style.display = "flex";
+}
+
+async function regenerateImage() {
+    if (!lastPrompt) return;
+    const s = getSettings();
+    s.seed = -1; // New random seed
+    showStatus("🔄 Regenerating...");
+    try {
+        let result;
+        switch (s.provider) {
+            case "pollinations": result = await genPollinations(lastPrompt, lastNegative, s); break;
+            case "novelai": result = await genNovelAI(lastPrompt, lastNegative, s); break;
+            case "arliai": result = await genArliAI(lastPrompt, lastNegative, s); break;
+            case "nanogpt": result = await genNanoGPT(lastPrompt, lastNegative, s); break;
+            case "local": result = await genLocal(lastPrompt, lastNegative, s); break;
+            case "proxy": result = await genProxy(lastPrompt, lastNegative, s); break;
+        }
+        hideStatus();
+        if (result) displayImage(result);
+    } catch (e) {
+        showStatus(`❌ ${e.message}`);
+    }
 }
 
 function updateProviderUI() {
@@ -593,6 +661,11 @@ function createUI() {
                     </select>
                 </div>
                 
+                <label class="checkbox_label">
+                    <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
+                    <span>Auto-generate after AI response</span>
+                </label>
+                
                 <label>Size</label>
                 <div class="qig-row">
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
@@ -662,6 +735,10 @@ function createUI() {
         saveSettingsDebounced(); 
     };
     bind("qig-llm-style", "llmPromptStyle");
+    document.getElementById("qig-auto-generate").onchange = (e) => {
+        getSettings().autoGenerate = e.target.checked;
+        saveSettingsDebounced();
+    };
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     bind("qig-steps", "steps", true);
@@ -709,6 +786,10 @@ async function generateImage() {
     }
     const negative = resolvePrompt(s.negativePrompt);
     
+    // Save for regenerate
+    lastPrompt = prompt;
+    lastNegative = negative;
+    
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
     showStatus("🖼️ Generating image...");
@@ -752,4 +833,14 @@ jQuery(async () => {
     await loadSettings();
     createUI();
     addInputButton();
+    
+    // Auto-generate on AI message
+    const eventSource = window.eventSource || (await import("../../../../script.js")).eventSource;
+    if (eventSource) {
+        eventSource.on("message_received", () => {
+            if (getSettings().autoGenerate) {
+                setTimeout(() => generateImage(), 500);
+            }
+        });
+    }
 });
