@@ -340,6 +340,7 @@ function showLogs() {
         popup = document.createElement("div");
         popup.id = "qig-logs-popup";
         popup.className = "qig-popup";
+        popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
         popup.innerHTML = `
             <div class="qig-popup-content" onclick="event.stopPropagation()">
                 <div class="qig-popup-header">
@@ -362,6 +363,7 @@ function displayImage(url) {
         popup = document.createElement("div");
         popup.id = "qig-popup";
         popup.className = "qig-popup";
+        popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
         popup.innerHTML = `
             <div class="qig-popup-content" onclick="event.stopPropagation()">
                 <div class="qig-popup-header">
