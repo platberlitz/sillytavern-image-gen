@@ -716,18 +716,20 @@ async function generateImage() {
     let prompt = await generateLLMPrompt(s, basePrompt);
     
     // Review prompt before continuing
-    if (s.useLLMPrompt && s.reviewLLMPrompt && prompt !== basePrompt) {
-        log("Showing prompt review popup...");
+    log(`Review check: useLLM=${s.useLLMPrompt}, review=${s.reviewLLMPrompt}, promptChanged=${prompt !== basePrompt}`);
+    if (s.useLLMPrompt && s.reviewLLMPrompt) {
+        log("Showing prompt review...");
         hideStatus();
         try {
-            prompt = await showPromptReview(prompt);
-            log(`Review result: ${prompt === null ? "cancelled" : "confirmed"}`);
+            const reviewed = window.prompt("Edit the generated prompt (OK to continue, Cancel to abort):", prompt);
+            log(`Review result: ${reviewed === null ? "cancelled" : "confirmed"}`);
+            if (reviewed === null) {
+                resetButton();
+                return;
+            }
+            prompt = reviewed;
         } catch (e) {
             log(`Review error: ${e.message}`);
-        }
-        if (prompt === null) {
-            resetButton();
-            return;
         }
         showStatus("🖼️ Generating image...");
     }
