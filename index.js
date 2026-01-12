@@ -49,6 +49,8 @@ const defaultSettings = {
 let sessionGallery = [];
 let lastPrompt = "";
 let lastNegative = "";
+let promptTemplates = JSON.parse(localStorage.getItem("qig_templates") || "[]");
+let charSettings = JSON.parse(localStorage.getItem("qig_char_settings") || "{}");
 
 const PROVIDERS = {
     pollinations: { name: "Pollinations (Free)", needsKey: false },
@@ -511,6 +513,68 @@ async function regenerateImage() {
     }
 }
 
+// Prompt Templates
+function saveTemplate() {
+    const prompt = document.getElementById("qig-prompt").value;
+    if (!prompt.trim()) return;
+    const name = window.prompt("Template name:");
+    if (!name) return;
+    promptTemplates.unshift({ name, prompt });
+    localStorage.setItem("qig_templates", JSON.stringify(promptTemplates.slice(0, 20)));
+    renderTemplates();
+}
+
+function renderTemplates() {
+    const container = document.getElementById("qig-templates");
+    if (!container) return;
+    container.innerHTML = promptTemplates.slice(0, 5).map((t, i) => 
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="document.getElementById('qig-prompt').value='${t.prompt.replace(/'/g, "\\'")}'">${t.name}</button>`
+    ).join('') + (promptTemplates.length > 0 ? `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">✕</button>` : '');
+}
+
+function clearTemplates() {
+    if (confirm("Clear all templates?")) {
+        promptTemplates = [];
+        localStorage.removeItem("qig_templates");
+        renderTemplates();
+    }
+}
+
+// Character-specific settings
+function getCurrentCharId() {
+    const ctx = getContext();
+    return ctx?.characterId || ctx?.characters?.[ctx?.characterId]?.avatar || null;
+}
+
+function saveCharSettings() {
+    const charId = getCurrentCharId();
+    if (!charId) return;
+    const s = getSettings();
+    charSettings[charId] = {
+        prompt: s.prompt,
+        negativePrompt: s.negativePrompt,
+        style: s.style,
+        width: s.width,
+        height: s.height
+    };
+    localStorage.setItem("qig_char_settings", JSON.stringify(charSettings));
+    showStatus("💾 Saved settings for this character");
+    setTimeout(hideStatus, 2000);
+}
+
+function loadCharSettings() {
+    const charId = getCurrentCharId();
+    if (!charId || !charSettings[charId]) return false;
+    const cs = charSettings[charId];
+    const s = getSettings();
+    if (cs.prompt) { s.prompt = cs.prompt; document.getElementById("qig-prompt").value = cs.prompt; }
+    if (cs.negativePrompt) { s.negativePrompt = cs.negativePrompt; document.getElementById("qig-negative").value = cs.negativePrompt; }
+    if (cs.style) { s.style = cs.style; document.getElementById("qig-style").value = cs.style; }
+    if (cs.width) { s.width = cs.width; document.getElementById("qig-width").value = cs.width; }
+    if (cs.height) { s.height = cs.height; document.getElementById("qig-height").value = cs.height; }
+    return true;
+}
+
 function updateProviderUI() {
     const s = getSettings();
     document.querySelectorAll(".qig-provider-section").forEach(el => el.style.display = "none");
@@ -557,6 +621,7 @@ function createUI() {
             <div class="inline-drawer-content">
                 <button id="qig-generate-btn" class="menu_button">🎨 Generate</button>
                 <button id="qig-logs-btn" class="menu_button">📋 Logs</button>
+                <button id="qig-save-char-btn" class="menu_button">💾 Save for Char</button>
                 
                 <label>Provider</label>
                 <select id="qig-provider">${providerOpts}</select>
@@ -630,8 +695,9 @@ function createUI() {
                 </div>
                 
                 <hr>
-                <label>Prompt</label>
+                <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;">💾 Save Template</button></label>
                 <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
+                <div id="qig-templates" style="margin:4px 0;"></div>
                 <label>Negative Prompt</label>
                 <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
                 
@@ -691,6 +757,10 @@ function createUI() {
     
     document.getElementById("qig-generate-btn").onclick = generateImage;
     document.getElementById("qig-logs-btn").onclick = showLogs;
+    document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
+    document.getElementById("qig-save-template").onclick = saveTemplate;
+    renderTemplates();
+    
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
         saveSettingsDebounced();
@@ -834,13 +904,16 @@ jQuery(async () => {
     createUI();
     addInputButton();
     
-    // Auto-generate on AI message
-    const eventSource = window.eventSource || (await import("../../../../script.js")).eventSource;
+    // Auto-generate on AI message and load char settings on character change
+    const { eventSource, event_types } = await import("../../../../script.js");
     if (eventSource) {
-        eventSource.on("message_received", () => {
+        eventSource.on(event_types.MESSAGE_RECEIVED, () => {
             if (getSettings().autoGenerate) {
                 setTimeout(() => generateImage(), 500);
             }
+        });
+        eventSource.on(event_types.CHAT_CHANGED, () => {
+            loadCharSettings();
         });
     }
 });
