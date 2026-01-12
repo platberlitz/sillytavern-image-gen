@@ -1,0 +1,12 @@
+{
+  "display_name": "Quick Image Gen",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "User",
+  "version": "1.1.0",
+  "homePage": "https://github.com/platinum/sillytavern-image-gen",
+  "auto_update": true
+}

@@ -1,0 +1,43 @@
+#qig-settings label { display: block; margin-top: 8px; font-size: 12px; color: var(--SmartThemeBodyColor); }
+#qig-settings input, #qig-settings select, #qig-settings textarea { width: 100%; margin-top: 4px; }
+#qig-settings hr { margin: 12px 0; border-color: var(--SmartThemeBorderColor); }
+#qig-generate-btn { width: 100%; margin-bottom: 10px; font-size: 14px; }
+.qig-row { display: flex; align-items: center; gap: 8px; }
+.qig-row input { width: 80px; flex: 1; }
+.qig-provider-section { display: none; }
+
+#qig-popup {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+}
+.qig-popup-content {
+    background: var(--SmartThemeBlurTintColor);
+    padding: 20px;
+    border-radius: 12px;
+    max-width: 90vw;
+    max-height: 90vh;
+    text-align: center;
+    position: relative;
+}
+.qig-close {
+    position: absolute;
+    top: 8px; right: 12px;
+    font-size: 28px;
+    cursor: pointer;
+    color: var(--SmartThemeBodyColor);
+}
+#qig-result-img {
+    max-width: 100%;
+    max-height: 70vh;
+    border-radius: 8px;
+}
+#qig-download-btn {
+    margin-top: 15px;
+    padding: 10px 24px;
+    cursor: pointer;
+}
