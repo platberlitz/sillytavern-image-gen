@@ -22,6 +22,7 @@ const defaultSettings = {
     proxyUrl: "",
     proxyKey: "",
     proxyModel: "",
+    proxyLoras: "",
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-3",
@@ -346,7 +347,10 @@ async function genProxy(prompt, negative, s) {
             prompt: prompt,
             negative_prompt: negative,
             n: 1,
-            size: `${s.width}x${s.height}`
+            size: `${s.width}x${s.height}`,
+            width: s.width,
+            height: s.height,
+            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined
         })
     });
     if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
@@ -510,6 +514,8 @@ function createUI() {
                     <input id="qig-proxy-key" type="password" value="${s.proxyKey}">
                     <label>Model</label>
                     <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="gemini-3-pro-image-preview">
+                    <label>LoRAs (id:weight, comma-separated)</label>
+                    <input id="qig-proxy-loras" type="text" value="${s.proxyLoras || ""}" placeholder="123456:0.8, 789012:0.6">
                 </div>
                 
                 <hr>
@@ -584,6 +590,7 @@ function createUI() {
     bind("qig-proxy-url", "proxyUrl");
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
+    bind("qig-proxy-loras", "proxyLoras");
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
