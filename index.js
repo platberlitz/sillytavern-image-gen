@@ -29,6 +29,9 @@ const defaultSettings = {
     // ArliAI
     arliKey: "",
     arliModel: "arliai-realistic-v1",
+    // NanoGPT
+    nanogptKey: "",
+    nanogptModel: "image-flux-schnell",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -40,6 +43,7 @@ const PROVIDERS = {
     pollinations: { name: "Pollinations (Free)", needsKey: false },
     novelai: { name: "NovelAI", needsKey: true },
     arliai: { name: "ArliAI", needsKey: true },
+    nanogpt: { name: "NanoGPT", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
@@ -221,6 +225,29 @@ async function genArliAI(prompt, negative, s) {
         })
     });
     if (!res.ok) throw new Error(`ArliAI error: ${res.status}`);
+    const data = await res.json();
+    if (data.data?.[0]?.url) return data.data[0].url;
+    if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+    throw new Error("No image in response");
+}
+
+async function genNanoGPT(prompt, negative, s) {
+    const res = await fetch("https://nano-gpt.com/api/v1/images/generations", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${s.nanogptKey}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: s.nanogptModel,
+            prompt: prompt,
+            negative_prompt: negative,
+            width: s.width,
+            height: s.height,
+            n: 1
+        })
+    });
+    if (!res.ok) throw new Error(`NanoGPT error: ${res.status}`);
     const data = await res.json();
     if (data.data?.[0]?.url) return data.data[0].url;
     if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
@@ -411,7 +438,7 @@ function updateProviderUI() {
     const section = document.getElementById(`qig-${s.provider}-settings`);
     if (section) section.style.display = "block";
     
-    const showAdvanced = ["novelai", "arliai", "local"].includes(s.provider);
+    const showAdvanced = ["novelai", "arliai", "nanogpt", "local"].includes(s.provider);
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
 }
 
@@ -475,6 +502,13 @@ function createUI() {
                     <input id="qig-arli-key" type="password" value="${s.arliKey}">
                     <label>Model</label>
                     <input id="qig-arli-model" type="text" value="${s.arliModel}" placeholder="arliai-realistic-v1">
+                </div>
+                
+                <div id="qig-nanogpt-settings" class="qig-provider-section">
+                    <label>NanoGPT API Key</label>
+                    <input id="qig-nanogpt-key" type="password" value="${s.nanogptKey}">
+                    <label>Model</label>
+                    <input id="qig-nanogpt-model" type="text" value="${s.nanogptModel}" placeholder="image-flux-schnell">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -565,6 +599,8 @@ function createUI() {
     bind("qig-nai-model", "naiModel");
     bind("qig-arli-key", "arliKey");
     bind("qig-arli-model", "arliModel");
+    bind("qig-nanogpt-key", "nanogptKey");
+    bind("qig-nanogpt-model", "nanogptModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
@@ -649,6 +685,7 @@ async function generateImage() {
             case "pollinations": result = await genPollinations(prompt, negative, s); break;
             case "novelai": result = await genNovelAI(prompt, negative, s); break;
             case "arliai": result = await genArliAI(prompt, negative, s); break;
+            case "nanogpt": result = await genNanoGPT(prompt, negative, s); break;
             case "local": result = await genLocal(prompt, negative, s); break;
             case "proxy": result = await genProxy(prompt, negative, s); break;
         }
