@@ -414,7 +414,18 @@ function showPromptReview(prompt) {
         
         const popup = document.createElement("div");
         popup.id = "qig-review-popup";
-        popup.style.cssText = "position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.9);z-index:2147483647;display:flex;justify-content:center;align-items:center;";
+        Object.assign(popup.style, {
+            position: "fixed",
+            top: "0",
+            left: "0",
+            width: "100vw",
+            height: "100vh",
+            background: "rgba(0,0,0,0.9)",
+            zIndex: "2147483647",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center"
+        });
         popup.innerHTML = `
             <div style="background:#1a1a2e;padding:20px;border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
                 <h3 style="margin:0 0 12px;color:#e94560;">Review LLM Prompt</h3>
@@ -424,7 +435,12 @@ function showPromptReview(prompt) {
                     <button id="qig-review-cancel" style="flex:1;padding:10px;background:#333;border:none;border-radius:6px;color:#fff;cursor:pointer;">Cancel</button>
                 </div>
             </div>`;
-        document.body.appendChild(popup);
+        
+        // Try to append to #chat or body
+        const container = document.getElementById("chat") || document.body;
+        container.appendChild(popup);
+        
+        console.log("QIG: Popup appended to", container.id || "body");
         
         document.getElementById("qig-review-textarea").value = prompt;
         
