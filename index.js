@@ -11,7 +11,7 @@ const defaultSettings = {
     appendQuality: true,
     useLastMessage: true,
     useLLMPrompt: false,
-    reviewLLMPrompt: false,
+    llmPromptStyle: "tags",
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -136,16 +136,23 @@ async function generateLLMPrompt(s, basePrompt) {
     showStatus("🤖 Creating image prompt...");
     
     try {
-        const instruction = `[Task: Convert to image tags. Output ONLY tags, nothing else. Stop after tags.]
+        let instruction;
+        if (s.llmPromptStyle === "natural") {
+            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary.]
+
+Scene: ${basePrompt}
+
+Image prompt:`;
+        } else {
+            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else.]
 
 Scene: ${basePrompt}
 
 Danbooru tags:`;
-        // Use quietToLoud=false, skipWIAN=true, quietImage=false, quietName="" to minimize preset interference
+        }
         const llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
-        // Take only first line or up to first period to avoid extra content
-        const cleaned = (llmPrompt || "").split('\n')[0].split('.')[0].trim();
+        const cleaned = (llmPrompt || "").split('\n')[0].trim();
         return cleaned || basePrompt;
     } catch (e) {
         log(`LLM prompt failed: ${e.message}`);
@@ -401,20 +408,6 @@ function showLogs() {
     popup.style.display = "flex";
 }
 
-function showPromptReview(prompt) {
-    return new Promise((resolve) => {
-        const result = window.prompt("Review and edit the LLM-generated prompt:\n\n(Click OK to generate, Cancel to abort)", prompt);
-        resolve(result);
-    });
-}
-
-function resetButton() {
-    const btn = document.getElementById("qig-generate-btn");
-    if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
-    const paletteBtn = document.getElementById("qig-palette-btn");
-    if (paletteBtn) { paletteBtn.classList.remove("fa-spinner", "fa-spin"); paletteBtn.classList.add("fa-palette"); }
-}
-
 function displayImage(url) {
     let popup = document.getElementById("qig-popup");
     if (!popup) {
@@ -592,10 +585,13 @@ function createUI() {
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                     <span>Use LLM to create image prompt</span>
                 </label>
-                <label class="checkbox_label" id="qig-review-container" style="display:${s.useLLMPrompt ? "block" : "none"}">
-                    <input id="qig-review-prompt" type="checkbox" ${s.reviewLLMPrompt ? "checked" : ""}>
-                    <span>Review prompt before generating</span>
-                </label>
+                <div id="qig-llm-options" style="display:${s.useLLMPrompt ? "block" : "none"};margin-left:16px;">
+                    <label>Prompt Style</label>
+                    <select id="qig-llm-style">
+                        <option value="tags" ${s.llmPromptStyle === "tags" ? "selected" : ""}>Danbooru Tags (anime)</option>
+                        <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
+                    </select>
+                </div>
                 
                 <label>Size</label>
                 <div class="qig-row">
@@ -662,13 +658,10 @@ function createUI() {
     bind("qig-msg-index", "messageIndex", true);
     document.getElementById("qig-use-llm").onchange = (e) => { 
         getSettings().useLLMPrompt = e.target.checked;
-        document.getElementById("qig-review-container").style.display = e.target.checked ? "block" : "none";
+        document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced(); 
     };
-    document.getElementById("qig-review-prompt").onchange = (e) => { 
-        getSettings().reviewLLMPrompt = e.target.checked; 
-        saveSettingsDebounced(); 
-    };
+    bind("qig-llm-style", "llmPromptStyle");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     bind("qig-steps", "steps", true);
@@ -708,37 +701,6 @@ async function generateImage() {
     }
     
     let prompt = await generateLLMPrompt(s, basePrompt);
-    
-    // Review prompt before continuing
-    log(`Review check: useLLM=${s.useLLMPrompt}, review=${s.reviewLLMPrompt}, promptChanged=${prompt !== basePrompt}`);
-    if (s.useLLMPrompt && s.reviewLLMPrompt) {
-        log("Showing prompt review...");
-        hideStatus();
-        
-        // Use the extension's own prompt field for review
-        const promptField = document.getElementById("qig-prompt");
-        if (promptField) {
-            const originalPrompt = promptField.value;
-            promptField.value = prompt;
-            promptField.focus();
-            promptField.select();
-            
-            // Show message and wait for user to click generate again
-            showStatus("✏️ Edit prompt above, then click Generate again");
-            getSettings().reviewLLMPrompt = false; // Disable review for next click
-            getSettings()._pendingReview = true;
-            saveSettingsDebounced();
-            resetButton();
-            return;
-        }
-    }
-    
-    // Clear pending review flag
-    if (s._pendingReview) {
-        getSettings()._pendingReview = false;
-        getSettings().reviewLLMPrompt = true; // Re-enable for future
-        saveSettingsDebounced();
-    }
     
     prompt = applyStyle(prompt, s);
     
