@@ -11,7 +11,14 @@ One-click image generation for SillyTavern with multiple provider support. Image
 
 ## Installation
 
-### Via Git (Recommended)
+### Via SillyTavern (Recommended)
+1. Open SillyTavern
+2. Go to **Extensions** panel (puzzle piece icon)
+3. Click **Install Extension**
+4. Paste: `https://github.com/platberlitz/sillytavern-image-gen`
+5. Click **Save**
+
+### Via Git
 ```bash
 cd SillyTavern/public/scripts/extensions/third-party
 git clone https://github.com/platberlitz/sillytavern-image-gen.git
