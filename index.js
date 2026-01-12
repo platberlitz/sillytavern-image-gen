@@ -364,6 +364,10 @@ async function genProxy(prompt, negative, s) {
             size: `${s.width}x${s.height}`,
             width: s.width,
             height: s.height,
+            steps: s.steps,
+            cfg_scale: s.cfgScale,
+            sampler: s.sampler,
+            seed: s.seed >= 0 ? s.seed : undefined,
             loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
             facefix: s.proxyFacefix || undefined
         })
