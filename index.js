@@ -155,6 +155,39 @@ async function genProxy(prompt, s) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
     
+    // Try chat completions first (for Gemini-style image gen)
+    const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
+    
+    if (isChatProxy) {
+        const chatUrl = s.proxyUrl.replace(/\/$/, "") + "/chat/completions";
+        const res = await fetch(chatUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                model: s.proxyModel,
+                messages: [{ role: "user", content: `Generate an image: ${prompt}` }],
+                max_tokens: 4096
+            })
+        });
+        if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
+        const data = await res.json();
+        // Extract base64 image from response
+        const content = data.choices?.[0]?.message?.content || "";
+        const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+        if (b64Match) return b64Match[0];
+        // Check for inline_data format
+        const parts = data.choices?.[0]?.message?.parts;
+        if (parts) {
+            for (const part of parts) {
+                if (part.inline_data?.data) {
+                    return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
+                }
+            }
+        }
+        throw new Error("No image in response");
+    }
+    
+    // Standard OpenAI images endpoint
     const res = await fetch(s.proxyUrl, {
         method: "POST",
         headers,
