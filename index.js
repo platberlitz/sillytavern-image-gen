@@ -474,14 +474,14 @@ function createUI() {
                     <label>NovelAI API Key</label>
                     <input id="qig-nai-key" type="password" value="${s.naiKey}">
                     <label>Model</label>
-                    ${modelSelect("novelai", "nai-model", s.naiModel)}
+                    <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-3">
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">
                     <label>ArliAI API Key</label>
                     <input id="qig-arli-key" type="password" value="${s.arliKey}">
                     <label>Model</label>
-                    ${modelSelect("arliai", "arli-model", s.arliModel)}
+                    <input id="qig-arli-model" type="text" value="${s.arliModel}" placeholder="arliai-realistic-v1">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
