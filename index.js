@@ -29,6 +29,8 @@ const defaultSettings = {
     // ArliAI
     arliKey: "",
     arliModel: "arliai-realistic-v1",
+    // Pollinations
+    pollinationsModel: "flux",
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:7860",
     localType: "a1111"
@@ -52,6 +54,23 @@ const STYLES = {
     watercolor: { name: "Watercolor", prefix: "watercolor painting, ", suffix: ", soft colors, artistic" },
     pixel: { name: "Pixel Art", prefix: "pixel art, ", suffix: ", 16-bit, retro game style" },
     sketch: { name: "Sketch", prefix: "pencil sketch, ", suffix: ", line art, hand drawn" }
+};
+
+const PROVIDER_MODELS = {
+    novelai: [
+        { id: "nai-diffusion-3", name: "NAI Diffusion 3 (Anime)" },
+        { id: "nai-diffusion-2", name: "NAI Diffusion 2" },
+        { id: "nai-diffusion-furry-3", name: "NAI Diffusion Furry 3" },
+        { id: "nai-diffusion", name: "NAI Diffusion 1" }
+    ],
+    arliai: [
+        { id: "arliai-realistic-v1", name: "ArliAI Realistic v1" },
+        { id: "arliai-anime-v1", name: "ArliAI Anime v1" }
+    ],
+    pollinations: [
+        { id: "flux", name: "Flux" },
+        { id: "turbo", name: "Turbo" }
+    ]
 };
 
 const SAMPLERS = ["euler_a", "euler", "dpm++_2m", "dpm++_sde", "ddim", "lms", "heun"];
@@ -146,7 +165,8 @@ async function generateLLMPrompt(s, basePrompt) {
 async function genPollinations(prompt, negative, s) {
     const seed = s.seed === -1 ? Date.now() : s.seed;
     const neg = negative ? `&negative=${encodeURIComponent(negative)}` : "";
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true${neg}`;
+    const model = s.pollinationsModel ? `&model=${s.pollinationsModel}` : "";
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true${neg}${model}`;
 }
 
 async function genNovelAI(prompt, negative, s) {
@@ -411,6 +431,13 @@ function bind(id, key, isNum = false) {
     };
 }
 
+function modelSelect(provider, settingKey, currentVal) {
+    const models = PROVIDER_MODELS[provider];
+    if (!models) return `<input id="qig-${settingKey}" type="text" value="${currentVal}" placeholder="Model ID">`;
+    const opts = models.map(m => `<option value="${m.id}" ${currentVal === m.id ? "selected" : ""}>${m.name}</option>`).join("");
+    return `<select id="qig-${settingKey}">${opts}</select>`;
+}
+
 function createUI() {
     const s = getSettings();
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
@@ -438,18 +465,23 @@ function createUI() {
                 <label>Style</label>
                 <select id="qig-style">${styleOpts}</select>
                 
+                <div id="qig-pollinations-settings" class="qig-provider-section">
+                    <label>Model</label>
+                    ${modelSelect("pollinations", "pollinations-model", s.pollinationsModel)}
+                </div>
+                
                 <div id="qig-novelai-settings" class="qig-provider-section">
                     <label>NovelAI API Key</label>
                     <input id="qig-nai-key" type="password" value="${s.naiKey}">
                     <label>Model</label>
-                    <input id="qig-nai-model" type="text" value="${s.naiModel}">
+                    ${modelSelect("novelai", "nai-model", s.naiModel)}
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">
                     <label>ArliAI API Key</label>
                     <input id="qig-arli-key" type="password" value="${s.arliKey}">
                     <label>Model</label>
-                    <input id="qig-arli-model" type="text" value="${s.arliModel}">
+                    ${modelSelect("arliai", "arli-model", s.arliModel)}
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -535,6 +567,7 @@ function createUI() {
         saveSettingsDebounced();
     };
     
+    bind("qig-pollinations-model", "pollinationsModel");
     bind("qig-nai-key", "naiKey");
     bind("qig-nai-model", "naiModel");
     bind("qig-arli-key", "arliKey");
