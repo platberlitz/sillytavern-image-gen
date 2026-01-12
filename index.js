@@ -149,7 +149,8 @@ Scene:
 ${basePrompt}
 
 Tags:`;
-        const llmPrompt = await generateQuietPrompt(instruction, false, false);
+        // Use quietToLoud=false, skipWIAN=true, quietImage=false, quietName="" to minimize preset interference
+        const llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         return llmPrompt?.trim() || basePrompt;
     } catch (e) {
