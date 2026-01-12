@@ -25,6 +25,10 @@ const defaultSettings = {
     proxyModel: "",
     proxyLoras: "",
     proxyFacefix: false,
+    proxySteps: 25,
+    proxyCfg: 6,
+    proxySampler: "Euler a",
+    proxySeed: -1,
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-3",
@@ -364,10 +368,10 @@ async function genProxy(prompt, negative, s) {
             size: `${s.width}x${s.height}`,
             width: s.width,
             height: s.height,
-            steps: s.steps,
-            cfg_scale: s.cfgScale,
-            sampler: s.sampler,
-            seed: s.seed >= 0 ? s.seed : undefined,
+            steps: s.proxySteps || 25,
+            cfg_scale: s.proxyCfg || 6,
+            sampler: s.proxySampler || "Euler a",
+            seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
             loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
             facefix: s.proxyFacefix || undefined
         })
@@ -567,9 +571,23 @@ function createUI() {
                     <label>API Key (optional)</label>
                     <input id="qig-proxy-key" type="password" value="${s.proxyKey}">
                     <label>Model</label>
-                    <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="gemini-3-pro-image-preview">
+                    <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="PixAI model ID">
                     <label>LoRAs (id:weight, comma-separated)</label>
                     <input id="qig-proxy-loras" type="text" value="${s.proxyLoras || ""}" placeholder="123456:0.8, 789012:0.6">
+                    <div class="qig-row">
+                        <div><label>Steps</label><input id="qig-proxy-steps" type="number" value="${s.proxySteps || 25}" min="8" max="50"></div>
+                        <div><label>CFG</label><input id="qig-proxy-cfg" type="number" value="${s.proxyCfg || 6}" min="1" max="15" step="0.5"></div>
+                        <div><label>Seed</label><input id="qig-proxy-seed" type="number" value="${s.proxySeed ?? -1}"></div>
+                    </div>
+                    <label>Sampler</label>
+                    <select id="qig-proxy-sampler">
+                        <option value="Euler a" ${s.proxySampler === "Euler a" ? "selected" : ""}>Euler a</option>
+                        <option value="Euler" ${s.proxySampler === "Euler" ? "selected" : ""}>Euler</option>
+                        <option value="DPM++ 2M Karras" ${s.proxySampler === "DPM++ 2M Karras" ? "selected" : ""}>DPM++ 2M Karras</option>
+                        <option value="DPM++ SDE Karras" ${s.proxySampler === "DPM++ SDE Karras" ? "selected" : ""}>DPM++ SDE Karras</option>
+                        <option value="DPM++ 2M SDE Karras" ${s.proxySampler === "DPM++ 2M SDE Karras" ? "selected" : ""}>DPM++ 2M SDE Karras</option>
+                        <option value="DDIM" ${s.proxySampler === "DDIM" ? "selected" : ""}>DDIM</option>
+                    </select>
                     <label class="checkbox_label">
                         <input id="qig-proxy-facefix" type="checkbox" ${s.proxyFacefix ? "checked" : ""}>
                         <span>Enable Face Fix (PixAI ADetailer)</span>
@@ -653,6 +671,10 @@ function createUI() {
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
     bind("qig-proxy-loras", "proxyLoras");
+    bind("qig-proxy-steps", "proxySteps", true);
+    bind("qig-proxy-cfg", "proxyCfg", true);
+    bind("qig-proxy-sampler", "proxySampler");
+    bind("qig-proxy-seed", "proxySeed", true);
     document.getElementById("qig-proxy-facefix").onchange = (e) => { getSettings().proxyFacefix = e.target.checked; saveSettingsDebounced(); };
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
