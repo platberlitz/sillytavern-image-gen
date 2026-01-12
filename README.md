@@ -175,12 +175,19 @@ For OpenAI-compatible image endpoints, including custom proxies.
 3. Enter **API Key** if required
 4. Enter **Model** name (depends on your proxy)
 5. **LoRAs** (optional): Enter as `id:weight, id:weight` (e.g., `123456:0.8, 789012:0.6`)
+6. **Face Fix** (optional): Enable for PixAI's ADetailer
 
-**Example: Using with PixAI Proxy**
-- URL: `https://your-pixai-proxy.com/v1`
-- API Key: Your PixAI API key
-- Model: PixAI model ID (from model page URL)
-- LoRAs: PixAI LoRA IDs with weights
+### Using PixAI (via Proxy)
+
+PixAI doesn't have a standard OpenAI-compatible API - it uses a task-based system that requires creating tasks and polling for completion. To use PixAI with this extension, you need the **[PixAI Reverse Proxy](https://github.com/platberlitz/pixai-proxy)** which handles this complexity.
+
+**Setup:**
+1. Deploy the [PixAI Proxy](https://github.com/platberlitz/pixai-proxy) on your server
+2. In this extension, select **Reverse Proxy** as provider
+3. Set Proxy URL to `https://your-proxy-url.com/v1`
+4. Enter your PixAI API key (get it from https://pixai.art/en/profile/edit/api)
+5. Enter a model ID (last number in model page URL)
+6. Optionally add LoRAs and enable Face Fix
 
 ---
 
