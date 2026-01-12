@@ -738,8 +738,14 @@ async function generateImage() {
     
     // Review prompt before continuing
     if (s.useLLMPrompt && s.reviewLLMPrompt && prompt !== basePrompt) {
+        log("Showing prompt review popup...");
         hideStatus();
-        prompt = await showPromptReview(prompt);
+        try {
+            prompt = await showPromptReview(prompt);
+            log(`Review result: ${prompt === null ? "cancelled" : "confirmed"}`);
+        } catch (e) {
+            log(`Review error: ${e.message}`);
+        }
         if (prompt === null) {
             resetButton();
             return;
