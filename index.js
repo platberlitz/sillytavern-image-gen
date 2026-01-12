@@ -1,5 +1,5 @@
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, generateQuietPrompt, callPopup } from "../../../../script.js";
+import { saveSettingsDebounced, generateQuietPrompt } from "../../../../script.js";
 
 const extensionName = "quick-image-gen";
 const defaultSettings = {
@@ -720,30 +720,30 @@ async function generateImage() {
     if (s.useLLMPrompt && s.reviewLLMPrompt) {
         log("Showing prompt review...");
         hideStatus();
-        try {
-            // Try ST's callPopup first, fall back to prompt()
-            let reviewed;
-            if (typeof callPopup === "function") {
-                reviewed = await callPopup(`<textarea id="qig-review-ta" style="width:100%;height:150px;">${prompt}</textarea>`, "confirm", "", { okButton: "Generate", cancelButton: "Cancel" });
-                if (reviewed) {
-                    prompt = document.getElementById("qig-review-ta")?.value || prompt;
-                } else {
-                    resetButton();
-                    return;
-                }
-            } else {
-                reviewed = prompt("Edit the generated prompt:", prompt);
-                if (reviewed === null) {
-                    resetButton();
-                    return;
-                }
-                prompt = reviewed;
-            }
-            log(`Review confirmed`);
-        } catch (e) {
-            log(`Review error: ${e.message}`);
+        
+        // Use the extension's own prompt field for review
+        const promptField = document.getElementById("qig-prompt");
+        if (promptField) {
+            const originalPrompt = promptField.value;
+            promptField.value = prompt;
+            promptField.focus();
+            promptField.select();
+            
+            // Show message and wait for user to click generate again
+            showStatus("✏️ Edit prompt above, then click Generate again");
+            getSettings().reviewLLMPrompt = false; // Disable review for next click
+            getSettings()._pendingReview = true;
+            saveSettingsDebounced();
+            resetButton();
+            return;
         }
-        showStatus("🖼️ Generating image...");
+    }
+    
+    // Clear pending review flag
+    if (s._pendingReview) {
+        getSettings()._pendingReview = false;
+        getSettings().reviewLLMPrompt = true; // Re-enable for future
+        saveSettingsDebounced();
     }
     
     prompt = applyStyle(prompt, s);
