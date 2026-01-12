@@ -11,6 +11,7 @@ const defaultSettings = {
     appendQuality: true,
     useLastMessage: true,
     useLLMPrompt: false,
+    reviewLLMPrompt: false,
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -397,6 +398,41 @@ function showLogs() {
     popup.style.display = "flex";
 }
 
+function showPromptReview(prompt) {
+    return new Promise((resolve) => {
+        let popup = document.getElementById("qig-review-popup");
+        if (!popup) {
+            popup = document.createElement("div");
+            popup.id = "qig-review-popup";
+            popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.9);z-index:2147483647;justify-content:center;align-items:center;";
+            popup.innerHTML = `
+                <div style="background:#1a1a2e;padding:20px;border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
+                    <h3 style="margin:0 0 12px;color:#e94560;">Review LLM Prompt</h3>
+                    <textarea id="qig-review-textarea" style="width:100%;height:150px;background:#0f0f23;color:#fff;border:1px solid #333;border-radius:6px;padding:10px;font-size:14px;resize:vertical;"></textarea>
+                    <div style="display:flex;gap:10px;margin-top:12px;">
+                        <button id="qig-review-ok" style="flex:1;padding:10px;background:#e94560;border:none;border-radius:6px;color:#fff;cursor:pointer;">Generate</button>
+                        <button id="qig-review-cancel" style="flex:1;padding:10px;background:#333;border:none;border-radius:6px;color:#fff;cursor:pointer;">Cancel</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(popup);
+        }
+        document.getElementById("qig-review-textarea").value = prompt;
+        popup.style.display = "flex";
+        
+        const cleanup = () => { popup.style.display = "none"; };
+        document.getElementById("qig-review-ok").onclick = () => { cleanup(); resolve(document.getElementById("qig-review-textarea").value); };
+        document.getElementById("qig-review-cancel").onclick = () => { cleanup(); resolve(null); };
+        popup.onclick = () => { cleanup(); resolve(null); };
+    });
+}
+
+function resetButton() {
+    const btn = document.getElementById("qig-generate-btn");
+    if (btn) { btn.disabled = false; btn.textContent = "Generate"; }
+    const paletteBtn = document.getElementById("qig-palette-btn");
+    if (paletteBtn) { paletteBtn.classList.remove("fa-spinner", "fa-spin"); paletteBtn.classList.add("fa-palette"); }
+}
+
 function displayImage(url) {
     let popup = document.getElementById("qig-popup");
     if (!popup) {
@@ -560,6 +596,10 @@ function createUI() {
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                     <span>Use LLM to create image prompt</span>
                 </label>
+                <label class="checkbox_label" id="qig-review-container" style="display:${s.useLLMPrompt ? "block" : "none"}">
+                    <input id="qig-review-prompt" type="checkbox" ${s.reviewLLMPrompt ? "checked" : ""}>
+                    <span>Review prompt before generating</span>
+                </label>
                 
                 <label>Size</label>
                 <div class="qig-row">
@@ -621,7 +661,12 @@ function createUI() {
     };
     bind("qig-msg-index", "messageIndex", true);
     document.getElementById("qig-use-llm").onchange = (e) => { 
-        getSettings().useLLMPrompt = e.target.checked; 
+        getSettings().useLLMPrompt = e.target.checked;
+        document.getElementById("qig-review-container").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced(); 
+    };
+    document.getElementById("qig-review-prompt").onchange = (e) => { 
+        getSettings().reviewLLMPrompt = e.target.checked; 
         saveSettingsDebounced(); 
     };
     bind("qig-width", "width", true);
@@ -663,6 +708,18 @@ async function generateImage() {
     }
     
     let prompt = await generateLLMPrompt(s, basePrompt);
+    
+    // Review prompt before continuing
+    if (s.useLLMPrompt && s.reviewLLMPrompt && prompt !== basePrompt) {
+        hideStatus();
+        prompt = await showPromptReview(prompt);
+        if (prompt === null) {
+            resetButton();
+            return;
+        }
+        showStatus("🖼️ Generating image...");
+    }
+    
     prompt = applyStyle(prompt, s);
     
     if (s.appendQuality && s.qualityTags) {
