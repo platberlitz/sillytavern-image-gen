@@ -143,56 +143,6 @@ async function generateLLMPrompt(s, basePrompt) {
     return llmPrompt;
 }
 
-async function generateImage() {
-    const s = getSettings();
-    let basePrompt = resolvePrompt(s.prompt);
-    
-    if (s.useLastMessage) {
-        const lastMsg = getLastMessage();
-        if (lastMsg) basePrompt = lastMsg;
-    }
-    
-    log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
-    showStatus("🎨 Generating image...");
-    
-    let prompt = await generateLLMPrompt(s, basePrompt);
-    prompt = applyStyle(prompt, s);
-    
-    if (s.appendQuality && s.qualityTags) {
-        prompt = `${s.qualityTags}, ${prompt}`;
-    }
-    const negative = resolvePrompt(s.negativePrompt);
-    
-    log(`Final prompt: ${prompt.substring(0, 100)}...`);
-    log(`Negative: ${negative.substring(0, 50)}...`);
-    showStatus("🖼️ Generating image...");
-    
-    const btn = document.getElementById("qig-generate-btn");
-    btn.disabled = true;
-    btn.textContent = "Generating...";
-    
-    try {
-        let result;
-        log(`Using provider: ${s.provider}`);
-        switch (s.provider) {
-            case "pollinations": result = await genPollinations(prompt, negative, s); break;
-            case "novelai": result = await genNovelAI(prompt, negative, s); break;
-            case "arliai": result = await genArliAI(prompt, negative, s); break;
-            case "local": result = await genLocal(prompt, negative, s); break;
-            case "proxy": result = await genProxy(prompt, negative, s); break;
-        }
-        log("Image generated successfully");
-        displayImage(result);
-    } catch (e) {
-        log(`Error: ${e.message}`);
-        toastr.error("Generation failed: " + e.message);
-    } finally {
-        showStatus(null);
-        btn.disabled = false;
-        btn.textContent = "🎨 Generate";
-    }
-}
-
 async function genPollinations(prompt, negative, s) {
     const seed = s.seed === -1 ? Date.now() : s.seed;
     const neg = negative ? `&negative=${encodeURIComponent(negative)}` : "";
@@ -625,6 +575,71 @@ function addInputButton() {
     btn.title = "Generate Image";
     btn.onclick = generateImage;
     document.getElementById("options_button")?.parentElement?.insertBefore(btn, document.getElementById("options_button"));
+}
+
+async function generateImage() {
+    const s = getSettings();
+    let basePrompt = resolvePrompt(s.prompt);
+    
+    if (s.useLastMessage) {
+        const lastMsg = getLastMessage();
+        if (lastMsg) basePrompt = lastMsg;
+    }
+    
+    log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
+    showStatus("🎨 Generating image...");
+    
+    // Update palette button
+    const paletteBtn = document.getElementById("qig-input-btn");
+    if (paletteBtn) {
+        paletteBtn.classList.remove("fa-palette");
+        paletteBtn.classList.add("fa-spinner", "fa-spin");
+    }
+    
+    let prompt = await generateLLMPrompt(s, basePrompt);
+    prompt = applyStyle(prompt, s);
+    
+    if (s.appendQuality && s.qualityTags) {
+        prompt = `${s.qualityTags}, ${prompt}`;
+    }
+    const negative = resolvePrompt(s.negativePrompt);
+    
+    log(`Final prompt: ${prompt.substring(0, 100)}...`);
+    log(`Negative: ${negative.substring(0, 50)}...`);
+    showStatus("🖼️ Generating image...");
+    
+    const btn = document.getElementById("qig-generate-btn");
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Generating...";
+    }
+    
+    try {
+        let result;
+        log(`Using provider: ${s.provider}`);
+        switch (s.provider) {
+            case "pollinations": result = await genPollinations(prompt, negative, s); break;
+            case "novelai": result = await genNovelAI(prompt, negative, s); break;
+            case "arliai": result = await genArliAI(prompt, negative, s); break;
+            case "local": result = await genLocal(prompt, negative, s); break;
+            case "proxy": result = await genProxy(prompt, negative, s); break;
+        }
+        log("Image generated successfully");
+        displayImage(result);
+    } catch (e) {
+        log(`Error: ${e.message}`);
+        toastr.error("Generation failed: " + e.message);
+    } finally {
+        showStatus(null);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "🎨 Generate";
+        }
+        if (paletteBtn) {
+            paletteBtn.classList.remove("fa-spinner", "fa-spin");
+            paletteBtn.classList.add("fa-palette");
+        }
+    }
 }
 
 jQuery(async () => {
