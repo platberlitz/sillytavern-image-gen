@@ -152,7 +152,7 @@ async function generateImage() {
             case "pollinations": result = await genPollinations(prompt, s); break;
             case "novelai": result = await genNovelAI(prompt, negative, s); break;
             case "arliai": result = await genArliAI(prompt, negative, s); break;
-            case "proxy": result = await genProxy(prompt, s); break;
+            case "proxy": result = await genProxy(prompt, negative, s); break;
         }
         log("Image generated successfully");
         displayImage(result);
@@ -237,7 +237,7 @@ async function genArliAI(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genProxy(prompt, s) {
+async function genProxy(prompt, negative, s) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
     
@@ -246,26 +246,49 @@ async function genProxy(prompt, s) {
     
     if (isChatProxy) {
         const chatUrl = s.proxyUrl.replace(/\/$/, "") + "/chat/completions";
+        log(`Using chat completions: ${chatUrl}`);
+        const negPrompt = negative ? `\nAvoid: ${negative}` : "";
         const res = await fetch(chatUrl, {
             method: "POST",
             headers,
             body: JSON.stringify({
                 model: s.proxyModel,
-                messages: [{ role: "user", content: `Generate an image: ${prompt}` }],
+                messages: [{ role: "user", content: `Generate an image: ${prompt}${negPrompt}` }],
                 max_tokens: 4096
             })
         });
         if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
         const data = await res.json();
-        // Extract base64 image from response
+        log(`Response keys: ${JSON.stringify(Object.keys(data))}`);
+        
+        // Check for images array (Gemini/nanobanana format)
+        const images = data.choices?.[0]?.message?.images;
+        if (images && images.length > 0) {
+            const img = images[0];
+            if (img.image_url?.url) {
+                log("Found image in images[].image_url.url");
+                return img.image_url.url;
+            }
+            if (img.url) {
+                log("Found image in images[].url");
+                return img.url;
+            }
+        }
+        
+        // Extract base64 image from content
         const content = data.choices?.[0]?.message?.content || "";
         const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
-        if (b64Match) return b64Match[0];
+        if (b64Match) {
+            log("Found image in content as data URL");
+            return b64Match[0];
+        }
+        
         // Check for inline_data format
         const parts = data.choices?.[0]?.message?.parts;
         if (parts) {
             for (const part of parts) {
                 if (part.inline_data?.data) {
+                    log("Found image in parts[].inline_data");
                     return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
                 }
             }
