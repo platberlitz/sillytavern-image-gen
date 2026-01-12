@@ -12,6 +12,7 @@ const defaultSettings = {
     useLastMessage: true,
     useLLMPrompt: false,
     llmModel: "",
+    messageIndex: -1,
     width: 512,
     height: 512,
     steps: 25,
@@ -97,8 +98,10 @@ function getLastMessage() {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat || chat.length === 0) return "";
-    const last = chat[chat.length - 1];
-    return last?.mes || "";
+    const s = getSettings();
+    const idx = s.messageIndex === -1 ? chat.length - 1 : Math.min(s.messageIndex, chat.length - 1);
+    const msg = chat[idx];
+    return msg?.mes || "";
 }
 
 function applyStyle(prompt, s) {
@@ -529,8 +532,12 @@ function createUI() {
                 </label>
                 <label class="checkbox_label">
                     <input id="qig-use-last" type="checkbox" ${s.useLastMessage ? "checked" : ""}>
-                    <span>Use last message as prompt</span>
+                    <span>Use chat message as prompt</span>
                 </label>
+                <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
+                    <label>Message index (-1 = last message)</label>
+                    <input id="qig-msg-index" type="number" value="${s.messageIndex}" min="-1">
+                </div>
                 <label class="checkbox_label">
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                     <span>Use LLM to create image prompt</span>
@@ -588,7 +595,12 @@ function createUI() {
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
     document.getElementById("qig-append-quality").onchange = (e) => { getSettings().appendQuality = e.target.checked; saveSettingsDebounced(); };
-    document.getElementById("qig-use-last").onchange = (e) => { getSettings().useLastMessage = e.target.checked; saveSettingsDebounced(); };
+    document.getElementById("qig-use-last").onchange = (e) => { 
+        getSettings().useLastMessage = e.target.checked; 
+        document.getElementById("qig-msg-index-wrap").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced(); 
+    };
+    bind("qig-msg-index", "messageIndex", true);
     document.getElementById("qig-use-llm").onchange = (e) => { 
         getSettings().useLLMPrompt = e.target.checked; 
         document.getElementById("qig-llm-settings").style.display = e.target.checked ? "block" : "none";
@@ -608,11 +620,10 @@ function createUI() {
 function addInputButton() {
     const btn = document.createElement("div");
     btn.id = "qig-input-btn";
-    btn.className = "mes_button interactable";
+    btn.className = "fa-solid fa-palette interactable";
     btn.title = "Generate Image";
-    btn.innerHTML = "🎨";
     btn.onclick = generateImage;
-    document.getElementById("leftSendForm")?.appendChild(btn);
+    document.getElementById("options_button")?.parentElement?.insertBefore(btn, document.getElementById("options_button"));
 }
 
 jQuery(async () => {
