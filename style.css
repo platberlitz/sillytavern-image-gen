@@ -47,3 +47,55 @@
     cursor: pointer;
     padding: 2px 6px;
 }
+
+#qig-status {
+    display: none;
+    position: fixed;
+    bottom: 80px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--SmartThemeBlurTintColor);
+    padding: 12px 24px;
+    border-radius: 8px;
+    z-index: 9998;
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    animation: qig-pulse 1.5s infinite;
+}
+
+@keyframes qig-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
+#qig-logs-popup {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 9999;
+    justify-content: center;
+    align-items: center;
+}
+
+#qig-logs-popup .qig-popup-content {
+    width: 600px;
+    max-height: 80vh;
+}
+
+#qig-logs-content {
+    text-align: left;
+    font-size: 12px;
+    max-height: 60vh;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    background: rgba(0,0,0,0.3);
+    padding: 10px;
+    border-radius: 4px;
+}
+
+#qig-logs-btn {
+    width: 100%;
+    margin-bottom: 5px;
+    font-size: 12px;
+}
