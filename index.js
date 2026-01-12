@@ -409,30 +409,8 @@ function showLogs() {
 
 function showPromptReview(prompt) {
     return new Promise((resolve) => {
-        // Remove existing popup to avoid stale event handlers
-        const existing = document.getElementById("qig-review-popup");
-        if (existing) existing.remove();
-        
-        const popup = document.createElement("div");
-        popup.id = "qig-review-popup";
-        popup.setAttribute("style", "position:fixed!important;top:0!important;left:0!important;width:100vw!important;height:100vh!important;background:rgba(0,0,0,0.95)!important;z-index:2147483647!important;display:flex!important;justify-content:center!important;align-items:center!important;opacity:1!important;visibility:visible!important;");
-        popup.innerHTML = `
-            <div style="background:#1a1a2e!important;padding:20px!important;border-radius:12px!important;max-width:600px!important;width:90%!important;max-height:80vh!important;overflow:auto!important;opacity:1!important;visibility:visible!important;">
-                <h3 style="margin:0 0 12px!important;color:#e94560!important;font-size:18px!important;">Review LLM Prompt</h3>
-                <textarea id="qig-review-textarea" style="width:100%!important;height:150px!important;background:#0f0f23!important;color:#fff!important;border:1px solid #333!important;border-radius:6px!important;padding:10px!important;font-size:14px!important;resize:vertical!important;box-sizing:border-box!important;opacity:1!important;visibility:visible!important;"></textarea>
-                <div style="display:flex!important;gap:10px!important;margin-top:12px!important;">
-                    <button id="qig-review-ok" style="flex:1!important;padding:10px!important;background:#e94560!important;border:none!important;border-radius:6px!important;color:#fff!important;cursor:pointer!important;font-size:14px!important;">Generate</button>
-                    <button id="qig-review-cancel" style="flex:1!important;padding:10px!important;background:#333!important;border:none!important;border-radius:6px!important;color:#fff!important;cursor:pointer!important;font-size:14px!important;">Cancel</button>
-                </div>
-            </div>`;
-        
-        document.body.appendChild(popup);
-        document.getElementById("qig-review-textarea").value = prompt;
-        
-        const cleanup = () => popup.remove();
-        document.getElementById("qig-review-ok").onclick = () => { const val = document.getElementById("qig-review-textarea").value; cleanup(); resolve(val); };
-        document.getElementById("qig-review-cancel").onclick = () => { cleanup(); resolve(null); };
-        popup.onclick = (e) => { if (e.target === popup) { cleanup(); resolve(null); } };
+        const result = window.prompt("Review and edit the LLM-generated prompt:\n\n(Click OK to generate, Cancel to abort)", prompt);
+        resolve(result);
     });
 }
 
