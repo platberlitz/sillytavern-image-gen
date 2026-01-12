@@ -143,16 +143,28 @@ async function generateLLMPrompt(s, basePrompt) {
     showStatus("🤖 Creating image prompt...");
     
     try {
+        const ctx = getContext();
+        const charName = ctx.name2 || "character";
+        const userName = ctx.name1 || "user";
+        const charDesc = ctx.characterId ? (ctx.characters?.[ctx.characterId]?.description || "") : "";
+        const userPersona = ctx.persona || "";
+        
+        let appearanceContext = "";
+        if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 500)}\\n`;
+        if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 500)}\\n`;
+        
         let instruction;
         if (s.llmPromptStyle === "natural") {
             instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary.]
 
+${appearanceContext}
 Scene: ${basePrompt}
 
 Image prompt:`;
         } else {
-            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else.]
+            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else. Include character appearance details from the descriptions provided.]
 
+${appearanceContext}
 Scene: ${basePrompt}
 
 Danbooru tags:`;
