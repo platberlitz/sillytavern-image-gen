@@ -1,5 +1,5 @@
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, generateQuietPrompt } from "../../../../script.js";
+import { saveSettingsDebounced, generateQuietPrompt, callPopup } from "../../../../script.js";
 
 const extensionName = "quick-image-gen";
 const defaultSettings = {
@@ -721,13 +721,25 @@ async function generateImage() {
         log("Showing prompt review...");
         hideStatus();
         try {
-            const reviewed = window.prompt("Edit the generated prompt (OK to continue, Cancel to abort):", prompt);
-            log(`Review result: ${reviewed === null ? "cancelled" : "confirmed"}`);
-            if (reviewed === null) {
-                resetButton();
-                return;
+            // Try ST's callPopup first, fall back to prompt()
+            let reviewed;
+            if (typeof callPopup === "function") {
+                reviewed = await callPopup(`<textarea id="qig-review-ta" style="width:100%;height:150px;">${prompt}</textarea>`, "confirm", "", { okButton: "Generate", cancelButton: "Cancel" });
+                if (reviewed) {
+                    prompt = document.getElementById("qig-review-ta")?.value || prompt;
+                } else {
+                    resetButton();
+                    return;
+                }
+            } else {
+                reviewed = prompt("Edit the generated prompt:", prompt);
+                if (reviewed === null) {
+                    resetButton();
+                    return;
+                }
+                prompt = reviewed;
             }
-            prompt = reviewed;
+            log(`Review confirmed`);
         } catch (e) {
             log(`Review error: ${e.message}`);
         }
