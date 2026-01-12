@@ -136,23 +136,17 @@ async function generateLLMPrompt(s, basePrompt) {
     showStatus("🤖 Creating image prompt...");
     
     try {
-        const instruction = `Convert this scene into danbooru/booru-style tags for anime image generation (like NovelAI/PixAI).
+        const instruction = `[Task: Convert to image tags. Output ONLY tags, nothing else. Stop after tags.]
 
-Rules:
-- Output ONLY comma-separated tags, no sentences or explanations
-- Use underscores for multi-word tags (e.g. long_hair, red_eyes)
-- Include: character features (hair color/style, eye color, body type), clothing, pose, expression, setting/background, lighting/atmosphere
-- Order: subject tags first, then scene/setting, then style/quality tags
-- Be specific (e.g. "pleated_skirt" not just "skirt")
+Scene: ${basePrompt}
 
-Scene:
-${basePrompt}
-
-Tags:`;
+Danbooru tags:`;
         // Use quietToLoud=false, skipWIAN=true, quietImage=false, quietName="" to minimize preset interference
         const llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
-        return llmPrompt?.trim() || basePrompt;
+        // Take only first line or up to first period to avoid extra content
+        const cleaned = (llmPrompt || "").split('\n')[0].split('.')[0].trim();
+        return cleaned || basePrompt;
     } catch (e) {
         log(`LLM prompt failed: ${e.message}`);
         return basePrompt;
