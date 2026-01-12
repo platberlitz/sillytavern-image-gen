@@ -1,5 +1,5 @@
 import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced } from "../../../../script.js";
+import { saveSettingsDebounced, generateQuietPrompt } from "../../../../script.js";
 
 const extensionName = "quick-image-gen";
 const defaultSettings = {
@@ -11,7 +11,6 @@ const defaultSettings = {
     appendQuality: true,
     useLastMessage: true,
     useLLMPrompt: false,
-    llmModel: "",
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -124,37 +123,20 @@ function applyStyle(prompt, s) {
 }
 
 async function generateLLMPrompt(s, basePrompt) {
-    if (!s.useLLMPrompt || !s.proxyUrl || !s.llmModel) return basePrompt;
+    if (!s.useLLMPrompt) return basePrompt;
     
-    log("Generating prompt via LLM...");
+    log("Generating prompt via SillyTavern LLM...");
     showStatus("🤖 Creating image prompt...");
     
-    const headers = { "Content-Type": "application/json" };
-    if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
-    
-    const chatUrl = s.proxyUrl.replace(/\/$/, "") + "/chat/completions";
-    const res = await fetch(chatUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-            model: s.llmModel,
-            messages: [{
-                role: "user",
-                content: `Convert this scene description into a concise image generation prompt (tags/keywords style, no sentences). Focus on visual elements, character appearance, pose, setting, lighting. Output ONLY the prompt, nothing else.\n\nScene:\n${basePrompt}`
-            }],
-            max_tokens: 200
-        })
-    });
-    
-    if (!res.ok) {
-        log(`LLM prompt failed: ${res.status}`);
+    try {
+        const instruction = `Convert this scene description into a concise image generation prompt (tags/keywords style, no sentences). Focus on visual elements, character appearance, pose, setting, lighting. Output ONLY the prompt, nothing else.\n\nScene:\n${basePrompt}`;
+        const llmPrompt = await generateQuietPrompt(instruction, false, false);
+        log(`LLM prompt: ${llmPrompt}`);
+        return llmPrompt?.trim() || basePrompt;
+    } catch (e) {
+        log(`LLM prompt failed: ${e.message}`);
         return basePrompt;
     }
-    
-    const data = await res.json();
-    const llmPrompt = data.choices?.[0]?.message?.content?.trim() || basePrompt;
-    log(`LLM prompt: ${llmPrompt}`);
-    return llmPrompt;
 }
 
 async function genPollinations(prompt, negative, s) {
@@ -554,10 +536,6 @@ function createUI() {
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                     <span>Use LLM to create image prompt</span>
                 </label>
-                <div id="qig-llm-settings" style="display:${s.useLLMPrompt ? "block" : "none"}">
-                    <label>LLM Model (for prompt generation)</label>
-                    <input id="qig-llm-model" type="text" value="${s.llmModel}" placeholder="e.g. gpt-4o-mini">
-                </div>
                 
                 <label>Size</label>
                 <div class="qig-row">
@@ -618,10 +596,8 @@ function createUI() {
     bind("qig-msg-index", "messageIndex", true);
     document.getElementById("qig-use-llm").onchange = (e) => { 
         getSettings().useLLMPrompt = e.target.checked; 
-        document.getElementById("qig-llm-settings").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced(); 
     };
-    bind("qig-llm-model", "llmModel");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     bind("qig-steps", "steps", true);
