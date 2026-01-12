@@ -391,7 +391,7 @@ function showLogs() {
         popup.id = "qig-logs-popup";
         popup.className = "qig-popup";
         popup.innerHTML = `
-            <div class="qig-popup-content">
+            <div class="qig-popup-content" onclick="event.stopPropagation()">
                 <div class="qig-popup-header">
                     <span>Generation Logs</span>
                     <button class="qig-close-btn">✕</button>
@@ -400,7 +400,7 @@ function showLogs() {
             </div>`;
         document.body.appendChild(popup);
         popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
-        popup.onclick = (e) => { if (e.target === popup) popup.style.display = "none"; };
+        popup.onclick = () => popup.style.display = "none";
     }
     document.getElementById("qig-logs-content").textContent = logs.join("\n") || "No logs yet";
     popup.style.display = "flex";
@@ -413,7 +413,7 @@ function displayImage(url) {
         popup.id = "qig-popup";
         popup.className = "qig-popup";
         popup.innerHTML = `
-            <div class="qig-popup-content">
+            <div class="qig-popup-content" onclick="event.stopPropagation()">
                 <div class="qig-popup-header">
                     <span>Generated Image</span>
                     <button class="qig-close-btn">✕</button>
@@ -427,8 +427,9 @@ function displayImage(url) {
         document.body.appendChild(popup);
         popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
         document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
-        popup.onclick = (e) => { if (e.target === popup) popup.style.display = "none"; };
-        document.getElementById("qig-download-btn").onclick = () => {
+        popup.onclick = () => popup.style.display = "none";
+        document.getElementById("qig-download-btn").onclick = (e) => {
+            e.stopPropagation();
             const a = document.createElement("a");
             a.href = document.getElementById("qig-result-img").src;
             a.download = `generated-${Date.now()}.png`;
