@@ -308,7 +308,18 @@ function createUI() {
     updateProviderUI();
 }
 
+function addInputButton() {
+    const btn = document.createElement("div");
+    btn.id = "qig-input-btn";
+    btn.className = "mes_button interactable";
+    btn.title = "Generate Image";
+    btn.innerHTML = "🎨";
+    btn.onclick = generateImage;
+    document.getElementById("leftSendForm")?.appendChild(btn);
+}
+
 jQuery(async () => {
     await loadSettings();
     createUI();
+    addInputButton();
 });
