@@ -31,7 +31,7 @@ const defaultSettings = {
     proxySeed: -1,
     // NovelAI
     naiKey: "",
-    naiModel: "nai-diffusion-3",
+    naiModel: "nai-diffusion-4-5-curated",
     // ArliAI
     arliKey: "",
     arliModel: "arliai-realistic-v1",
@@ -505,7 +505,7 @@ function createUI() {
                     <label>NovelAI API Key</label>
                     <input id="qig-nai-key" type="password" value="${s.naiKey}">
                     <label>Model</label>
-                    <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-3">
+                    <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-4-5-curated">
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">

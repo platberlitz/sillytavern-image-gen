@@ -60,7 +60,7 @@ No setup needed - just select and generate!
 
 ### NovelAI
 1. Get API key from [NovelAI](https://novelai.net)
-2. Enter key and model (e.g., `nai-diffusion-3`)
+2. Enter key and model (e.g., `nai-diffusion-4-5-curated`)
 
 ### ArliAI
 1. Get API key from [ArliAI](https://www.arliai.com)
