@@ -7,7 +7,13 @@ One-click image generation for SillyTavern with multiple provider support. Image
 - **Pollinations** - Free, no API key required
 - **NovelAI** - Requires subscription/API key
 - **ArliAI** - Requires API key
+- **Local (A1111/ComfyUI)** - For locally hosted Stable Diffusion
 - **Reverse Proxy** - OpenAI-compatible endpoints (Google Imagen via nanobanana, etc.)
+
+## Art Styles
+
+Built-in style presets that automatically add appropriate tags:
+- None, Anime, Cartoon, Realistic, Semi-Realistic, Oil Painting, Watercolor, Pixel Art, Sketch
 
 ## Installation
 
@@ -55,8 +61,16 @@ Open the **Quick Image Gen** panel in Extensions settings.
 - Models: `arliai-realistic-v1`, etc.
 
 **Reverse Proxy:**
-- URL: Your proxy endpoint (e.g., `https://proxy.com/v1/images/generations`)
-- Model: Depends on proxy (e.g., `imagen-3.0-generate-002` for Google Imagen)
+- URL: Your proxy endpoint (e.g., `https://proxy.com/v1`)
+- Model: Depends on proxy (e.g., `antigravity/gemini-3-pro-image-preview` for Google Imagen)
+
+**Local (Automatic1111):**
+- URL: `http://127.0.0.1:7860` (default)
+- Make sure API is enabled: launch with `--api` flag
+
+**Local (ComfyUI):**
+- URL: `http://127.0.0.1:8188` (default ComfyUI port)
+- Uses a basic txt2img workflow
 
 ## Usage
 

@@ -4,7 +4,7 @@ import { saveSettingsDebounced } from "../../../../script.js";
 const extensionName = "quick-image-gen";
 const defaultSettings = {
     provider: "pollinations",
-    // Common
+    style: "none",
     prompt: "{{char}} in the current scene",
     negativePrompt: "lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, deformed, ugly, duplicate, morbid, mutilated, out of frame, mutation, disfigured",
     qualityTags: "masterpiece, best quality, highly detailed, sharp focus, 8k",
@@ -27,14 +27,30 @@ const defaultSettings = {
     naiModel: "nai-diffusion-3",
     // ArliAI
     arliKey: "",
-    arliModel: "arliai-realistic-v1"
+    arliModel: "arliai-realistic-v1",
+    // Local (A1111/ComfyUI)
+    localUrl: "http://127.0.0.1:7860",
+    localType: "a1111"
 };
 
 const PROVIDERS = {
     pollinations: { name: "Pollinations (Free)", needsKey: false },
     novelai: { name: "NovelAI", needsKey: true },
     arliai: { name: "ArliAI", needsKey: true },
+    local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
+};
+
+const STYLES = {
+    none: { name: "None", prefix: "", suffix: "" },
+    anime: { name: "Anime", prefix: "anime style, ", suffix: ", anime art, cel shading" },
+    cartoon: { name: "Cartoon", prefix: "cartoon style, ", suffix: ", cartoon art, vibrant colors" },
+    realistic: { name: "Realistic", prefix: "photorealistic, ", suffix: ", photograph, realistic lighting, 8k uhd" },
+    semirealistic: { name: "Semi-Realistic", prefix: "semi-realistic, ", suffix: ", digital painting, detailed" },
+    oil: { name: "Oil Painting", prefix: "oil painting style, ", suffix: ", classical art, brush strokes" },
+    watercolor: { name: "Watercolor", prefix: "watercolor painting, ", suffix: ", soft colors, artistic" },
+    pixel: { name: "Pixel Art", prefix: "pixel art, ", suffix: ", 16-bit, retro game style" },
+    sketch: { name: "Sketch", prefix: "pencil sketch, ", suffix: ", line art, hand drawn" }
 };
 
 const SAMPLERS = ["euler_a", "euler", "dpm++_2m", "dpm++_sde", "ddim", "lms", "heun"];
@@ -85,6 +101,11 @@ function getLastMessage() {
     return last?.mes || "";
 }
 
+function applyStyle(prompt, s) {
+    const style = STYLES[s.style] || STYLES.none;
+    return style.prefix + prompt + style.suffix;
+}
+
 async function generateLLMPrompt(s, basePrompt) {
     if (!s.useLLMPrompt || !s.proxyUrl || !s.llmModel) return basePrompt;
     
@@ -132,6 +153,7 @@ async function generateImage() {
     showStatus("🎨 Generating image...");
     
     let prompt = await generateLLMPrompt(s, basePrompt);
+    prompt = applyStyle(prompt, s);
     
     if (s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;
@@ -139,6 +161,7 @@ async function generateImage() {
     const negative = resolvePrompt(s.negativePrompt);
     
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
+    log(`Negative: ${negative.substring(0, 50)}...`);
     showStatus("🖼️ Generating image...");
     
     const btn = document.getElementById("qig-generate-btn");
@@ -149,9 +172,10 @@ async function generateImage() {
         let result;
         log(`Using provider: ${s.provider}`);
         switch (s.provider) {
-            case "pollinations": result = await genPollinations(prompt, s); break;
+            case "pollinations": result = await genPollinations(prompt, negative, s); break;
             case "novelai": result = await genNovelAI(prompt, negative, s); break;
             case "arliai": result = await genArliAI(prompt, negative, s); break;
+            case "local": result = await genLocal(prompt, negative, s); break;
             case "proxy": result = await genProxy(prompt, negative, s); break;
         }
         log("Image generated successfully");
@@ -166,9 +190,10 @@ async function generateImage() {
     }
 }
 
-async function genPollinations(prompt, s) {
+async function genPollinations(prompt, negative, s) {
     const seed = s.seed === -1 ? Date.now() : s.seed;
-    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
+    const neg = negative ? `&negative=${encodeURIComponent(negative)}` : "";
+    return `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true${neg}`;
 }
 
 async function genNovelAI(prompt, negative, s) {
@@ -197,8 +222,7 @@ async function genNovelAI(prompt, negative, s) {
     const zip = await res.blob();
     const arrayBuffer = await zip.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
-    // NAI returns a zip, extract first file (simple zip parse)
-    const dataStart = bytes.indexOf(0x89) > 30 ? bytes.indexOf(0x89) : findPngStart(bytes);
+    const dataStart = findPngStart(bytes);
     const pngData = bytes.slice(dataStart);
     return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
 }
@@ -237,11 +261,67 @@ async function genArliAI(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
+async function genLocal(prompt, negative, s) {
+    const baseUrl = s.localUrl.replace(/\/$/, "");
+    
+    if (s.localType === "comfyui") {
+        // ComfyUI API
+        const workflow = {
+            prompt: {
+                "3": { class_type: "KSampler", inputs: { seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed, steps: s.steps, cfg: s.cfgScale, sampler_name: s.sampler.replace("_", ""), scheduler: "normal", denoise: 1, model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] }},
+                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" }},
+                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 }},
+                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["4", 1] }},
+                "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: ["4", 1] }},
+                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] }},
+                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] }}
+            }
+        };
+        const res = await fetch(`${baseUrl}/prompt`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(workflow)
+        });
+        if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
+        const data = await res.json();
+        // Poll for result
+        const promptId = data.prompt_id;
+        for (let i = 0; i < 120; i++) {
+            await new Promise(r => setTimeout(r, 1000));
+            const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
+            if (hist[promptId]?.outputs?.["9"]?.images?.[0]) {
+                const img = hist[promptId].outputs["9"].images[0];
+                return `${baseUrl}/view?filename=${img.filename}&subfolder=${img.subfolder || ""}&type=${img.type}`;
+            }
+        }
+        throw new Error("ComfyUI timeout");
+    }
+    
+    // A1111 API
+    const res = await fetch(`${baseUrl}/sdapi/v1/txt2img`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            prompt: prompt,
+            negative_prompt: negative,
+            width: s.width,
+            height: s.height,
+            steps: s.steps,
+            cfg_scale: s.cfgScale,
+            sampler_name: s.sampler,
+            seed: s.seed
+        })
+    });
+    if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
+    const data = await res.json();
+    if (data.images?.[0]) return `data:image/png;base64,${data.images[0]}`;
+    throw new Error("No image in response");
+}
+
 async function genProxy(prompt, negative, s) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
     
-    // Try chat completions first (for Gemini-style image gen)
     const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
     
     if (isChatProxy) {
@@ -261,34 +341,21 @@ async function genProxy(prompt, negative, s) {
         const data = await res.json();
         log(`Response keys: ${JSON.stringify(Object.keys(data))}`);
         
-        // Check for images array (Gemini/nanobanana format)
         const images = data.choices?.[0]?.message?.images;
         if (images && images.length > 0) {
             const img = images[0];
-            if (img.image_url?.url) {
-                log("Found image in images[].image_url.url");
-                return img.image_url.url;
-            }
-            if (img.url) {
-                log("Found image in images[].url");
-                return img.url;
-            }
+            if (img.image_url?.url) return img.image_url.url;
+            if (img.url) return img.url;
         }
         
-        // Extract base64 image from content
         const content = data.choices?.[0]?.message?.content || "";
         const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
-        if (b64Match) {
-            log("Found image in content as data URL");
-            return b64Match[0];
-        }
+        if (b64Match) return b64Match[0];
         
-        // Check for inline_data format
         const parts = data.choices?.[0]?.message?.parts;
         if (parts) {
             for (const part of parts) {
                 if (part.inline_data?.data) {
-                    log("Found image in parts[].inline_data");
                     return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
                 }
             }
@@ -296,13 +363,13 @@ async function genProxy(prompt, negative, s) {
         throw new Error("No image in response");
     }
     
-    // Standard OpenAI images endpoint
     const res = await fetch(s.proxyUrl, {
         method: "POST",
         headers,
         body: JSON.stringify({
             model: s.proxyModel,
             prompt: prompt,
+            negative_prompt: negative,
             n: 1,
             size: `${s.width}x${s.height}`
         })
@@ -319,14 +386,17 @@ function showLogs() {
     if (!popup) {
         popup = document.createElement("div");
         popup.id = "qig-logs-popup";
+        popup.className = "qig-popup";
         popup.innerHTML = `
             <div class="qig-popup-content">
-                <span class="qig-close">&times;</span>
-                <h3>Generation Logs</h3>
+                <div class="qig-popup-header">
+                    <span>Generation Logs</span>
+                    <button class="qig-close-btn">✕</button>
+                </div>
                 <pre id="qig-logs-content"></pre>
             </div>`;
         document.body.appendChild(popup);
-        popup.querySelector(".qig-close").onclick = () => popup.style.display = "none";
+        popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
         popup.onclick = (e) => { if (e.target === popup) popup.style.display = "none"; };
     }
     document.getElementById("qig-logs-content").textContent = logs.join("\n") || "No logs yet";
@@ -338,14 +408,22 @@ function displayImage(url) {
     if (!popup) {
         popup = document.createElement("div");
         popup.id = "qig-popup";
+        popup.className = "qig-popup";
         popup.innerHTML = `
             <div class="qig-popup-content">
-                <span class="qig-close">&times;</span>
+                <div class="qig-popup-header">
+                    <span>Generated Image</span>
+                    <button class="qig-close-btn">✕</button>
+                </div>
                 <img id="qig-result-img" src="">
-                <button id="qig-download-btn">💾 Download</button>
+                <div class="qig-popup-actions">
+                    <button id="qig-download-btn">💾 Download</button>
+                    <button id="qig-close-popup">Close</button>
+                </div>
             </div>`;
         document.body.appendChild(popup);
-        popup.querySelector(".qig-close").onclick = () => popup.style.display = "none";
+        popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
+        document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
         popup.onclick = (e) => { if (e.target === popup) popup.style.display = "none"; };
         document.getElementById("qig-download-btn").onclick = () => {
             const a = document.createElement("a");
@@ -364,12 +442,13 @@ function updateProviderUI() {
     const section = document.getElementById(`qig-${s.provider}-settings`);
     if (section) section.style.display = "block";
     
-    const showAdvanced = ["novelai", "arliai"].includes(s.provider);
+    const showAdvanced = ["novelai", "arliai", "local"].includes(s.provider);
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
 }
 
 function bind(id, key, isNum = false) {
     const el = document.getElementById(id);
+    if (!el) return;
     el.onchange = (e) => {
         getSettings()[key] = isNum ? parseInt(e.target.value) : e.target.value;
         saveSettingsDebounced();
@@ -381,6 +460,9 @@ function createUI() {
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
     const providerOpts = Object.entries(PROVIDERS).map(([k, v]) => 
         `<option value="${k}" ${s.provider === k ? "selected" : ""}>${v.name}</option>`
+    ).join("");
+    const styleOpts = Object.entries(STYLES).map(([k, v]) =>
+        `<option value="${k}" ${s.style === k ? "selected" : ""}>${v.name}</option>`
     ).join("");
     
     const html = `
@@ -397,6 +479,9 @@ function createUI() {
                 <label>Provider</label>
                 <select id="qig-provider">${providerOpts}</select>
                 
+                <label>Style</label>
+                <select id="qig-style">${styleOpts}</select>
+                
                 <div id="qig-novelai-settings" class="qig-provider-section">
                     <label>NovelAI API Key</label>
                     <input id="qig-nai-key" type="password" value="${s.naiKey}">
@@ -411,13 +496,23 @@ function createUI() {
                     <input id="qig-arli-model" type="text" value="${s.arliModel}">
                 </div>
                 
+                <div id="qig-local-settings" class="qig-provider-section">
+                    <label>Local URL</label>
+                    <input id="qig-local-url" type="text" value="${s.localUrl}" placeholder="http://127.0.0.1:7860">
+                    <label>Type</label>
+                    <select id="qig-local-type">
+                        <option value="a1111" ${s.localType === "a1111" ? "selected" : ""}>Automatic1111</option>
+                        <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
+                    </select>
+                </div>
+                
                 <div id="qig-proxy-settings" class="qig-provider-section">
                     <label>Proxy URL</label>
-                    <input id="qig-proxy-url" type="text" value="${s.proxyUrl}" placeholder="https://proxy.com/v1/images/generations">
+                    <input id="qig-proxy-url" type="text" value="${s.proxyUrl}" placeholder="https://proxy.com/v1">
                     <label>API Key (optional)</label>
                     <input id="qig-proxy-key" type="password" value="${s.proxyKey}">
                     <label>Model</label>
-                    <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="imagen-3.0-generate-002">
+                    <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="gemini-3-pro-image-preview">
                 </div>
                 
                 <hr>
@@ -475,11 +570,17 @@ function createUI() {
         saveSettingsDebounced();
         updateProviderUI();
     };
+    document.getElementById("qig-style").onchange = (e) => {
+        getSettings().style = e.target.value;
+        saveSettingsDebounced();
+    };
     
     bind("qig-nai-key", "naiKey");
     bind("qig-nai-model", "naiModel");
     bind("qig-arli-key", "arliKey");
     bind("qig-arli-model", "arliModel");
+    bind("qig-local-url", "localUrl");
+    bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
