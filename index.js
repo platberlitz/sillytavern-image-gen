@@ -990,16 +990,19 @@ function createUI() {
 }
 
 function addInputButton() {
+    if (document.getElementById("qig-input-btn")) return;
+    
     const btn = document.createElement("div");
     btn.id = "qig-input-btn";
     btn.className = "fa-solid fa-palette interactable";
     btn.title = "Generate Image";
+    btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = generateImage;
     
-    // Position after options button to place it on the right
-    const optionsBtn = document.getElementById("options_button");
-    if (optionsBtn?.parentElement) {
-        optionsBtn.parentElement.insertBefore(btn, optionsBtn.nextSibling);
+    // Add to right side area
+    const rightArea = document.getElementById("rightSendForm") || document.querySelector("#send_form .right_menu_buttons");
+    if (rightArea) {
+        rightArea.insertBefore(btn, rightArea.firstChild);
     }
 }
 
