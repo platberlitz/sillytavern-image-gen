@@ -1,5 +1,12 @@
 # Quick Image Gen - SillyTavern Extension
 
+## TL;DR
+One-click image generation for SillyTavern. 6 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Local, Proxy), 40+ styles, LLM prompt generation, aspect ratios, batch generation. Images in popup, never added to chat.
+
+**Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
+
+---
+
 One-click image generation for SillyTavern. Images appear in a popup and **never get added to chat** - zero tokens.
 
 ## Features
@@ -14,11 +21,12 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 
 ### Generation
 - 🖼️ **40+ Style Presets** - Anime, Realistic, Cyberpunk, Ghibli, etc.
-- 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts
+- 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts (250 char limit)
 - 🏷️ **Two Prompt Styles** - Danbooru tags or natural descriptions
 - ✨ **Quality Tags** - Auto-prepend quality boosters
 - 📍 **Message Selector** - Choose which chat message to use
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
+- 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 
 ### Gallery & Session
