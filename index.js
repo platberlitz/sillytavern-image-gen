@@ -203,17 +203,19 @@ async function generateLLMPrompt(s, basePrompt) {
         
         let instruction;
         if (s.llmPromptStyle === "natural") {
-            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary.]${skinEnforce}
+            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary. Include style, lighting, and mood details.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
 
-Image prompt:`;
+Create a detailed image prompt with style, lighting, and atmospheric details:`;
         } else {
-            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else. Include character appearance details from the descriptions provided.]${skinEnforce}
+            instruction = `[Task: Convert to Danbooru-style image tags. Output ONLY comma-separated tags, nothing else. Include character appearance, style tags, lighting tags, and artist references.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
+
+REQUIRED: Include style tags (anime, realistic, digital art, etc.), lighting tags (dramatic lighting, soft lighting, volumetric light, etc.), and artist tags (by artist_name, art style references).
 
 Danbooru tags:`;
         }
