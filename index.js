@@ -203,25 +203,34 @@ async function generateLLMPrompt(s, basePrompt) {
         
         let instruction;
         if (s.llmPromptStyle === "natural") {
-            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary. Include style, lighting, and mood details.]${skinEnforce}
+            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary. Include style, lighting, and mood details. KEEP UNDER 250 CHARACTERS.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
 
-Create a detailed image prompt with style, lighting, and atmospheric details:`;
+Create a detailed but concise image prompt with style, lighting, and atmospheric details (max 250 chars):`;
         } else {
-            instruction = `[Task: Convert to Danbooru-style image tags. Output ONLY comma-separated tags, nothing else. Include character appearance, style tags, lighting tags, and artist references.]${skinEnforce}
+            instruction = `[Task: Convert to Danbooru-style image tags. Output ONLY comma-separated tags, nothing else. Include character appearance, style tags, lighting tags, and artist references. KEEP UNDER 250 CHARACTERS.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
 
-REQUIRED: Include style tags (anime, realistic, digital art, etc.), lighting tags (dramatic lighting, soft lighting, volumetric light, etc.), and artist tags (by artist_name, art style references).
+REQUIRED: Include style tags (anime, realistic, digital art, etc.), lighting tags (dramatic lighting, soft lighting, volumetric light, etc.), and artist tags (by artist_name, art style references). MAX 250 CHARACTERS.
 
 Danbooru tags:`;
         }
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
+        
+        // Enforce character limit
+        if (cleaned.length > 250) {
+            cleaned = cleaned.substring(0, 250).trim();
+            // Try to end at a word boundary
+            const lastSpace = cleaned.lastIndexOf(' ');
+            if (lastSpace > 200) cleaned = cleaned.substring(0, lastSpace);
+            log(`LLM prompt truncated to ${cleaned.length} chars`);
+        }
         
         // Force prepend skin tone tags if detected but missing from output
         if (skinTones.length && cleaned) {
