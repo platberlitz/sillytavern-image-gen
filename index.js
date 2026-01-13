@@ -995,7 +995,12 @@ function addInputButton() {
     btn.className = "fa-solid fa-palette interactable";
     btn.title = "Generate Image";
     btn.onclick = generateImage;
-    document.getElementById("options_button")?.parentElement?.insertBefore(btn, document.getElementById("options_button"));
+    
+    // Position after options button to place it on the right
+    const optionsBtn = document.getElementById("options_button");
+    if (optionsBtn?.parentElement) {
+        optionsBtn.parentElement.insertBefore(btn, optionsBtn.nextSibling);
+    }
 }
 
 async function generateImage() {
