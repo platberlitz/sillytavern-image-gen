@@ -66,7 +66,7 @@ const PROVIDERS = {
 
 const STYLES = {
     none: { name: "None", prefix: "", suffix: "" },
-    anime: { name: "Anime", prefix: "anime, cel shading, ", suffix: ", vibrant colors" },
+    anime: { name: "Anime", prefix: "anime style, anime artwork, 2D illustration, anime key visual, ", suffix: ", sharp lineart, anime coloring, vibrant colors" },
     photorealistic: { name: "Photorealistic", prefix: "realistic, photorealistic, hyperrealistic, ", suffix: ", 8k uhd, dslr" },
     digitalart: { name: "Digital Art", prefix: "digital painting, concept art, ", suffix: ", artstation" },
     oilpainting: { name: "Oil Painting", prefix: "oil painting, classical, ", suffix: ", renaissance style" },
@@ -78,9 +78,9 @@ const STYLES = {
     cyberpunk: { name: "Cyberpunk", prefix: "cyberpunk, neon lights, ", suffix: ", futuristic, sci-fi" },
     fantasy: { name: "Fantasy", prefix: "fantasy art, magical, ", suffix: ", ethereal, mystical" },
     comicbook: { name: "Comic Book", prefix: "comic book style, bold lines, ", suffix: ", halftone" },
-    manga: { name: "Manga", prefix: "manga style, japanese comic, ", suffix: ", screentone" },
-    chibi: { name: "Chibi", prefix: "chibi, cute, kawaii, ", suffix: ", super deformed" },
-    ghibli: { name: "Ghibli", prefix: "studio ghibli style, miyazaki, ", suffix: ", whimsical" },
+    manga: { name: "Manga", prefix: "manga style, japanese manga, black and white, ", suffix: ", screentone, ink" },
+    chibi: { name: "Chibi", prefix: "chibi, cute anime, kawaii, ", suffix: ", super deformed, adorable" },
+    ghibli: { name: "Ghibli", prefix: "studio ghibli style, anime, miyazaki, ", suffix: ", whimsical, hand painted" },
     ukiyoe: { name: "Ukiyo-e", prefix: "ukiyo-e, ", suffix: ", japanese woodblock print" },
     artnouveau: { name: "Art Nouveau", prefix: "art nouveau, ornate, ", suffix: ", decorative, mucha style" },
     artdeco: { name: "Art Deco", prefix: "art deco, geometric, ", suffix: ", 1920s style" },
@@ -107,8 +107,8 @@ const STYLES = {
     abstract: { name: "Abstract", prefix: "abstract, non-representational, ", suffix: ", shapes and colors" },
     psychedelic: { name: "Psychedelic", prefix: "psychedelic, trippy, ", suffix: ", vibrant, kaleidoscopic" },
     darkfantasy: { name: "Dark Fantasy", prefix: "dark fantasy, grimdark, ", suffix: ", elden ring style" },
-    moeanime: { name: "Moe Anime", prefix: "cute anime, moe, ", suffix: ", adorable" },
-    retroanime: { name: "90s Anime", prefix: "90s anime, retro anime, ", suffix: ", vintage anime style" }
+    moeanime: { name: "Moe Anime", prefix: "anime style, cute anime, moe, kawaii, ", suffix: ", adorable, soft colors" },
+    retroanime: { name: "90s Anime", prefix: "90s anime style, retro anime, cel animation, ", suffix: ", vintage anime, old school anime" }
 };
 
 const PROVIDER_MODELS = {
