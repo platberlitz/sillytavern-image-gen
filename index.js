@@ -575,10 +575,14 @@ function showGallery() {
 }
 
 async function regenerateImage() {
-    if (!lastPrompt) return;
+    if (!lastPrompt) {
+        showStatus("❌ No previous prompt to regenerate");
+        return;
+    }
     const s = getSettings();
     s.seed = -1; // New random seed
     showStatus("🔄 Regenerating...");
+    log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}...`);
     try {
         let result;
         switch (s.provider) {
@@ -587,12 +591,14 @@ async function regenerateImage() {
             case "arliai": result = await genArliAI(lastPrompt, lastNegative, s); break;
             case "nanogpt": result = await genNanoGPT(lastPrompt, lastNegative, s); break;
             case "local": result = await genLocal(lastPrompt, lastNegative, s); break;
+            case "comfyui": result = await genComfyUI(lastPrompt, lastNegative, s); break;
             case "proxy": result = await genProxy(lastPrompt, lastNegative, s); break;
         }
         hideStatus();
         if (result) displayImage(result);
     } catch (e) {
         showStatus(`❌ ${e.message}`);
+        log(`Regenerate error: ${e.message}`);
     }
 }
 
