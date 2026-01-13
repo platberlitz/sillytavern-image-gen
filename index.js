@@ -184,29 +184,50 @@ async function generateLLMPrompt(s, basePrompt) {
         const charDesc = ctx.characterId ? (ctx.characters?.[ctx.characterId]?.description || "") : "";
         const userPersona = ctx.persona || "";
         
+        // Extract skin tone keywords to reinforce
+        const skinTones = [];
+        const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
+        const charSkin = charDesc.match(skinPattern);
+        const userSkin = userPersona.match(skinPattern);
+        if (charSkin) skinTones.push(`${charName}: ${charSkin[0]}`);
+        if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
+        
         let appearanceContext = "";
         if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 500)}\\n`;
         if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 500)}\\n`;
         
+        const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
+        
         let instruction;
         if (s.llmPromptStyle === "natural") {
-            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary.]
+            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
 
 Image prompt:`;
         } else {
-            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else. Include character appearance details from the descriptions provided.]
+            instruction = `[Task: Convert to image tags. Output ONLY comma-separated tags, nothing else. Include character appearance details from the descriptions provided.]${skinEnforce}
 
 ${appearanceContext}
 Scene: ${basePrompt}
 
 Danbooru tags:`;
         }
-        const llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
+        let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
-        const cleaned = (llmPrompt || "").split('\n')[0].trim();
+        let cleaned = (llmPrompt || "").split('\n')[0].trim();
+        
+        // Force prepend skin tone tags if detected but missing from output
+        if (skinTones.length && cleaned) {
+            const outputLower = cleaned.toLowerCase();
+            const skinTags = [];
+            if (charSkin && !outputLower.includes("dark skin") && !outputLower.includes("dark-skin") && !outputLower.includes("brown skin")) {
+                skinTags.push("dark skin");
+            }
+            if (skinTags.length) cleaned = skinTags.join(", ") + ", " + cleaned;
+        }
+        
         return cleaned || basePrompt;
     } catch (e) {
         log(`LLM prompt failed: ${e.message}`);
