@@ -990,10 +990,14 @@ function addInputButton() {
 async function generateImage() {
     const s = getSettings();
     let basePrompt = resolvePrompt(s.prompt);
+    let scenePrompt = ""; // Clean scene for LLM (no presets)
     
     if (s.useLastMessage) {
         const lastMsg = getLastMessage();
-        if (lastMsg) basePrompt = lastMsg;
+        if (lastMsg) {
+            scenePrompt = lastMsg; // Use last message as scene
+            basePrompt = lastMsg;
+        }
     }
     
     log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
@@ -1007,7 +1011,8 @@ async function generateImage() {
         paletteBtn.classList.add("fa-spinner", "fa-spin");
     }
     
-    let prompt = await generateLLMPrompt(s, basePrompt);
+    // LLM gets clean scene only, not preset tags
+    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
     
     prompt = applyStyle(prompt, s);
     
