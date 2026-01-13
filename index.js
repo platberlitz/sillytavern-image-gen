@@ -20,6 +20,7 @@ const defaultSettings = {
     sampler: "euler_a",
     seed: -1,
     autoGenerate: false,
+    batchCount: 1,
     // Reverse Proxy
     proxyUrl: "",
     proxyKey: "",
@@ -844,6 +845,9 @@ function createUI() {
                     <input id="qig-height" type="number" value="${s.height}" min="256" max="2048" step="64">
                 </div>
                 
+                <label>Batch Count</label>
+                <input id="qig-batch" type="number" value="${s.batchCount}" min="1" max="10">
+                
                 <div id="qig-advanced-settings">
                     <label>Steps</label>
                     <input id="qig-steps" type="number" value="${s.steps}" min="1" max="150">
@@ -939,6 +943,7 @@ function createUI() {
     };
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
+    bind("qig-batch", "batchCount", true);
     bind("qig-steps", "steps", true);
     bind("qig-cfg", "cfgScale", true);
     bind("qig-sampler", "sampler");
@@ -966,7 +971,8 @@ async function generateImage() {
     }
     
     log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
-    showStatus("🎨 Generating image...");
+    const batchCount = s.batchCount || 1;
+    showStatus(`🎨 Generating ${batchCount} image(s)...`);
     
     // Update palette button
     const paletteBtn = document.getElementById("qig-input-btn");
@@ -990,7 +996,6 @@ async function generateImage() {
     
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
-    showStatus("🖼️ Generating image...");
     
     const btn = document.getElementById("qig-generate-btn");
     if (btn) {
@@ -999,18 +1004,23 @@ async function generateImage() {
     }
     
     try {
-        let result;
-        log(`Using provider: ${s.provider}`);
-        switch (s.provider) {
-            case "pollinations": result = await genPollinations(prompt, negative, s); break;
-            case "novelai": result = await genNovelAI(prompt, negative, s); break;
-            case "arliai": result = await genArliAI(prompt, negative, s); break;
-            case "nanogpt": result = await genNanoGPT(prompt, negative, s); break;
-            case "local": result = await genLocal(prompt, negative, s); break;
-            case "proxy": result = await genProxy(prompt, negative, s); break;
+        const results = [];
+        log(`Using provider: ${s.provider}, batch: ${batchCount}`);
+        for (let i = 0; i < batchCount; i++) {
+            showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
+            let result;
+            switch (s.provider) {
+                case "pollinations": result = await genPollinations(prompt, negative, s); break;
+                case "novelai": result = await genNovelAI(prompt, negative, s); break;
+                case "arliai": result = await genArliAI(prompt, negative, s); break;
+                case "nanogpt": result = await genNanoGPT(prompt, negative, s); break;
+                case "local": result = await genLocal(prompt, negative, s); break;
+                case "proxy": result = await genProxy(prompt, negative, s); break;
+            }
+            results.push(result);
         }
-        log("Image generated successfully");
-        displayImage(result);
+        log(`Generated ${results.length} image(s) successfully`);
+        results.forEach(r => displayImage(r));
     } catch (e) {
         log(`Error: ${e.message}`);
         toastr.error("Generation failed: " + e.message);
