@@ -843,6 +843,14 @@ function createUI() {
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
                     <span>×</span>
                     <input id="qig-height" type="number" value="${s.height}" min="256" max="2048" step="64">
+                    <select id="qig-aspect" style="width:70px;margin-left:4px">
+                        <option value="">-</option>
+                        <option value="1:1">1:1</option>
+                        <option value="3:2">3:2</option>
+                        <option value="2:3">2:3</option>
+                        <option value="16:9">16:9</option>
+                        <option value="9:16">9:16</option>
+                    </select>
                 </div>
                 
                 <label>Batch Count</label>
@@ -943,6 +951,18 @@ function createUI() {
     };
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
+    document.getElementById("qig-aspect").onchange = (e) => {
+        const v = e.target.value;
+        if (!v) return;
+        const s = getSettings();
+        const base = Math.min(s.width, s.height) || 512;
+        const [w, h] = v.split(":").map(Number);
+        if (w > h) { s.width = Math.round(base * w / h); s.height = base; }
+        else { s.width = base; s.height = Math.round(base * h / w); }
+        document.getElementById("qig-width").value = s.width;
+        document.getElementById("qig-height").value = s.height;
+        saveSettingsDebounced();
+    };
     bind("qig-batch", "batchCount", true);
     bind("qig-steps", "steps", true);
     bind("qig-cfg", "cfgScale", true);
