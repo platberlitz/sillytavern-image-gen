@@ -30,6 +30,8 @@ const defaultSettings = {
     proxyCfg: 6,
     proxySampler: "Euler a",
     proxySeed: -1,
+    proxyRefImages: [],
+    proxyExtraInstructions: "",
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-4-5-curated",
@@ -399,12 +401,23 @@ async function genProxy(prompt, negative, s) {
         const chatUrl = s.proxyUrl.replace(/\/$/, "") + "/chat/completions";
         log(`Using chat completions: ${chatUrl}`);
         const negPrompt = negative ? `\nAvoid: ${negative}` : "";
+        const extraInstr = s.proxyExtraInstructions ? `\n${s.proxyExtraInstructions}` : "";
+        
+        // Build message content with reference images
+        const content = [];
+        if (s.proxyRefImages?.length) {
+            for (const img of s.proxyRefImages) {
+                content.push({ type: "image_url", image_url: { url: img } });
+            }
+        }
+        content.push({ type: "text", text: `Generate an image: ${prompt}${negPrompt}${extraInstr}` });
+        
         const res = await fetch(chatUrl, {
             method: "POST",
             headers,
             body: JSON.stringify({
                 model: s.proxyModel,
-                messages: [{ role: "user", content: `Generate an image: ${prompt}${negPrompt}` }],
+                messages: [{ role: "user", content }],
                 max_tokens: 4096
             })
         });
@@ -419,8 +432,8 @@ async function genProxy(prompt, negative, s) {
             if (img.url) return img.url;
         }
         
-        const content = data.choices?.[0]?.message?.content || "";
-        const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+        const msgContent = data.choices?.[0]?.message?.content || "";
+        const b64Match = msgContent.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
         if (b64Match) return b64Match[0];
         
         const parts = data.choices?.[0]?.message?.parts;
@@ -450,7 +463,8 @@ async function genProxy(prompt, negative, s) {
             sampler: s.proxySampler || "Euler a",
             seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
             loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
-            facefix: s.proxyFacefix || undefined
+            facefix: s.proxyFacefix || undefined,
+            reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
         })
     });
     if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
@@ -653,6 +667,23 @@ function updateProviderUI() {
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
 }
 
+function renderRefImages() {
+    const container = document.getElementById("qig-proxy-refs");
+    if (!container) return;
+    const s = getSettings();
+    const imgs = s.proxyRefImages || [];
+    container.innerHTML = imgs.map((src, i) => 
+        `<div style="position:relative;"><img src="${src}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+    ).join('');
+}
+
+window.removeRefImage = function(idx) {
+    const s = getSettings();
+    s.proxyRefImages.splice(idx, 1);
+    saveSettingsDebounced();
+    renderRefImages();
+};
+
 function bind(id, key, isNum = false) {
     const el = document.getElementById(id);
     if (!el) return;
@@ -760,6 +791,12 @@ function createUI() {
                         <input id="qig-proxy-facefix" type="checkbox" ${s.proxyFacefix ? "checked" : ""}>
                         <span>Enable Face Fix (PixAI ADetailer)</span>
                     </label>
+                    <label>Extra Instructions</label>
+                    <textarea id="qig-proxy-extra" rows="2" placeholder="Additional instructions for the image model...">${s.proxyExtraInstructions || ""}</textarea>
+                    <label>Reference Images (up to 15)</label>
+                    <div id="qig-proxy-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
+                    <input type="file" id="qig-proxy-ref-input" accept="image/*" multiple style="display:none">
+                    <button id="qig-proxy-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
                 </div>
                 
                 <hr>
@@ -857,6 +894,29 @@ function createUI() {
     bind("qig-proxy-sampler", "proxySampler");
     bind("qig-proxy-seed", "proxySeed", true);
     document.getElementById("qig-proxy-facefix").onchange = (e) => { getSettings().proxyFacefix = e.target.checked; saveSettingsDebounced(); };
+    bind("qig-proxy-extra", "proxyExtraInstructions");
+    
+    // Reference images handling
+    const refInput = document.getElementById("qig-proxy-ref-input");
+    document.getElementById("qig-proxy-ref-btn").onclick = () => refInput.click();
+    refInput.onchange = (e) => {
+        const files = Array.from(e.target.files);
+        const s = getSettings();
+        if (!s.proxyRefImages) s.proxyRefImages = [];
+        const remaining = 15 - s.proxyRefImages.length;
+        files.slice(0, remaining).forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                s.proxyRefImages.push(ev.target.result);
+                saveSettingsDebounced();
+                renderRefImages();
+            };
+            reader.readAsDataURL(file);
+        });
+        refInput.value = "";
+    };
+    renderRefImages();
+    
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
