@@ -54,6 +54,16 @@ let lastPrompt = "";
 let lastNegative = "";
 let promptTemplates = JSON.parse(localStorage.getItem("qig_templates") || "[]");
 let charSettings = JSON.parse(localStorage.getItem("qig_char_settings") || "{}");
+let connectionProfiles = JSON.parse(localStorage.getItem("qig_profiles") || "{}");
+
+const PROVIDER_KEYS = {
+    pollinations: ["pollinationsModel"],
+    novelai: ["naiKey", "naiModel"],
+    arliai: ["arliKey", "arliModel"],
+    nanogpt: ["nanogptKey", "nanogptModel"],
+    local: ["localUrl", "localType"],
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
+};
 
 const PROVIDERS = {
     pollinations: { name: "Pollinations (Free)", needsKey: false },
@@ -668,6 +678,72 @@ function loadCharSettings() {
     return true;
 }
 
+function saveConnectionProfile() {
+    const s = getSettings();
+    const provider = s.provider;
+    const name = prompt("Profile name:");
+    if (!name) return;
+    const keys = PROVIDER_KEYS[provider] || [];
+    const profile = {};
+    keys.forEach(k => profile[k] = s[k]);
+    if (!connectionProfiles[provider]) connectionProfiles[provider] = {};
+    connectionProfiles[provider][name] = profile;
+    localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles));
+    renderProfileSelect();
+    showStatus(`💾 Saved profile: ${name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function loadConnectionProfile(name) {
+    const s = getSettings();
+    const provider = s.provider;
+    const profile = connectionProfiles[provider]?.[name];
+    if (!profile) return;
+    Object.assign(s, profile);
+    saveSettingsDebounced();
+    refreshProviderInputs(provider);
+    showStatus(`📂 Loaded profile: ${name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function deleteConnectionProfile(name) {
+    const provider = getSettings().provider;
+    if (!confirm(`Delete profile "${name}"?`)) return;
+    delete connectionProfiles[provider]?.[name];
+    localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles));
+    renderProfileSelect();
+}
+
+function renderProfileSelect() {
+    const container = document.getElementById("qig-profile-select");
+    if (!container) return;
+    const provider = getSettings().provider;
+    const profiles = Object.keys(connectionProfiles[provider] || {});
+    container.innerHTML = profiles.length 
+        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${p}">${p}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
+        : "<span style='color:#888;font-size:11px;'>No saved profiles</span>";
+    const dropdown = document.getElementById("qig-profile-dropdown");
+    if (dropdown) dropdown.onchange = (e) => { if (e.target.value) loadConnectionProfile(e.target.value); e.target.value = ""; };
+    const delBtn = document.getElementById("qig-profile-del");
+    if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
+}
+
+function refreshProviderInputs(provider) {
+    const s = getSettings();
+    const map = {
+        pollinations: [["qig-pollinations-model", "pollinationsModel"]],
+        novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"]],
+        arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
+        nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
+        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
+    };
+    (map[provider] || []).forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (el) el.type === "checkbox" ? el.checked = s[key] : el.value = s[key] ?? "";
+    });
+}
+
 function updateProviderUI() {
     const s = getSettings();
     document.querySelectorAll(".qig-provider-section").forEach(el => el.style.display = "none");
@@ -741,6 +817,11 @@ function createUI() {
                 
                 <label>Provider</label>
                 <select id="qig-provider">${providerOpts}</select>
+                
+                <div style="display:flex;gap:4px;align-items:center;margin:4px 0;">
+                    <div id="qig-profile-select" style="flex:1;"></div>
+                    <button id="qig-profile-save" class="menu_button" style="padding:2px 6px;">💾 Save Profile</button>
+                </div>
                 
                 <label>Style</label>
                 <select id="qig-style">${styleOpts}</select>
@@ -892,12 +973,15 @@ function createUI() {
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-save-template").onclick = saveTemplate;
+    document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     renderTemplates();
+    renderProfileSelect();
     
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
         saveSettingsDebounced();
         updateProviderUI();
+        renderProfileSelect();
     };
     document.getElementById("qig-style").onchange = (e) => {
         getSettings().style = e.target.value;
