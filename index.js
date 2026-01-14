@@ -121,20 +121,35 @@ const PROVIDER_MODELS = {
 
 const SAMPLERS = ["euler_a", "euler", "dpm++_2m", "dpm++_sde", "ddim", "lms", "heun"];
 
-let logs = [];
+const logs = [];
 function log(msg) {
-    const entry = `[${new Date().toLocaleTimeString()}] ${msg}`;
-    logs.push(entry);
+    logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
     if (logs.length > 100) logs.shift();
     console.log("[QIG]", msg);
 }
 
+const cachedElements = {};
+
+function getOrCacheElement(id) {
+    if (cachedElements[id]) return cachedElements[id];
+    const el = document.getElementById(id);
+    if (el) cachedElements[id] = el;
+    return el;
+}
+
+function clearCache() {
+    for (const key in cachedElements) {
+        delete cachedElements[key];
+    }
+}
+
 function showStatus(msg) {
-    let status = document.getElementById("qig-status");
+    let status = cachedElements["qig-status"];
     if (!status) {
         status = document.createElement("div");
         status.id = "qig-status";
         document.body.appendChild(status);
+        cachedElements["qig-status"] = status;
     }
     if (msg) {
         status.textContent = msg;
@@ -144,7 +159,7 @@ function showStatus(msg) {
     }
 }
 
-function hideStatus() { showStatus(); }
+const hideStatus = () => showStatus();
 
 async function loadSettings() {
     extension_settings[extensionName] = { ...defaultSettings, ...extension_settings[extensionName] };
@@ -171,10 +186,18 @@ function getLastMessage() {
     return msg?.mes || "";
 }
 
+const styleCache = new Map();
 function applyStyle(prompt, s) {
+    const cacheKey = `${s.style}|${prompt}`;
+    if (styleCache.has(cacheKey)) return styleCache.get(cacheKey);
     const style = STYLES[s.style] || STYLES.none;
-    return style.prefix + prompt + style.suffix;
+    const result = style.prefix + prompt + style.suffix;
+    styleCache.set(cacheKey, result);
+    if (styleCache.size > 100) styleCache.delete(styleCache.keys().next().value);
+    return result;
 }
+
+const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
 
 async function generateLLMPrompt(s, basePrompt) {
     if (!s.useLLMPrompt) return basePrompt;
@@ -189,9 +212,7 @@ async function generateLLMPrompt(s, basePrompt) {
         const charDesc = ctx.characterId ? (ctx.characters?.[ctx.characterId]?.description || "") : "";
         const userPersona = ctx.persona || "";
         
-        // Extract skin tone keywords to reinforce
         const skinTones = [];
-        const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
         const charSkin = charDesc.match(skinPattern);
         const userSkin = userPersona.match(skinPattern);
         if (charSkin) skinTones.push(`${charName}: ${charSkin[0]}`);
@@ -203,23 +224,15 @@ async function generateLLMPrompt(s, basePrompt) {
         
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
         
-        let instruction;
-        if (s.llmPromptStyle === "natural") {
-            instruction = `[Output ONLY a brief image prompt describing the scene. No commentary.]${skinEnforce}
-${appearanceContext}Scene: ${basePrompt}
-
-Describe what's happening, who's involved, their poses/expressions, and setting (max 200 chars):`;
-        } else {
-            instruction = `[Output ONLY comma-separated Danbooru tags. No commentary.]${skinEnforce}
-${appearanceContext}Scene: ${basePrompt}
-
-Tags for: characters, action, expression, pose, location (max 200 chars):`;
-        }
+        const isNatural = s.llmPromptStyle === "natural";
+        const instruction = isNatural
+            ? `[Output ONLY a brief image prompt describing the scene. No commentary.]${skinEnforce}\n${appearanceContext}Scene: ${basePrompt}\n\nDescribe what's happening, who's involved, their poses/expressions, and setting (max 200 chars):`
+            : `[Output ONLY comma-separated Danbooru tags. No commentary.]${skinEnforce}\n${appearanceContext}Scene: ${basePrompt}\n\nTags for: characters, action, expression, pose, location (max 200 chars):`;
+        
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
-        // Enforce character limit
         if (cleaned.length > 200) {
             cleaned = cleaned.substring(0, 200).trim();
             const lastSpace = cleaned.lastIndexOf(' ');
@@ -227,7 +240,6 @@ Tags for: characters, action, expression, pose, location (max 200 chars):`;
             log(`LLM prompt truncated to ${cleaned.length} chars`);
         }
         
-        // Force prepend skin tone tags if detected but missing from output
         if (skinTones.length && cleaned) {
             const outputLower = cleaned.toLowerCase();
             const skinTags = [];
@@ -481,62 +493,54 @@ async function genProxy(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-function showLogs() {
-    let popup = document.getElementById("qig-logs-popup");
+function createPopup(id, title, content, onShow) {
+    let popup = document.getElementById(id);
     if (!popup) {
         popup = document.createElement("div");
-        popup.id = "qig-logs-popup";
+        popup.id = id;
         popup.className = "qig-popup";
         popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
         popup.innerHTML = `
             <div class="qig-popup-content" onclick="event.stopPropagation()">
                 <div class="qig-popup-header">
-                    <span>Generation Logs</span>
+                    <span>${title}</span>
                     <button class="qig-close-btn">✕</button>
                 </div>
-                <pre id="qig-logs-content"></pre>
+                ${content}
             </div>`;
         document.body.appendChild(popup);
         popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
         popup.onclick = () => popup.style.display = "none";
     }
-    document.getElementById("qig-logs-content").textContent = logs.join("\n") || "No logs yet";
+    if (onShow) onShow(popup);
     popup.style.display = "flex";
+    return popup;
+}
+
+function showLogs() {
+    createPopup("qig-logs-popup", "Generation Logs", `<pre id="qig-logs-content"></pre>`, (popup) => {
+        document.getElementById("qig-logs-content").textContent = logs.join("\n") || "No logs yet";
+    });
 }
 
 function displayImage(url) {
-    // Add to session gallery
     sessionGallery.unshift({ url, date: Date.now() });
     if (sessionGallery.length > 20) sessionGallery.pop();
     
-    let popup = document.getElementById("qig-popup");
-    if (!popup) {
-        popup = document.createElement("div");
-        popup.id = "qig-popup";
-        popup.className = "qig-popup";
-        popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
-        popup.innerHTML = `
-            <div class="qig-popup-content" onclick="event.stopPropagation()">
-                <div class="qig-popup-header">
-                    <span>Generated Image</span>
-                    <button class="qig-close-btn">✕</button>
-                </div>
-                <img id="qig-result-img" src="">
-                <div class="qig-popup-actions">
-                    <button id="qig-regenerate-btn">🔄 Regenerate</button>
-                    <button id="qig-gallery-btn">🖼️ Gallery</button>
-                    <button id="qig-download-btn">💾 Download</button>
-                    <button id="qig-close-popup">Close</button>
-                </div>
-            </div>`;
-        document.body.appendChild(popup);
-        popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
-        document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
-        popup.onclick = () => popup.style.display = "none";
-        document.getElementById("qig-download-btn").onclick = (e) => {
+    const popup = createPopup("qig-popup", "Generated Image", `
+        <img id="qig-result-img" src="">
+        <div class="qig-popup-actions">
+            <button id="qig-regenerate-btn">🔄 Regenerate</button>
+            <button id="qig-gallery-btn">🖼️ Gallery</button>
+            <button id="qig-download-btn">💾 Download</button>
+            <button id="qig-close-popup">Close</button>
+        </div>`, (popup) => {
+        document.getElementById("qig-result-img").src = url;
+        const downloadBtn = document.getElementById("qig-download-btn");
+        downloadBtn.onclick = (e) => {
             e.stopPropagation();
             const a = document.createElement("a");
-            a.href = document.getElementById("qig-result-img").src;
+            a.href = url;
             a.download = `generated-${Date.now()}.png`;
             a.click();
         };
@@ -549,35 +553,41 @@ function displayImage(url) {
             e.stopPropagation();
             showGallery();
         };
-    }
-    document.getElementById("qig-result-img").src = url;
-    popup.style.display = "flex";
+        document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
+    });
 }
 
 function showGallery() {
-    let gallery = document.getElementById("qig-gallery-popup");
-    if (!gallery) {
-        gallery = document.createElement("div");
-        gallery.id = "qig-gallery-popup";
-        gallery.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
-        gallery.innerHTML = `
-            <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
-                    <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
-                </div>
-                <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
-            </div>`;
-        document.body.appendChild(gallery);
+    const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
+        <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
+                <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+            </div>
+            <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
+        </div>`, (gallery) => {
         document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
-        gallery.onclick = () => gallery.style.display = "none";
-    }
-    
-    const grid = document.getElementById("qig-gallery-grid");
-    grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => 
-        `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
-    ).join('') : '<p style="color:#888;">No images yet this session</p>';
-    gallery.style.display = "flex";
+        const grid = document.getElementById("qig-gallery-grid");
+        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => 
+            `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
+        ).join('') : '<p style="color:#888;">No images yet this session</p>';
+    });
+}
+
+const providerGenerators = {
+    pollinations: genPollinations,
+    novelai: genNovelAI,
+    arliai: genArliAI,
+    nanogpt: genNanoGPT,
+    local: genLocal,
+    comfyui: genLocal,
+    proxy: genProxy
+};
+
+async function generateForProvider(prompt, negative, settings) {
+    const generator = providerGenerators[settings.provider];
+    if (!generator) throw new Error(`Unknown provider: ${settings.provider}`);
+    return await generator(prompt, negative, settings);
 }
 
 async function regenerateImage() {
@@ -586,20 +596,11 @@ async function regenerateImage() {
         return;
     }
     const s = getSettings();
-    s.seed = -1; // New random seed
+    s.seed = -1;
     showStatus("🔄 Regenerating...");
     log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}...`);
     try {
-        let result;
-        switch (s.provider) {
-            case "pollinations": result = await genPollinations(lastPrompt, lastNegative, s); break;
-            case "novelai": result = await genNovelAI(lastPrompt, lastNegative, s); break;
-            case "arliai": result = await genArliAI(lastPrompt, lastNegative, s); break;
-            case "nanogpt": result = await genNanoGPT(lastPrompt, lastNegative, s); break;
-            case "local": result = await genLocal(lastPrompt, lastNegative, s); break;
-            case "comfyui": result = await genComfyUI(lastPrompt, lastNegative, s); break;
-            case "proxy": result = await genProxy(lastPrompt, lastNegative, s); break;
-        }
+        const result = await generateForProvider(lastPrompt, lastNegative, s);
         hideStatus();
         if (result) displayImage(result);
     } catch (e) {
@@ -620,7 +621,7 @@ function saveTemplate() {
 }
 
 function renderTemplates() {
-    const container = document.getElementById("qig-templates");
+    const container = getOrCacheElement("qig-templates");
     if (!container) return;
     container.innerHTML = promptTemplates.slice(0, 5).map((t, i) => 
         `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="document.getElementById('qig-prompt').value='${t.prompt.replace(/'/g, "\\'")}'">${t.name}</button>`
@@ -681,10 +682,9 @@ function updateProviderUI() {
 }
 
 function renderRefImages() {
-    const container = document.getElementById("qig-proxy-refs");
+    const container = getOrCacheElement("qig-proxy-refs");
     if (!container) return;
-    const s = getSettings();
-    const imgs = s.proxyRefImages || [];
+    const imgs = getSettings().proxyRefImages || [];
     container.innerHTML = imgs.map((src, i) => 
         `<div style="position:relative;"><img src="${src}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
     ).join('');
@@ -697,13 +697,18 @@ window.removeRefImage = function(idx) {
     renderRefImages();
 };
 
-function bind(id, key, isNum = false) {
+function bind(id, key, isNum = false, isCheckbox = false) {
     const el = document.getElementById(id);
     if (!el) return;
     el.onchange = (e) => {
-        getSettings()[key] = isNum ? parseInt(e.target.value) : e.target.value;
+        const value = isCheckbox ? e.target.checked : (isNum ? parseInt(e.target.value) : e.target.value);
+        getSettings()[key] = value;
         saveSettingsDebounced();
     };
+}
+
+function bindCheckbox(id, key) {
+    return bind(id, key, false, true);
 }
 
 function modelSelect(provider, settingKey, currentVal) {
@@ -713,15 +718,17 @@ function modelSelect(provider, settingKey, currentVal) {
     return `<select id="qig-${settingKey}">${opts}</select>`;
 }
 
+function buildOptions(items, selectedValue, labelFn) {
+    return items.map(([k, v]) => 
+        `<option value="${k}" ${selectedValue === k ? "selected" : ""}>${labelFn ? labelFn(v) : v}</option>`
+    ).join("");
+}
+
 function createUI() {
     const s = getSettings();
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
-    const providerOpts = Object.entries(PROVIDERS).map(([k, v]) => 
-        `<option value="${k}" ${s.provider === k ? "selected" : ""}>${v.name}</option>`
-    ).join("");
-    const styleOpts = Object.entries(STYLES).map(([k, v]) =>
-        `<option value="${k}" ${s.style === k ? "selected" : ""}>${v.name}</option>`
-    ).join("");
+    const providerOpts = buildOptions(Object.entries(PROVIDERS), s.provider, v => v.name);
+    const styleOpts = buildOptions(Object.entries(STYLES), s.style, v => v.name);
     
     const html = `
     <div id="qig-settings" class="qig-settings">
@@ -917,26 +924,32 @@ function createUI() {
     bind("qig-proxy-cfg", "proxyCfg", true);
     bind("qig-proxy-sampler", "proxySampler");
     bind("qig-proxy-seed", "proxySeed", true);
-    document.getElementById("qig-proxy-facefix").onchange = (e) => { getSettings().proxyFacefix = e.target.checked; saveSettingsDebounced(); };
+    bindCheckbox("qig-proxy-facefix", "proxyFacefix");
     bind("qig-proxy-extra", "proxyExtraInstructions");
     
     // Reference images handling
-    const refInput = document.getElementById("qig-proxy-ref-input");
-    document.getElementById("qig-proxy-ref-btn").onclick = () => refInput.click();
-    refInput.onchange = (e) => {
+    const refInput = getOrCacheElement("qig-proxy-ref-input");
+    const refBtn = getOrCacheElement("qig-proxy-ref-btn");
+    if (refBtn) refBtn.onclick = () => refInput.click();
+    refInput.onchange = async (e) => {
         const files = Array.from(e.target.files);
         const s = getSettings();
         if (!s.proxyRefImages) s.proxyRefImages = [];
         const remaining = 15 - s.proxyRefImages.length;
-        files.slice(0, remaining).forEach(file => {
-            const reader = new FileReader();
-            reader.onload = (ev) => {
-                s.proxyRefImages.push(ev.target.result);
-                saveSettingsDebounced();
-                renderRefImages();
-            };
-            reader.readAsDataURL(file);
-        });
+        const filesToProcess = files.slice(0, remaining);
+        
+        const readPromises = filesToProcess.map(file => 
+            new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (ev) => resolve(ev.target.result);
+                reader.readAsDataURL(file);
+            })
+        );
+        
+        const results = await Promise.all(readPromises);
+        s.proxyRefImages.push(...results);
+        saveSettingsDebounced();
+        renderRefImages();
         refInput.value = "";
     };
     renderRefImages();
@@ -944,23 +957,20 @@ function createUI() {
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
-    document.getElementById("qig-append-quality").onchange = (e) => { getSettings().appendQuality = e.target.checked; saveSettingsDebounced(); };
-    document.getElementById("qig-use-last").onchange = (e) => { 
-        getSettings().useLastMessage = e.target.checked; 
+    bindCheckbox("qig-append-quality", "appendQuality");
+    document.getElementById("qig-use-last").onchange = (e) => {
+        getSettings().useLastMessage = e.target.checked;
         document.getElementById("qig-msg-index-wrap").style.display = e.target.checked ? "block" : "none";
-        saveSettingsDebounced(); 
-    };
-    bind("qig-msg-index", "messageIndex", true);
-    document.getElementById("qig-use-llm").onchange = (e) => { 
-        getSettings().useLLMPrompt = e.target.checked;
-        document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
-        saveSettingsDebounced(); 
-    };
-    bind("qig-llm-style", "llmPromptStyle");
-    document.getElementById("qig-auto-generate").onchange = (e) => {
-        getSettings().autoGenerate = e.target.checked;
         saveSettingsDebounced();
     };
+    bind("qig-msg-index", "messageIndex", true);
+    document.getElementById("qig-use-llm").onchange = (e) => {
+        getSettings().useLLMPrompt = e.target.checked;
+        document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bind("qig-llm-style", "llmPromptStyle");
+    bindCheckbox("qig-auto-generate", "autoGenerate");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     document.getElementById("qig-aspect").onchange = (e) => {
@@ -1004,12 +1014,12 @@ function addInputButton() {
 async function generateImage() {
     const s = getSettings();
     let basePrompt = resolvePrompt(s.prompt);
-    let scenePrompt = ""; // Clean scene for LLM (no presets)
+    let scenePrompt = "";
     
     if (s.useLastMessage) {
         const lastMsg = getLastMessage();
         if (lastMsg) {
-            scenePrompt = lastMsg; // Use last message as scene
+            scenePrompt = lastMsg;
             basePrompt = lastMsg;
         }
     }
@@ -1018,16 +1028,13 @@ async function generateImage() {
     const batchCount = s.batchCount || 1;
     showStatus(`🎨 Generating ${batchCount} image(s)...`);
     
-    // Update palette button
-    const paletteBtn = document.getElementById("qig-input-btn");
+    const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
         paletteBtn.classList.remove("fa-palette");
         paletteBtn.classList.add("fa-spinner", "fa-spin");
     }
     
-    // LLM gets clean scene only, not preset tags
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
-    
     prompt = applyStyle(prompt, s);
     
     if (s.appendQuality && s.qualityTags) {
@@ -1035,14 +1042,13 @@ async function generateImage() {
     }
     const negative = resolvePrompt(s.negativePrompt);
     
-    // Save for regenerate
     lastPrompt = prompt;
     lastNegative = negative;
     
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
     
-    const btn = document.getElementById("qig-generate-btn");
+    const btn = getOrCacheElement("qig-generate-btn");
     if (btn) {
         btn.disabled = true;
         btn.textContent = "Generating...";
@@ -1053,15 +1059,7 @@ async function generateImage() {
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
         for (let i = 0; i < batchCount; i++) {
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
-            let result;
-            switch (s.provider) {
-                case "pollinations": result = await genPollinations(prompt, negative, s); break;
-                case "novelai": result = await genNovelAI(prompt, negative, s); break;
-                case "arliai": result = await genArliAI(prompt, negative, s); break;
-                case "nanogpt": result = await genNanoGPT(prompt, negative, s); break;
-                case "local": result = await genLocal(prompt, negative, s); break;
-                case "proxy": result = await genProxy(prompt, negative, s); break;
-            }
+            const result = await generateForProvider(prompt, negative, s);
             results.push(result);
         }
         log(`Generated ${results.length} image(s) successfully`);
