@@ -331,7 +331,7 @@ async function genArliAI(prompt, negative, s) {
 }
 
 async function genNanoGPT(prompt, negative, s) {
-    const res = await fetch("https://nano-gpt.com/api/v1/images/generations", {
+    const res = await fetch("https://nano-gpt.com/v1/images/generations", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.nanogptKey}`,
@@ -341,8 +341,7 @@ async function genNanoGPT(prompt, negative, s) {
             model: s.nanogptModel,
             prompt: prompt,
             negative_prompt: negative,
-            width: s.width,
-            height: s.height,
+            size: `${s.width}x${s.height}`,
             n: 1
         })
     });
