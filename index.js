@@ -144,6 +144,8 @@ function showStatus(msg) {
     }
 }
 
+function hideStatus() { showStatus(); }
+
 async function loadSettings() {
     extension_settings[extensionName] = { ...defaultSettings, ...extension_settings[extensionName] };
 }
@@ -203,32 +205,25 @@ async function generateLLMPrompt(s, basePrompt) {
         
         let instruction;
         if (s.llmPromptStyle === "natural") {
-            instruction = `[Task: Convert to image generation prompt. Output ONLY a short descriptive paragraph, no commentary. Include style, lighting, and mood details. KEEP UNDER 250 CHARACTERS.]${skinEnforce}
+            instruction = `[Output ONLY a brief image prompt describing the scene. No commentary.]${skinEnforce}
+${appearanceContext}Scene: ${basePrompt}
 
-${appearanceContext}
-Scene: ${basePrompt}
-
-Create a detailed but concise image prompt with style, lighting, and atmospheric details (max 250 chars):`;
+Describe what's happening, who's involved, their poses/expressions, and setting (max 200 chars):`;
         } else {
-            instruction = `[Task: Convert to Danbooru-style image tags. Output ONLY comma-separated tags, nothing else. Include character appearance, style tags, lighting tags, and artist references. KEEP UNDER 250 CHARACTERS.]${skinEnforce}
+            instruction = `[Output ONLY comma-separated Danbooru tags. No commentary.]${skinEnforce}
+${appearanceContext}Scene: ${basePrompt}
 
-${appearanceContext}
-Scene: ${basePrompt}
-
-REQUIRED: Include style tags (anime, realistic, digital art, etc.), lighting tags (dramatic lighting, soft lighting, volumetric light, etc.), and artist tags (by artist_name, art style references). MAX 250 CHARACTERS.
-
-Danbooru tags:`;
+Tags for: characters, action, expression, pose, location (max 200 chars):`;
         }
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
         // Enforce character limit
-        if (cleaned.length > 250) {
-            cleaned = cleaned.substring(0, 250).trim();
-            // Try to end at a word boundary
+        if (cleaned.length > 200) {
+            cleaned = cleaned.substring(0, 200).trim();
             const lastSpace = cleaned.lastIndexOf(' ');
-            if (lastSpace > 200) cleaned = cleaned.substring(0, lastSpace);
+            if (lastSpace > 150) cleaned = cleaned.substring(0, lastSpace);
             log(`LLM prompt truncated to ${cleaned.length} chars`);
         }
         
