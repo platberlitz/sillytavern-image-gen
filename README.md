@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 6 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Local, Proxy), 40+ styles, LLM prompt generation, aspect ratios, batch generation. Images in popup, never added to chat.
+One-click image generation for SillyTavern. 6 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Local, Proxy), 40+ styles, LLM prompt generation, connection profiles, batch generation. Images in popup, never added to chat.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -29,12 +29,15 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 
+### Profiles & Settings
+- 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
+- 💾 **Prompt Templates** - Save/load favorite prompts
+- 👤 **Character Settings** - Save settings per character
+
 ### Gallery & Session
 - 🖼️ **Session Gallery** - View all images generated this session
 - 🔄 **Quick Regenerate** - Same prompt, new seed
 - ⚡ **Auto-generate** - Generate after each AI response
-- 💾 **Prompt Templates** - Save/load favorite prompts
-- 👤 **Character Settings** - Save settings per character
 
 ### Reverse Proxy Features
 - 🖼️ **Reference Images** - Upload up to 15 reference images
@@ -72,6 +75,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | Setting | Description |
 |---------|-------------|
 | **Provider** | Image generation backend |
+| **Connection Profile** | Save/load provider settings |
 | **Style** | Visual style preset (40+ options) |
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
 | **Negative Prompt** | What to avoid in generation |
@@ -91,9 +95,24 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 🎨 Generate | Generate image(s) |
 | 📋 Logs | View generation logs |
 | 💾 Save for Char | Save settings for current character |
+| 💾 Save Profile | Save current provider settings |
 | 💾 Save Template | Save current prompt as template |
 | 🔄 Regenerate | Same prompt, new seed |
 | 🖼️ Gallery | View session images |
+
+---
+
+## Connection Profiles
+
+Save and load provider configurations per-provider:
+- **Pollinations**: model
+- **NovelAI**: API key, model
+- **ArliAI**: API key, model
+- **NanoGPT**: API key, model
+- **Local**: URL, type (A1111/ComfyUI)
+- **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions
+
+Profiles are stored in localStorage and persist across sessions.
 
 ---
 
