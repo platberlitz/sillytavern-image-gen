@@ -266,7 +266,7 @@ async function genPollinations(prompt, negative, s) {
 }
 
 async function genNovelAI(prompt, negative, s) {
-    const res = await fetch("https://api.novelai.net/ai/generate-image", {
+    const res = await fetch("https://image.novelai.net/ai/generate-image", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.naiKey}`,
@@ -304,29 +304,27 @@ function findPngStart(bytes) {
 }
 
 async function genArliAI(prompt, negative, s) {
-    const res = await fetch("https://api.arliai.com/v1/images/generations", {
+    const res = await fetch("https://api.arliai.com/v1/txt2img", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.arliKey}`,
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            model: s.arliModel,
+            sd_model_checkpoint: s.arliModel,
             prompt: prompt,
             negative_prompt: negative,
             width: s.width,
             height: s.height,
             steps: s.steps,
             cfg_scale: s.cfgScale,
-            sampler: s.sampler,
-            seed: s.seed === -1 ? -1 : s.seed,
-            n: 1
+            sampler_name: s.sampler,
+            seed: s.seed === -1 ? -1 : s.seed
         })
     });
     if (!res.ok) throw new Error(`ArliAI error: ${res.status}`);
     const data = await res.json();
-    if (data.data?.[0]?.url) return data.data[0].url;
-    if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+    if (data.images?.[0]) return `data:image/png;base64,${data.images[0]}`;
     throw new Error("No image in response");
 }
 
