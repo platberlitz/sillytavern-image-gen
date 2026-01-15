@@ -314,33 +314,40 @@ async function genPollinations(prompt, negative, s) {
 
 async function genNovelAI(prompt, negative, s) {
     const isV4 = s.naiModel.includes("-4");
-    const payload = {
-        input: prompt,
-        model: s.naiModel,
-        action: "generate",
-        parameters: {
-            width: s.width,
-            height: s.height,
-            steps: s.steps,
-            scale: s.cfgScale,
-            sampler: s.sampler === "euler_a" ? "k_euler_ancestral" : s.sampler === "euler" ? "k_euler" : s.sampler === "dpm++_2m" ? "k_dpmpp_2m" : s.sampler === "dpm++_sde" ? "k_dpmpp_sde" : s.sampler === "ddim" ? "ddim" : "k_euler_ancestral",
-            seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed,
-            negative_prompt: negative,
-            n_samples: 1,
-            ucPreset: 0,
-            qualityToggle: true,
-            params_version: 3,
-            noise_schedule: "native",
-            legacy: false
-        }
+    const sampler = s.sampler === "euler_a" ? "k_euler_ancestral" : s.sampler === "euler" ? "k_euler" : s.sampler === "dpm++_2m" ? "k_dpmpp_2m" : s.sampler === "dpm++_sde" ? "k_dpmpp_sde" : s.sampler === "ddim" ? (isV4 ? "ddim_v3" : "ddim") : "k_euler_ancestral";
+    const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+    
+    const params = {
+        width: s.width,
+        height: s.height,
+        steps: s.steps,
+        scale: s.cfgScale,
+        sampler: sampler,
+        seed: seed,
+        n_samples: 1,
+        ucPreset: 0,
+        qualityToggle: false,
+        negative_prompt: negative,
+        params_version: 3,
+        legacy: false,
+        controlnet_strength: 1,
+        dynamic_thresholding: false,
+        cfg_rescale: 0,
+        noise_schedule: "native"
     };
+    
     if (isV4) {
-        payload.parameters.v4_prompt = { caption: { base_caption: prompt, char_captions: [] }, use_coords: false, use_order: true };
-        payload.parameters.v4_negative_prompt = { caption: { base_caption: negative, char_captions: [] }, legacy_uc: false };
+        params.v4_prompt = { caption: { base_caption: prompt, char_captions: [] }, use_coords: false, use_order: true };
+        params.v4_negative_prompt = { caption: { base_caption: negative, char_captions: [] }, legacy_uc: false };
+        params.characterPrompts = [];
+        params.skip_cfg_above_sigma = null;
     }
+    
+    const payload = { input: prompt, model: s.naiModel, action: "generate", parameters: params };
+    
     const res = await fetch("https://image.novelai.net/ai/generate-image", {
         method: "POST",
-        headers: { "Authorization": `Bearer ${s.naiKey}`, "Content-Type": "application/json" },
+        headers: { "Authorization": `Bearer ${s.naiKey}`, "Content-Type": "application/json", "Accept": "*/*" },
         body: JSON.stringify(payload)
     });
     if (!res.ok) {
