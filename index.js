@@ -222,6 +222,12 @@ async function generateLLMPrompt(s, basePrompt) {
         const charDesc = ctx.characterId ? (ctx.characters?.[ctx.characterId]?.description || "") : "";
         const userPersona = ctx.persona || "";
         
+        // Extract franchise/series info from character card
+        const charCard = ctx.characterId ? ctx.characters?.[ctx.characterId] : null;
+        const creatorNotes = charCard?.creator_notes || charCard?.creatorcomment || "";
+        const scenario = charCard?.scenario || "";
+        const tags = charCard?.tags?.join(", ") || "";
+        
         const skinTones = [];
         const charSkin = charDesc.match(skinPattern);
         const userSkin = userPersona.match(skinPattern);
@@ -229,24 +235,55 @@ async function generateLLMPrompt(s, basePrompt) {
         if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
         
         let appearanceContext = "";
-        if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 500)}\\n`;
-        if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 500)}\\n`;
+        if (charDesc) appearanceContext += `${charName}'s appearance: ${charDesc.substring(0, 1500)}\n`;
+        if (userPersona) appearanceContext += `${userName}'s appearance: ${userPersona.substring(0, 800)}\n`;
+        if (tags) appearanceContext += `Source/Tags: ${tags}\n`;
+        if (scenario) appearanceContext += `Setting: ${scenario.substring(0, 400)}\n`;
         
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
         
         const isNatural = s.llmPromptStyle === "natural";
         const instruction = isNatural
-            ? `[Output ONLY a brief image prompt describing the scene. No commentary.]${skinEnforce}\n${appearanceContext}Scene: ${basePrompt}\n\nDescribe what's happening, who's involved, their poses/expressions, and setting (max 200 chars):`
-            : `[Output ONLY comma-separated Danbooru tags. No commentary.]${skinEnforce}\n${appearanceContext}Scene: ${basePrompt}\n\nTags for: characters, action, expression, pose, location (max 200 chars):`;
+            ? `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
+
+CHARACTER REFERENCE:
+${appearanceContext}
+CURRENT SCENE: ${basePrompt}
+
+Write a detailed image prompt (up to 500 characters) describing:
+- The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
+- If from known media/franchise, include the series name and character's canonical appearance
+- Their poses, expressions, and body language
+- The setting/background
+- Lighting and atmosphere
+
+Prompt:`
+            : `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
+
+CHARACTER REFERENCE:
+${appearanceContext}
+CURRENT SCENE: ${basePrompt}
+
+Generate detailed Danbooru/Booru-style tags (up to 500 characters) including:
+- Character name + series name if from known media (e.g., "hatsune_miku, vocaloid")
+- Physical traits: hair color/style, eye color, body type, skin tone
+- Clothing and accessories in detail
+- Pose, expression, action
+- Setting/background tags
+- Quality tags
+
+Tags:`;
         
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
-        if (cleaned.length > 200) {
-            cleaned = cleaned.substring(0, 200).trim();
+        if (cleaned.length > 500) {
+            cleaned = cleaned.substring(0, 500).trim();
+            const lastComma = cleaned.lastIndexOf(',');
             const lastSpace = cleaned.lastIndexOf(' ');
-            if (lastSpace > 150) cleaned = cleaned.substring(0, lastSpace);
+            const cutPoint = Math.max(lastComma, lastSpace);
+            if (cutPoint > 400) cleaned = cleaned.substring(0, cutPoint);
             log(`LLM prompt truncated to ${cleaned.length} chars`);
         }
         
