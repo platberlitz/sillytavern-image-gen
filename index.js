@@ -368,12 +368,16 @@ async function genNovelAI(prompt, negative, s) {
         const errText = await res.text().catch(() => "");
         throw new Error(`NovelAI error: ${res.status} ${errText}`);
     }
-    const zip = await res.blob();
-    const arrayBuffer = await zip.arrayBuffer();
+    const arrayBuffer = await res.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
-    const dataStart = findPngStart(bytes);
-    if (dataStart < 0) throw new Error("No PNG found in response");
-    const pngData = bytes.slice(dataStart);
+    
+    // V4+ returns msgpack events, V3 returns zip - both contain PNG data we can extract
+    const pngStart = findPngStart(bytes);
+    if (pngStart < 0) throw new Error("No PNG found in response");
+    
+    // Find PNG end (IEND chunk + CRC)
+    const pngEnd = findPngEnd(bytes, pngStart);
+    const pngData = bytes.slice(pngStart, pngEnd);
     return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
 }
 
@@ -382,6 +386,16 @@ function findPngStart(bytes) {
         if (bytes[i] === 0x89 && bytes[i+1] === 0x50 && bytes[i+2] === 0x4E && bytes[i+3] === 0x47) return i;
     }
     return -1;
+}
+
+function findPngEnd(bytes, start) {
+    // Look for IEND chunk (49 45 4E 44) followed by CRC
+    for (let i = start; i < bytes.length - 8; i++) {
+        if (bytes[i] === 0x49 && bytes[i+1] === 0x45 && bytes[i+2] === 0x4E && bytes[i+3] === 0x44) {
+            return i + 8; // IEND + 4 byte CRC
+        }
+    }
+    return bytes.length;
 }
 
 async function genArliAI(prompt, negative, s) {
