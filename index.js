@@ -313,28 +313,40 @@ async function genPollinations(prompt, negative, s) {
 }
 
 async function genNovelAI(prompt, negative, s) {
+    const isV4 = s.naiModel.includes("-4");
+    const payload = {
+        input: prompt,
+        model: s.naiModel,
+        action: "generate",
+        parameters: {
+            width: s.width,
+            height: s.height,
+            steps: s.steps,
+            scale: s.cfgScale,
+            sampler: s.sampler === "euler_a" ? "k_euler_ancestral" : s.sampler === "euler" ? "k_euler" : s.sampler === "dpm++_2m" ? "k_dpmpp_2m" : s.sampler === "dpm++_sde" ? "k_dpmpp_sde" : s.sampler === "ddim" ? "ddim" : "k_euler_ancestral",
+            seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed,
+            negative_prompt: negative,
+            n_samples: 1,
+            ucPreset: 0,
+            qualityToggle: true,
+            params_version: 3,
+            noise_schedule: "native",
+            legacy: false
+        }
+    };
+    if (isV4) {
+        payload.parameters.v4_prompt = { caption: { base_caption: prompt, char_captions: [] }, use_coords: false, use_order: true };
+        payload.parameters.v4_negative_prompt = { caption: { base_caption: negative, char_captions: [] }, legacy_uc: false };
+    }
     const res = await fetch("https://image.novelai.net/ai/generate-image", {
         method: "POST",
-        headers: {
-            "Authorization": `Bearer ${s.naiKey}`,
-            "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-            input: prompt,
-            model: s.naiModel,
-            parameters: {
-                width: s.width,
-                height: s.height,
-                steps: s.steps,
-                scale: s.cfgScale,
-                sampler: s.sampler,
-                seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed,
-                negative_prompt: negative,
-                n_samples: 1
-            }
-        })
+        headers: { "Authorization": `Bearer ${s.naiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
     });
-    if (!res.ok) throw new Error(`NovelAI error: ${res.status}`);
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`NovelAI error: ${res.status} ${errText}`);
+    }
     const zip = await res.blob();
     const arrayBuffer = await zip.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
