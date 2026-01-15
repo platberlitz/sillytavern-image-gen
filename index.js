@@ -444,7 +444,15 @@ async function genProxy(prompt, negative, s) {
             body: JSON.stringify({
                 model: s.proxyModel,
                 messages: [{ role: "user", content }],
-                max_tokens: 4096
+                max_tokens: 4096,
+                width: s.width,
+                height: s.height,
+                steps: s.proxySteps || 25,
+                cfg_scale: s.proxyCfg || 6,
+                sampler: s.proxySampler || "Euler a",
+                negative_prompt: negative,
+                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
+                facefix: s.proxyFacefix || undefined
             })
         });
         if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
