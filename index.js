@@ -74,6 +74,20 @@ const PROVIDERS = {
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
 
+const NAI_RESOLUTIONS = [
+    { label: "Small Portrait (512×768)", w: 512, h: 768 },
+    { label: "Small Landscape (768×512)", w: 768, h: 512 },
+    { label: "Small Square (640×640)", w: 640, h: 640 },
+    { label: "Normal Portrait (832×1216)", w: 832, h: 1216 },
+    { label: "Normal Landscape (1216×832)", w: 1216, h: 832 },
+    { label: "Normal Square (1024×1024)", w: 1024, h: 1024 },
+    { label: "Large Portrait (1024×1536)", w: 1024, h: 1536 },
+    { label: "Large Landscape (1536×1024)", w: 1536, h: 1024 },
+    { label: "Large Square (1472×1472)", w: 1472, h: 1472 },
+    { label: "Wallpaper Portrait (1088×1920)", w: 1088, h: 1920 },
+    { label: "Wallpaper Landscape (1920×1088)", w: 1920, h: 1088 }
+];
+
 const STYLES = {
     none: { name: "None", prefix: "", suffix: "" },
     anime: { name: "Anime", prefix: "anime style, anime artwork, 2D illustration, anime key visual, ", suffix: ", sharp lineart, anime coloring, vibrant colors" },
@@ -358,6 +372,7 @@ async function genNovelAI(prompt, negative, s) {
     const arrayBuffer = await zip.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     const dataStart = findPngStart(bytes);
+    if (dataStart < 0) throw new Error("No PNG found in response");
     const pngData = bytes.slice(dataStart);
     return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
 }
@@ -366,7 +381,7 @@ function findPngStart(bytes) {
     for (let i = 0; i < bytes.length - 8; i++) {
         if (bytes[i] === 0x89 && bytes[i+1] === 0x50 && bytes[i+2] === 0x4E && bytes[i+3] === 0x47) return i;
     }
-    return 0;
+    return -1;
 }
 
 async function genArliAI(prompt, negative, s) {
@@ -606,7 +621,9 @@ function displayImage(url) {
             <button id="qig-download-btn">💾 Download</button>
             <button id="qig-close-popup">Close</button>
         </div>`, (popup) => {
-        document.getElementById("qig-result-img").src = url;
+        const img = document.getElementById("qig-result-img");
+        img.src = "";
+        img.src = url;
         const downloadBtn = document.getElementById("qig-download-btn");
         downloadBtn.onclick = (e) => {
             e.stopPropagation();
@@ -816,6 +833,10 @@ function updateProviderUI() {
     
     const showAdvanced = ["novelai", "arliai", "nanogpt", "local"].includes(s.provider);
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
+    
+    const isNai = s.provider === "novelai";
+    document.getElementById("qig-size-custom").style.display = isNai ? "none" : "flex";
+    document.getElementById("qig-nai-resolution").style.display = isNai ? "block" : "none";
 }
 
 function renderRefImages() {
@@ -1000,7 +1021,7 @@ function createUI() {
                 </label>
                 
                 <label>Size</label>
-                <div class="qig-row">
+                <div id="qig-size-custom" class="qig-row">
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
                     <span>×</span>
                     <input id="qig-height" type="number" value="${s.height}" min="256" max="2048" step="64">
@@ -1013,6 +1034,9 @@ function createUI() {
                         <option value="9:16">9:16</option>
                     </select>
                 </div>
+                <select id="qig-nai-resolution" style="display:none;width:100%">
+                    ${NAI_RESOLUTIONS.map(r => `<option value="${r.w}x${r.h}" ${s.width === r.w && s.height === r.h ? "selected" : ""}>${r.label}</option>`).join("")}
+                </select>
                 
                 <label>Batch Count</label>
                 <input id="qig-batch" type="number" value="${s.batchCount}" min="1" max="10">
@@ -1128,6 +1152,13 @@ function createUI() {
         else { s.width = base; s.height = Math.round(base * h / w); }
         document.getElementById("qig-width").value = s.width;
         document.getElementById("qig-height").value = s.height;
+        saveSettingsDebounced();
+    };
+    document.getElementById("qig-nai-resolution").onchange = (e) => {
+        const [w, h] = e.target.value.split("x").map(Number);
+        const s = getSettings();
+        s.width = w;
+        s.height = h;
         saveSettingsDebounced();
     };
     bind("qig-batch", "batchCount", true);
