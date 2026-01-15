@@ -371,12 +371,18 @@ async function genNovelAI(prompt, negative, s) {
     const arrayBuffer = await res.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
     
+    // Debug: log first 100 bytes as hex
+    console.log("NAI response length:", bytes.length);
+    console.log("NAI first 100 bytes:", Array.from(bytes.slice(0, 100)).map(b => b.toString(16).padStart(2, '0')).join(' '));
+    
     // V4+ returns msgpack events, V3 returns zip - both contain PNG data we can extract
     const pngStart = findPngStart(bytes);
+    console.log("PNG start found at:", pngStart);
     if (pngStart < 0) throw new Error("No PNG found in response");
     
     // Find PNG end (IEND chunk + CRC)
     const pngEnd = findPngEnd(bytes, pngStart);
+    console.log("PNG end at:", pngEnd);
     const pngData = bytes.slice(pngStart, pngEnd);
     return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
 }
