@@ -1277,7 +1277,7 @@ async function generateImage() {
     }
 }
 
-jQuery(async () => {
+jQuery(async function() {
     await loadSettings();
     createUI();
     addInputButton();
