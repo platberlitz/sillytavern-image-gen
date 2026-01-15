@@ -1,7 +1,5 @@
-import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, generateQuietPrompt } from "../../../../script.js";
-
 const extensionName = "quick-image-gen";
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt;
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -1278,12 +1276,20 @@ async function generateImage() {
 }
 
 jQuery(async function() {
+    // Import required functions
+    const extensionsModule = await import("../../../extensions.js");
+    const scriptModule = await import("../../../../script.js");
+    extension_settings = extensionsModule.extension_settings;
+    getContext = extensionsModule.getContext;
+    saveSettingsDebounced = scriptModule.saveSettingsDebounced;
+    generateQuietPrompt = scriptModule.generateQuietPrompt;
+    
     await loadSettings();
     createUI();
     addInputButton();
     
     // Auto-generate on AI message and load char settings on character change
-    const { eventSource, event_types } = await import("../../../../script.js");
+    const { eventSource, event_types } = scriptModule;
     if (eventSource) {
         eventSource.on(event_types.MESSAGE_RECEIVED, () => {
             if (getSettings().autoGenerate) {
@@ -1295,3 +1301,6 @@ jQuery(async function() {
         });
     }
 });
+
+// Export module info for SillyTavern
+export { extensionName };
