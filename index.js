@@ -1275,31 +1275,36 @@ async function generateImage() {
     }
 }
 
-jQuery(async function() {
-    // Import required functions
-    const extensionsModule = await import("../../../extensions.js");
-    const scriptModule = await import("../../../../script.js");
-    extension_settings = extensionsModule.extension_settings;
-    getContext = extensionsModule.getContext;
-    saveSettingsDebounced = scriptModule.saveSettingsDebounced;
-    generateQuietPrompt = scriptModule.generateQuietPrompt;
-    
-    await loadSettings();
-    createUI();
-    addInputButton();
-    
-    // Auto-generate on AI message and load char settings on character change
-    const { eventSource, event_types } = scriptModule;
-    if (eventSource) {
-        eventSource.on(event_types.MESSAGE_RECEIVED, () => {
-            if (getSettings().autoGenerate) {
-                setTimeout(() => generateImage(), 500);
+jQuery(function() {
+    // Non-blocking async initialization
+    (async () => {
+        try {
+            const extensionsModule = await import("../../../extensions.js");
+            const scriptModule = await import("../../../../script.js");
+            extension_settings = extensionsModule.extension_settings;
+            getContext = extensionsModule.getContext;
+            saveSettingsDebounced = scriptModule.saveSettingsDebounced;
+            generateQuietPrompt = scriptModule.generateQuietPrompt;
+            
+            await loadSettings();
+            createUI();
+            addInputButton();
+            
+            const { eventSource, event_types } = scriptModule;
+            if (eventSource) {
+                eventSource.on(event_types.MESSAGE_RECEIVED, () => {
+                    if (getSettings().autoGenerate) {
+                        setTimeout(() => generateImage(), 500);
+                    }
+                });
+                eventSource.on(event_types.CHAT_CHANGED, () => {
+                    loadCharSettings();
+                });
             }
-        });
-        eventSource.on(event_types.CHAT_CHANGED, () => {
-            loadCharSettings();
-        });
-    }
+        } catch (err) {
+            console.error("[Quick Image Gen] Initialization failed:", err);
+        }
+    })();
 });
 
 // Export module info for SillyTavern
