@@ -473,6 +473,11 @@ async function genChutes(prompt, negative, s) {
         })
     });
     if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
+    const contentType = res.headers.get("content-type") || "";
+    if (contentType.includes("image/")) {
+        const blob = await res.blob();
+        return URL.createObjectURL(blob);
+    }
     const data = await res.json();
     if (data.images?.[0]) {
         const img = data.images[0];
