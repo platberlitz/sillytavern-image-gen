@@ -40,6 +40,9 @@ const defaultSettings = {
     // NanoGPT
     nanogptKey: "",
     nanogptModel: "image-flux-schnell",
+    // Chutes
+    chutesKey: "",
+    chutesModel: "black-forest-labs/FLUX.1-schnell",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -59,6 +62,7 @@ const PROVIDER_KEYS = {
     novelai: ["naiKey", "naiModel"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
+    chutes: ["chutesKey", "chutesModel"],
     local: ["localUrl", "localType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
 };
@@ -68,6 +72,7 @@ const PROVIDERS = {
     novelai: { name: "NovelAI", needsKey: true },
     arliai: { name: "ArliAI", needsKey: true },
     nanogpt: { name: "NanoGPT", needsKey: true },
+    chutes: { name: "Chutes", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
@@ -450,6 +455,32 @@ async function genNanoGPT(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
+async function genChutes(prompt, negative, s) {
+    const res = await fetch("https://llm.chutes.ai/v1/chat/completions", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${s.chutesKey}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: s.chutesModel,
+            messages: [{ role: "user", content: `Generate an image: ${prompt}${negative ? `\nAvoid: ${negative}` : ""}` }],
+            max_tokens: 4096,
+            width: s.width,
+            height: s.height
+        })
+    });
+    if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
+    const data = await res.json();
+    const images = data.choices?.[0]?.message?.images;
+    if (images?.[0]?.url) return images[0].url;
+    if (images?.[0]?.image_url?.url) return images[0].image_url.url;
+    const content = data.choices?.[0]?.message?.content || "";
+    const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+    if (b64Match) return b64Match[0];
+    throw new Error("No image in response");
+}
+
 async function genLocal(prompt, negative, s) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
     
@@ -686,6 +717,7 @@ const providerGenerators = {
     novelai: genNovelAI,
     arliai: genArliAI,
     nanogpt: genNanoGPT,
+    chutes: genChutes,
     local: genLocal,
     comfyui: genLocal,
     proxy: genProxy
@@ -835,6 +867,7 @@ function refreshProviderInputs(provider) {
         novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
+        chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -850,7 +883,7 @@ function updateProviderUI() {
     const section = document.getElementById(`qig-${s.provider}-settings`);
     if (section) section.style.display = "block";
     
-    const showAdvanced = ["novelai", "arliai", "nanogpt", "local"].includes(s.provider);
+    const showAdvanced = ["novelai", "arliai", "nanogpt", "chutes", "local"].includes(s.provider);
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
     
     const isNai = s.provider === "novelai";
@@ -954,6 +987,13 @@ function createUI() {
                     <input id="qig-nanogpt-key" type="password" value="${s.nanogptKey}">
                     <label>Model</label>
                     <input id="qig-nanogpt-model" type="text" value="${s.nanogptModel}" placeholder="image-flux-schnell">
+                </div>
+                
+                <div id="qig-chutes-settings" class="qig-provider-section">
+                    <label>Chutes API Key</label>
+                    <input id="qig-chutes-key" type="password" value="${s.chutesKey}">
+                    <label>Model</label>
+                    <input id="qig-chutes-model" type="text" value="${s.chutesModel}" placeholder="black-forest-labs/FLUX.1-schnell">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -1102,6 +1142,8 @@ function createUI() {
     bind("qig-arli-model", "arliModel");
     bind("qig-nanogpt-key", "nanogptKey");
     bind("qig-nanogpt-model", "nanogptModel");
+    bind("qig-chutes-key", "chutesKey");
+    bind("qig-chutes-model", "chutesModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
