@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 6 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Local, Proxy), 40+ styles, LLM prompt generation, connection profiles, batch generation. Images in popup, never added to chat.
+One-click image generation for SillyTavern. 7 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, Local, Proxy), 40+ styles, LLM prompt generation, connection profiles, batch generation. Images in popup, never added to chat.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -16,6 +16,7 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 - 🎨 **NovelAI** - Premium anime (nai-diffusion-4-5-curated/full)
 - 🤖 **ArliAI** - Affordable API
 - ⚡ **NanoGPT** - Fast Flux models
+- 🪂 **Chutes** - Decentralized AI (FLUX models)
 - 🖥️ **Local** - A1111/ComfyUI
 - 🔌 **Reverse Proxy** - PixAI, custom endpoints
 
@@ -109,6 +110,7 @@ Save and load provider configurations per-provider:
 - **NovelAI**: API key, model
 - **ArliAI**: API key, model
 - **NanoGPT**: API key, model
+- **Chutes**: API key, model
 - **Local**: URL, type (A1111/ComfyUI)
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions
 
