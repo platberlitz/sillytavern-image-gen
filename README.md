@@ -22,8 +22,8 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 
 ### Generation
 - 🖼️ **40+ Style Presets** - Anime, Realistic, Cyberpunk, Ghibli, etc.
-- 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts (250 char limit)
-- 🏷️ **Two Prompt Styles** - Danbooru tags or natural descriptions
+- 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts
+- 🏷️ **Three Prompt Modes** - Danbooru tags, natural descriptions, or custom instruction
 - ✨ **Quality Tags** - Auto-prepend quality boosters
 - 📍 **Message Selector** - Choose which chat message to use
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
@@ -32,7 +32,7 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 
 ### Profiles & Settings
 - 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
-- 💾 **Prompt Templates** - Save/load favorite prompts
+- 💾 **Prompt Templates** - Save/load/delete templates (prompt + negative + quality tags)
 - 👤 **Character Settings** - Save settings per character
 
 ### Gallery & Session
@@ -82,7 +82,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Negative Prompt** | What to avoid in generation |
 | **Quality Tags** | Tags prepended to prompt |
 | **Use chat message** | Use last chat message as prompt |
-| **Use LLM** | Have LLM convert scene to image prompt |
+| **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
 | **Batch Count** | Number of images to generate (1-10) |
 | **Size** | Image dimensions |
 | **Auto-generate** | Generate after each AI response |
@@ -97,7 +97,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 📋 Logs | View generation logs |
 | 💾 Save for Char | Save settings for current character |
 | 💾 Save Profile | Save current provider settings |
-| 💾 Save Template | Save current prompt as template |
+| 💾 Save Template | Save current prompt + negative + quality as template |
 | 🔄 Regenerate | Same prompt, new seed |
 | 🖼️ Gallery | View session images |
 
