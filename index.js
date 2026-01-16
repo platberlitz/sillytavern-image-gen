@@ -42,7 +42,7 @@ const defaultSettings = {
     nanogptModel: "image-flux-schnell",
     // Chutes
     chutesKey: "",
-    chutesModel: "black-forest-labs/FLUX.1-schnell",
+    chutesUrl: "",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -62,7 +62,7 @@ const PROVIDER_KEYS = {
     novelai: ["naiKey", "naiModel"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
-    chutes: ["chutesKey", "chutesModel"],
+    chutes: ["chutesKey", "chutesUrl"],
     local: ["localUrl", "localType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
 };
@@ -456,28 +456,37 @@ async function genNanoGPT(prompt, negative, s) {
 }
 
 async function genChutes(prompt, negative, s) {
-    const res = await fetch("https://llm.chutes.ai/v1/chat/completions", {
+    if (!s.chutesUrl) throw new Error("Chutes URL required");
+    const url = s.chutesUrl.replace(/\/$/, "");
+    const headers = { "Content-Type": "application/json" };
+    if (s.chutesKey) headers["Authorization"] = `Bearer ${s.chutesKey}`;
+    
+    const res = await fetch(url, {
         method: "POST",
-        headers: {
-            "Authorization": `Bearer ${s.chutesKey}`,
-            "Content-Type": "application/json"
-        },
+        headers,
         body: JSON.stringify({
-            model: s.chutesModel,
-            messages: [{ role: "user", content: `Generate an image: ${prompt}${negative ? `\nAvoid: ${negative}` : ""}` }],
-            max_tokens: 4096,
+            prompt: prompt,
+            negative_prompt: negative,
             width: s.width,
-            height: s.height
+            height: s.height,
+            num_inference_steps: s.steps,
+            guidance_scale: s.cfgScale,
+            seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed
         })
     });
     if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
     const data = await res.json();
-    const images = data.choices?.[0]?.message?.images;
-    if (images?.[0]?.url) return images[0].url;
-    if (images?.[0]?.image_url?.url) return images[0].image_url.url;
-    const content = data.choices?.[0]?.message?.content || "";
-    const b64Match = content.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
-    if (b64Match) return b64Match[0];
+    if (data.images?.[0]) {
+        const img = data.images[0];
+        if (img.startsWith("data:")) return img;
+        if (img.startsWith("http")) return img;
+        return `data:image/png;base64,${img}`;
+    }
+    if (data.image) {
+        if (data.image.startsWith("data:")) return data.image;
+        if (data.image.startsWith("http")) return data.image;
+        return `data:image/png;base64,${data.image}`;
+    }
     throw new Error("No image in response");
 }
 
@@ -867,7 +876,7 @@ function refreshProviderInputs(provider) {
         novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
-        chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
+        chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-url", "chutesUrl"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -992,8 +1001,8 @@ function createUI() {
                 <div id="qig-chutes-settings" class="qig-provider-section">
                     <label>Chutes API Key</label>
                     <input id="qig-chutes-key" type="password" value="${s.chutesKey}">
-                    <label>Model</label>
-                    <input id="qig-chutes-model" type="text" value="${s.chutesModel}" placeholder="black-forest-labs/FLUX.1-schnell">
+                    <label>Chute URL</label>
+                    <input id="qig-chutes-url" type="text" value="${s.chutesUrl}" placeholder="https://user-chute.chutes.ai/generate">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -1143,7 +1152,7 @@ function createUI() {
     bind("qig-nanogpt-key", "nanogptKey");
     bind("qig-nanogpt-model", "nanogptModel");
     bind("qig-chutes-key", "chutesKey");
-    bind("qig-chutes-model", "chutesModel");
+    bind("qig-chutes-url", "chutesUrl");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
