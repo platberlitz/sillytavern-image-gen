@@ -42,7 +42,7 @@ const defaultSettings = {
     nanogptModel: "image-flux-schnell",
     // Chutes
     chutesKey: "",
-    chutesUrl: "",
+    chutesModel: "stabilityai/stable-diffusion-xl-base-1.0",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -62,7 +62,7 @@ const PROVIDER_KEYS = {
     novelai: ["naiKey", "naiModel"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
-    chutes: ["chutesKey", "chutesUrl"],
+    chutes: ["chutesKey", "chutesModel"],
     local: ["localUrl", "localType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
 };
@@ -456,35 +456,31 @@ async function genNanoGPT(prompt, negative, s) {
 }
 
 async function genChutes(prompt, negative, s) {
-    if (!s.chutesUrl) throw new Error("Chutes URL required");
-    const url = s.chutesUrl.replace(/\/$/, "");
-    const headers = { "Content-Type": "application/json" };
-    if (s.chutesKey) headers["Authorization"] = `Bearer ${s.chutesKey}`;
-    
-    const res = await fetch(url, {
+    const res = await fetch("https://image.chutes.ai/generate", {
         method: "POST",
-        headers,
+        headers: {
+            "Authorization": `Bearer ${s.chutesKey}`,
+            "Content-Type": "application/json"
+        },
         body: JSON.stringify({
+            model: s.chutesModel,
             prompt: prompt,
             negative_prompt: negative,
             width: s.width,
             height: s.height,
             num_inference_steps: s.steps,
-            guidance_scale: s.cfgScale,
-            seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed
+            guidance_scale: s.cfgScale
         })
     });
     if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
     const data = await res.json();
     if (data.images?.[0]) {
         const img = data.images[0];
-        if (img.startsWith("data:")) return img;
-        if (img.startsWith("http")) return img;
+        if (img.startsWith?.("data:") || img.startsWith?.("http")) return img;
         return `data:image/png;base64,${img}`;
     }
     if (data.image) {
-        if (data.image.startsWith("data:")) return data.image;
-        if (data.image.startsWith("http")) return data.image;
+        if (data.image.startsWith?.("data:") || data.image.startsWith?.("http")) return data.image;
         return `data:image/png;base64,${data.image}`;
     }
     throw new Error("No image in response");
@@ -876,7 +872,7 @@ function refreshProviderInputs(provider) {
         novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
-        chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-url", "chutesUrl"]],
+        chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -1001,8 +997,8 @@ function createUI() {
                 <div id="qig-chutes-settings" class="qig-provider-section">
                     <label>Chutes API Key</label>
                     <input id="qig-chutes-key" type="password" value="${s.chutesKey}">
-                    <label>Chute URL</label>
-                    <input id="qig-chutes-url" type="text" value="${s.chutesUrl}" placeholder="https://user-chute.chutes.ai/generate">
+                    <label>Model</label>
+                    <input id="qig-chutes-model" type="text" value="${s.chutesModel}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -1152,7 +1148,7 @@ function createUI() {
     bind("qig-nanogpt-key", "nanogptKey");
     bind("qig-nanogpt-model", "nanogptModel");
     bind("qig-chutes-key", "chutesKey");
-    bind("qig-chutes-url", "chutesUrl");
+    bind("qig-chutes-model", "chutesModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
