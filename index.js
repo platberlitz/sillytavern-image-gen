@@ -374,7 +374,7 @@ async function genNovelAI(prompt, negative, s) {
     // V4+ returns msgpack events, V3 returns zip - both contain PNG data we can extract
     const pngStart = findPngStart(bytes);
     if (pngStart < 0) {
-        const textResponse = new TextDecoder().decode(bytes.slice(0, Math.min(200, bytes.length));
+        const textResponse = new TextDecoder().decode(bytes.slice(0, Math.min(200, bytes.length)));
         log(`First 200 bytes as text: ${textResponse}`);
         throw new Error("No PNG found in response. Check your API key and model settings.");
     }
