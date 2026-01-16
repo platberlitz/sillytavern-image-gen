@@ -1272,14 +1272,6 @@ async function generateImage() {
     }
     
     log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
-    const batchCount = s.batchCount || 1;
-    showStatus(`🎨 Generating ${batchCount} image(s)...`);
-    
-    const paletteBtn = getOrCacheElement("qig-input-btn");
-    if (paletteBtn) {
-        paletteBtn.classList.remove("fa-palette");
-        paletteBtn.classList.add("fa-spinner", "fa-spin");
-    }
     
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
     prompt = applyStyle(prompt, s);
@@ -1289,11 +1281,27 @@ async function generateImage() {
     }
     const negative = resolvePrompt(s.negativePrompt);
     
+    // Show editable prompt dialog
+    const editedPrompt = await showPromptEditor(prompt, negative);
+    if (!editedPrompt) return; // User cancelled
+    
+    prompt = editedPrompt.prompt;
+    const finalNegative = editedPrompt.negative;
+    
+    const batchCount = s.batchCount || 1;
+    showStatus(`🎨 Generating ${batchCount} image(s)...`);
+    
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    if (paletteBtn) {
+        paletteBtn.classList.remove("fa-palette");
+        paletteBtn.classList.add("fa-spinner", "fa-spin");
+    }
+    
     lastPrompt = prompt;
-    lastNegative = negative;
+    lastNegative = finalNegative;
     
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
-    log(`Negative: ${negative.substring(0, 50)}...`);
+    log(`Negative: ${finalNegative.substring(0, 50)}...`);
     
     const btn = getOrCacheElement("qig-generate-btn");
     if (btn) {
@@ -1306,7 +1314,7 @@ async function generateImage() {
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
         for (let i = 0; i < batchCount; i++) {
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
-            const result = await generateForProvider(prompt, negative, s);
+            const result = await generateForProvider(prompt, finalNegative, s);
             results.push(result);
         }
         log(`Generated ${results.length} image(s) successfully`);
@@ -1325,6 +1333,35 @@ async function generateImage() {
             paletteBtn.classList.add("fa-palette");
         }
     }
+}
+
+function showPromptEditor(prompt, negative) {
+    return new Promise(resolve => {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;";
+        overlay.innerHTML = `
+            <div style="background:var(--SmartThemeBlurTintColor,#1a1a1a);padding:20px;border-radius:8px;width:90%;max-width:600px;max-height:80vh;overflow:auto;">
+                <h3 style="margin:0 0 12px;">Edit Prompt</h3>
+                <label style="display:block;margin-bottom:4px;">Prompt</label>
+                <textarea id="qig-edit-prompt" style="width:100%;height:150px;resize:vertical;margin-bottom:12px;background:var(--SmartThemeBodyColor,#222);color:var(--SmartThemeTextColor,#fff);border:1px solid #444;border-radius:4px;padding:8px;">${prompt.replace(/</g, '&lt;')}</textarea>
+                <label style="display:block;margin-bottom:4px;">Negative Prompt</label>
+                <textarea id="qig-edit-negative" style="width:100%;height:80px;resize:vertical;margin-bottom:16px;background:var(--SmartThemeBodyColor,#222);color:var(--SmartThemeTextColor,#fff);border:1px solid #444;border-radius:4px;padding:8px;">${negative.replace(/</g, '&lt;')}</textarea>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="qig-edit-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-edit-confirm" class="menu_button" style="background:var(--SmartThemeQuoteColor,#4a9);">Generate</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        
+        const promptEl = overlay.querySelector("#qig-edit-prompt");
+        const negativeEl = overlay.querySelector("#qig-edit-negative");
+        
+        overlay.querySelector("#qig-edit-cancel").onclick = () => { overlay.remove(); resolve(null); };
+        overlay.querySelector("#qig-edit-confirm").onclick = () => { overlay.remove(); resolve({ prompt: promptEl.value, negative: negativeEl.value }); };
+        overlay.onclick = e => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
+        promptEl.focus();
+    });
 }
 
 jQuery(function() {
