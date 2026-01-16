@@ -774,11 +774,32 @@ async function regenerateImage() {
 // Prompt Templates
 function saveTemplate() {
     const prompt = document.getElementById("qig-prompt").value;
+    const negative = document.getElementById("qig-negative").value;
+    const quality = document.getElementById("qig-quality").value;
     if (!prompt.trim()) return;
     const name = window.prompt("Template name:");
     if (!name) return;
-    promptTemplates.unshift({ name, prompt });
+    promptTemplates.unshift({ name, prompt, negative, quality });
     localStorage.setItem("qig_templates", JSON.stringify(promptTemplates.slice(0, 20)));
+    renderTemplates();
+}
+
+function loadTemplate(i) {
+    const t = promptTemplates[i];
+    if (!t) return;
+    document.getElementById("qig-prompt").value = t.prompt || "";
+    document.getElementById("qig-negative").value = t.negative || "";
+    document.getElementById("qig-quality").value = t.quality || "";
+    const s = getSettings();
+    s.prompt = t.prompt || "";
+    s.negativePrompt = t.negative || "";
+    s.qualityTags = t.quality || "";
+    saveSettingsDebounced();
+}
+
+function deleteTemplate(i) {
+    promptTemplates.splice(i, 1);
+    localStorage.setItem("qig_templates", JSON.stringify(promptTemplates));
     renderTemplates();
 }
 
@@ -786,9 +807,12 @@ function renderTemplates() {
     const container = getOrCacheElement("qig-templates");
     if (!container) return;
     container.innerHTML = promptTemplates.slice(0, 5).map((t, i) => 
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="document.getElementById('qig-prompt').value='${t.prompt.replace(/'/g, "\\'")}'">${t.name}</button>`
-    ).join('') + (promptTemplates.length > 0 ? `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">✕</button>` : '');
+        `<span style="display:inline-flex;align-items:center;margin:2px;"><button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${t.name}</button><button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deleteTemplate(${i})">×</button></span>`
+    ).join('') + (promptTemplates.length > 0 ? `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">Clear All</button>` : '');
 }
+
+window.loadTemplate = loadTemplate;
+window.deleteTemplate = deleteTemplate;
 
 function clearTemplates() {
     if (confirm("Clear all templates?")) {
