@@ -10,6 +10,7 @@ const defaultSettings = {
     useLastMessage: true,
     useLLMPrompt: false,
     llmPromptStyle: "tags",
+    llmCustomInstruction: "",
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -260,8 +261,18 @@ async function generateLLMPrompt(s, basePrompt) {
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
         
         const isNatural = s.llmPromptStyle === "natural";
-        const instruction = isNatural
-            ? `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
+        const isCustom = s.llmPromptStyle === "custom";
+        
+        let instruction;
+        if (isCustom && s.llmCustomInstruction) {
+            instruction = s.llmCustomInstruction
+                .replace(/\{\{scene\}\}/gi, basePrompt)
+                .replace(/\{\{char\}\}/gi, charName)
+                .replace(/\{\{user\}\}/gi, userName)
+                .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
+                .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
+        } else if (isNatural) {
+            instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
 ${appearanceContext}
@@ -274,8 +285,9 @@ Write a detailed image prompt (up to 500 characters) describing:
 - The setting/background
 - Lighting and atmosphere
 
-Prompt:`
-            : `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
+Prompt:`;
+        } else {
+            instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
 
 CHARACTER REFERENCE:
 ${appearanceContext}
@@ -290,6 +302,7 @@ Generate detailed Danbooru/Booru-style tags (up to 500 characters) including:
 - Quality tags
 
 Tags:`;
+        }
         
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
@@ -1081,7 +1094,12 @@ function createUI() {
                     <select id="qig-llm-style">
                         <option value="tags" ${s.llmPromptStyle === "tags" ? "selected" : ""}>Danbooru Tags (anime)</option>
                         <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
+                        <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
                     </select>
+                    <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
+                        <label>Custom LLM Instruction</label>
+                        <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${s.llmCustomInstruction || ""}</textarea>
+                    </div>
                 </div>
                 
                 <label class="checkbox_label">
@@ -1210,6 +1228,12 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-llm-style", "llmPromptStyle");
+    bind("qig-llm-custom", "llmCustomInstruction");
+    document.getElementById("qig-llm-style").onchange = e => {
+        getSettings().llmPromptStyle = e.target.value;
+        saveSettingsDebounced();
+        document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
+    };
     bindCheckbox("qig-auto-generate", "autoGenerate");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
@@ -1272,22 +1296,6 @@ async function generateImage() {
     }
     
     log(`Base prompt: ${basePrompt.substring(0, 100)}...`);
-    
-    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
-    prompt = applyStyle(prompt, s);
-    
-    if (s.appendQuality && s.qualityTags) {
-        prompt = `${s.qualityTags}, ${prompt}`;
-    }
-    const negative = resolvePrompt(s.negativePrompt);
-    
-    // Show editable prompt dialog
-    const editedPrompt = await showPromptEditor(prompt, negative);
-    if (!editedPrompt) return; // User cancelled
-    
-    prompt = editedPrompt.prompt;
-    const finalNegative = editedPrompt.negative;
-    
     const batchCount = s.batchCount || 1;
     showStatus(`🎨 Generating ${batchCount} image(s)...`);
     
@@ -1297,11 +1305,19 @@ async function generateImage() {
         paletteBtn.classList.add("fa-spinner", "fa-spin");
     }
     
+    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
+    prompt = applyStyle(prompt, s);
+    
+    if (s.appendQuality && s.qualityTags) {
+        prompt = `${s.qualityTags}, ${prompt}`;
+    }
+    const negative = resolvePrompt(s.negativePrompt);
+    
     lastPrompt = prompt;
-    lastNegative = finalNegative;
+    lastNegative = negative;
     
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
-    log(`Negative: ${finalNegative.substring(0, 50)}...`);
+    log(`Negative: ${negative.substring(0, 50)}...`);
     
     const btn = getOrCacheElement("qig-generate-btn");
     if (btn) {
@@ -1314,7 +1330,7 @@ async function generateImage() {
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
         for (let i = 0; i < batchCount; i++) {
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
-            const result = await generateForProvider(prompt, finalNegative, s);
+            const result = await generateForProvider(prompt, negative, s);
             results.push(result);
         }
         log(`Generated ${results.length} image(s) successfully`);
@@ -1333,35 +1349,6 @@ async function generateImage() {
             paletteBtn.classList.add("fa-palette");
         }
     }
-}
-
-function showPromptEditor(prompt, negative) {
-    return new Promise(resolve => {
-        const overlay = document.createElement("div");
-        overlay.style.cssText = "position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);z-index:10000;display:flex;align-items:center;justify-content:center;";
-        overlay.innerHTML = `
-            <div style="background:var(--SmartThemeBlurTintColor,#1a1a1a);padding:20px;border-radius:8px;width:90%;max-width:600px;max-height:80vh;overflow:auto;">
-                <h3 style="margin:0 0 12px;">Edit Prompt</h3>
-                <label style="display:block;margin-bottom:4px;">Prompt</label>
-                <textarea id="qig-edit-prompt" style="width:100%;height:150px;resize:vertical;margin-bottom:12px;background:var(--SmartThemeBodyColor,#222);color:var(--SmartThemeTextColor,#fff);border:1px solid #444;border-radius:4px;padding:8px;">${prompt.replace(/</g, '&lt;')}</textarea>
-                <label style="display:block;margin-bottom:4px;">Negative Prompt</label>
-                <textarea id="qig-edit-negative" style="width:100%;height:80px;resize:vertical;margin-bottom:16px;background:var(--SmartThemeBodyColor,#222);color:var(--SmartThemeTextColor,#fff);border:1px solid #444;border-radius:4px;padding:8px;">${negative.replace(/</g, '&lt;')}</textarea>
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
-                    <button id="qig-edit-cancel" class="menu_button">Cancel</button>
-                    <button id="qig-edit-confirm" class="menu_button" style="background:var(--SmartThemeQuoteColor,#4a9);">Generate</button>
-                </div>
-            </div>
-        `;
-        document.body.appendChild(overlay);
-        
-        const promptEl = overlay.querySelector("#qig-edit-prompt");
-        const negativeEl = overlay.querySelector("#qig-edit-negative");
-        
-        overlay.querySelector("#qig-edit-cancel").onclick = () => { overlay.remove(); resolve(null); };
-        overlay.querySelector("#qig-edit-confirm").onclick = () => { overlay.remove(); resolve({ prompt: promptEl.value, negative: negativeEl.value }); };
-        overlay.onclick = e => { if (e.target === overlay) { overlay.remove(); resolve(null); } };
-        promptEl.focus();
-    });
 }
 
 jQuery(function() {
