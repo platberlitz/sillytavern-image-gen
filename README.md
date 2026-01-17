@@ -169,7 +169,7 @@ Save and load provider configurations per-provider:
 - **Replicate**: API key, model
 - **Fal.ai**: API key, model
 - **Together AI**: API key, model
-- **Local**: URL, type (A1111/ComfyUI)
+- **Local**: URL, type (A1111/ComfyUI), CLIP skip, ADetailer settings
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
@@ -223,6 +223,13 @@ Use these placeholders in custom workflows:
 - `%negative%` - Negative prompt
 - `%seed%`, `%width%`, `%height%`, `%steps%`, `%cfg%`
 - `%denoise%`, `%clip_skip%`, `%sampler%`, `%scheduler%`, `%model%`
+
+### A1111 Settings
+| Setting | Description |
+|---------|-------------|
+| **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
+| **ADetailer** | Enable face/hand fix using ADetailer extension |
+| **ADetailer Model** | Detection model (face_yolov8n, hand_yolov8n, person_yolov8n, mediapipe) |
 
 ### Placeholders (Custom Mode)
 - `{{scene}}` - Current scene/message text

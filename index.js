@@ -87,6 +87,10 @@ const defaultSettings = {
     localModel: "model.safetensors",
     localRefImage: "",
     localDenoise: 0.75,
+    // A1111 specific
+    a1111ClipSkip: 1,
+    a1111Adetailer: false,
+    a1111AdetailerModel: "face_yolov8n.pt",
     // ComfyUI specific
     comfyWorkflow: "",
     comfyClipSkip: 1,
@@ -112,7 +116,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1143,10 +1147,31 @@ async function genLocal(prompt, negative, s) {
         seed: s.seed
     };
 
+    // CLIP skip
+    const clipSkip = parseInt(s.a1111ClipSkip) || 1;
+    if (clipSkip > 1) {
+        payload.override_settings = payload.override_settings || {};
+        payload.override_settings.CLIP_stop_at_last_layers = clipSkip;
+    }
+
+    // ADetailer
+    if (s.a1111Adetailer) {
+        payload.alwayson_scripts = payload.alwayson_scripts || {};
+        payload.alwayson_scripts.ADetailer = {
+            args: [{
+                ad_model: s.a1111AdetailerModel || "face_yolov8n.pt",
+                ad_prompt: "",
+                ad_negative_prompt: ""
+            }]
+        };
+    }
+
     if (isImg2Img) {
         payload.init_images = [s.localRefImage.replace(/^data:image\/.+;base64,/, '')];
         payload.denoising_strength = parseFloat(s.localDenoise) || 0.75;
     }
+
+    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}`);
 
     const res = await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
@@ -1966,6 +1991,25 @@ function createUI() {
                          <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
+                         <div class="qig-row">
+                            <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"></div>
+                         </div>
+                         <label class="checkbox_label">
+                             <input id="qig-a1111-adetailer" type="checkbox" ${s.a1111Adetailer ? "checked" : ""}>
+                             <span>Enable ADetailer (Face Fix)</span>
+                         </label>
+                         <div id="qig-a1111-adetailer-opts" style="display:${s.a1111Adetailer ? 'block' : 'none'}">
+                             <label>ADetailer Model</label>
+                             <select id="qig-a1111-adetailer-model">
+                                 <option value="face_yolov8n.pt" ${s.a1111AdetailerModel === "face_yolov8n.pt" ? "selected" : ""}>Face YOLOv8n</option>
+                                 <option value="face_yolov8s.pt" ${s.a1111AdetailerModel === "face_yolov8s.pt" ? "selected" : ""}>Face YOLOv8s</option>
+                                 <option value="hand_yolov8n.pt" ${s.a1111AdetailerModel === "hand_yolov8n.pt" ? "selected" : ""}>Hand YOLOv8n</option>
+                                 <option value="person_yolov8n-seg.pt" ${s.a1111AdetailerModel === "person_yolov8n-seg.pt" ? "selected" : ""}>Person YOLOv8n</option>
+                                 <option value="mediapipe_face_full" ${s.a1111AdetailerModel === "mediapipe_face_full" ? "selected" : ""}>MediaPipe Face Full</option>
+                                 <option value="mediapipe_face_short" ${s.a1111AdetailerModel === "mediapipe_face_short" ? "selected" : ""}>MediaPipe Face Short</option>
+                             </select>
+                         </div>
+                         <hr style="margin:8px 0;opacity:0.2;">
                          <label>Reference Image (Img2Img)</label>
                          <div style="display:flex;gap:4px;align-items:center;">
                              <img id="qig-local-ref-preview" src="${s.localRefImage || ''}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
@@ -2175,6 +2219,14 @@ function createUI() {
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-workflow", "comfyWorkflow");
+
+    // A1111 specific bindings
+    bind("qig-a1111-clip", "a1111ClipSkip", true);
+    bind("qig-a1111-adetailer", "a1111Adetailer");
+    bind("qig-a1111-adetailer-model", "a1111AdetailerModel");
+    document.getElementById("qig-a1111-adetailer").onchange = (e) => {
+        document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
+    };
 
     // Local Ref Image
     const localRefInput = getOrCacheElement("qig-local-ref-input");
