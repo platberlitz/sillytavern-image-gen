@@ -230,6 +230,37 @@ Use these placeholders in custom workflows:
 | **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
 | **ADetailer** | Enable face/hand fix using ADetailer extension |
 | **ADetailer Model** | Detection model (face_yolov8n, hand_yolov8n, person_yolov8n, mediapipe) |
+| **IP-Adapter Face** | Use reference image for face features only (not pose/clothes) |
+| **IP-Adapter Model** | FaceID model (Portrait, Standard, Plus v2 - SD1.5 or SDXL) |
+| **IP-Adapter Weight** | How strongly to apply facial features (0-1.5, default 0.7) |
+
+## IP-Adapter Face Setup
+
+IP-Adapter Face allows you to use a reference image to copy **only the face** (not pose, clothes, or background). This is ideal for maintaining character consistency across different scenes.
+
+### Installation (A1111)
+
+1. **Install ControlNet extension** (if not already installed):
+   - Go to Extensions → Install from URL
+   - Enter: `https://github.com/Mikubill/sd-webui-controlnet`
+   - Click Install and restart WebUI
+
+2. **Download IP-Adapter FaceID models**:
+   - Download from [Hugging Face](https://huggingface.co/h94/IP-Adapter-FaceID/tree/main)
+   - For SD1.5: `ip-adapter-faceid-portrait_sd15.bin`, `ip-adapter-faceid_sd15.bin`
+   - For SDXL: `ip-adapter-faceid_sdxl.bin`
+   - Place in: `stable-diffusion-webui/extensions/sd-webui-controlnet/models/`
+
+3. **Download required LoRA** (for FaceID):
+   - Download `ip-adapter-faceid_sd15_lora.safetensors` from same repo
+   - Place in: `stable-diffusion-webui/models/Lora/`
+
+### Usage
+
+1. Upload a **clear face reference image** (front-facing works best)
+2. Enable **"IP-Adapter Face"** checkbox
+3. Select appropriate model (Portrait for stylized, Standard for realistic)
+4. Adjust weight (0.5-0.8 recommended, higher = more similar)
 
 ### Placeholders (Custom Mode)
 - `{{scene}}` - Current scene/message text

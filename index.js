@@ -92,6 +92,9 @@ const defaultSettings = {
     a1111ClipSkip: 1,
     a1111Adetailer: false,
     a1111AdetailerModel: "face_yolov8n.pt",
+    a1111IpAdapter: false,
+    a1111IpAdapterMode: "ip-adapter-faceid-portrait_sd15",
+    a1111IpAdapterWeight: 0.7,
     // ComfyUI specific
     comfyWorkflow: "",
     comfyClipSkip: 1,
@@ -117,7 +120,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1214,12 +1217,31 @@ async function genLocal(prompt, negative, s) {
         };
     }
 
-    if (isImg2Img) {
+    if (isImg2Img && !s.a1111IpAdapter) {
+        // Standard img2img - use as init image
         payload.init_images = [s.localRefImage.replace(/^data:image\/.+;base64,/, '')];
         payload.denoising_strength = parseFloat(s.localDenoise) || 0.75;
     }
 
-    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}`);
+    // IP-Adapter Face - use reference image for face only
+    if (s.a1111IpAdapter && s.localRefImage) {
+        payload.alwayson_scripts = payload.alwayson_scripts || {};
+        payload.alwayson_scripts.controlnet = {
+            args: [{
+                enabled: true,
+                module: "ip-adapter_face_id",
+                model: s.a1111IpAdapterMode || "ip-adapter-faceid-portrait_sd15",
+                weight: parseFloat(s.a1111IpAdapterWeight) || 0.7,
+                image: s.localRefImage.replace(/^data:image\/.+;base64,/, ''),
+                resize_mode: "Crop and Resize",
+                control_mode: "Balanced",
+                pixel_perfect: true
+            }]
+        };
+        log(`A1111: Using IP-Adapter Face with model=${s.a1111IpAdapterMode}, weight=${s.a1111IpAdapterWeight}`);
+    }
+
+    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}`);
 
     const res = await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
@@ -2064,8 +2086,25 @@ function createUI() {
                                  <option value="mediapipe_face_short" ${s.a1111AdetailerModel === "mediapipe_face_short" ? "selected" : ""}>MediaPipe Face Short</option>
                              </select>
                          </div>
+                         <label class="checkbox_label" style="margin-top:8px;">
+                             <input id="qig-a1111-ipadapter" type="checkbox" ${s.a1111IpAdapter ? "checked" : ""}>
+                             <span>IP-Adapter Face (face-only reference)</span>
+                         </label>
+                         <div id="qig-a1111-ipadapter-opts" style="display:${s.a1111IpAdapter ? 'block' : 'none'}">
+                             <label>IP-Adapter Model</label>
+                             <select id="qig-a1111-ipadapter-mode">
+                                 <option value="ip-adapter-faceid-portrait_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait_sd15" ? "selected" : ""}>FaceID Portrait (SD1.5)</option>
+                                 <option value="ip-adapter-faceid_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid_sd15" ? "selected" : ""}>FaceID (SD1.5)</option>
+                                 <option value="ip-adapter-faceid-plusv2_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid-plusv2_sd15" ? "selected" : ""}>FaceID Plus v2 (SD1.5)</option>
+                                 <option value="ip-adapter-faceid-portrait_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait_sdxl" ? "selected" : ""}>FaceID Portrait (SDXL)</option>
+                                 <option value="ip-adapter-faceid_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid_sdxl" ? "selected" : ""}>FaceID (SDXL)</option>
+                             </select>
+                             <label>Weight: <span id="qig-a1111-ipadapter-weight-val">${s.a1111IpAdapterWeight || 0.7}</span></label>
+                             <input id="qig-a1111-ipadapter-weight" type="range" min="0" max="1.5" step="0.05" value="${s.a1111IpAdapterWeight || 0.7}">
+                             <div class="form-hint">Requires ControlNet + IP-Adapter extension with FaceID models</div>
+                         </div>
                          <hr style="margin:8px 0;opacity:0.2;">
-                         <label>Reference Image (Img2Img)</label>
+                         <label>Reference Image</label>
                          <div style="display:flex;gap:4px;align-items:center;">
                              <img id="qig-local-ref-preview" src="${s.localRefImage || ''}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
                              <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
@@ -2281,6 +2320,17 @@ function createUI() {
     bind("qig-a1111-adetailer-model", "a1111AdetailerModel");
     document.getElementById("qig-a1111-adetailer").onchange = (e) => {
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
+    };
+
+    // IP-Adapter bindings
+    bind("qig-a1111-ipadapter", "a1111IpAdapter");
+    bind("qig-a1111-ipadapter-mode", "a1111IpAdapterMode");
+    bind("qig-a1111-ipadapter-weight", "a1111IpAdapterWeight", true);
+    document.getElementById("qig-a1111-ipadapter").onchange = (e) => {
+        document.getElementById("qig-a1111-ipadapter-opts").style.display = e.target.checked ? "block" : "none";
+    };
+    document.getElementById("qig-a1111-ipadapter-weight").oninput = (e) => {
+        document.getElementById("qig-a1111-ipadapter-weight-val").textContent = e.target.value;
     };
 
     // A1111 Model dropdown
