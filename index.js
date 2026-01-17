@@ -344,8 +344,17 @@ async function genPollinations(prompt, negative, s) {
 
 async function genNovelAI(prompt, negative, s) {
     const isV4 = s.naiModel.includes("-4");
-    // NovelAI backend only reliably supports k_euler_ancestral
-    const sampler = "k_euler_ancestral";
+    // Map SillyTavern sampler names to NovelAI API format
+    const samplerMap = {
+        "euler_a": "k_euler_ancestral",
+        "euler": "k_euler", 
+        "dpm++_2m": "k_dpmpp_2m",
+        "dpm++_sde": "k_dpmpp_sde",
+        "ddim": "ddim",
+        "lms": "k_lms",
+        "heun": "k_heun"
+    };
+    const sampler = samplerMap[s.sampler] || "k_euler_ancestral";
     const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
     
     const params = {
