@@ -1982,6 +1982,10 @@ function createUI() {
         saveSettingsDebounced();
         renderRefImages();
         refInput.value = "";
+
+        // Auto-generate as requested
+        showStatus("🚀 Auto-generating with new reference images...");
+        generateImage();
     };
     renderRefImages();
 
@@ -2009,6 +2013,10 @@ function createUI() {
         saveSettingsDebounced();
         renderNanobananaRefImages();
         nanoRefInput.value = "";
+
+        // Auto-generate as requested
+        showStatus("🚀 Auto-generating with new reference images...");
+        generateImage();
     };
     renderNanobananaRefImages();
 
