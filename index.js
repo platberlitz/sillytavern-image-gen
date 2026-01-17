@@ -389,6 +389,16 @@ async function genNovelAI(prompt, negative, s) {
     
     log(`NAI response length: ${bytes.length}`);
     
+    // Check if response is a ZIP file (starts with PK)
+    if (bytes[0] === 0x50 && bytes[1] === 0x4B) {
+        log("Response is ZIP format, extracting PNG...");
+        const pngData = extractPngFromZip(bytes);
+        if (!pngData) {
+            throw new Error("No PNG found in ZIP response. Check your API key and model settings.");
+        }
+        return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
+    }
+    
     // V4+ returns msgpack events, V3 returns zip - both contain PNG data we can extract
     const pngStart = findPngStart(bytes);
     if (pngStart < 0) {
@@ -419,6 +429,56 @@ function findPngEnd(bytes, start) {
         }
     }
     return bytes.length;
+}
+
+function extractPngFromZip(zipBytes) {
+    // Simple ZIP extraction - look for PNG file in ZIP central directory
+    const view = new DataView(zipBytes.buffer);
+    
+    // Find end of central directory record (signature: 0x06054b50)
+    let eocdOffset = -1;
+    for (let i = zipBytes.length - 22; i >= 0; i--) {
+        if (view.getUint32(i, true) === 0x06054b50) {
+            eocdOffset = i;
+            break;
+        }
+    }
+    
+    if (eocdOffset === -1) return null;
+    
+    // Get central directory offset and size
+    const cdOffset = view.getUint32(eocdOffset + 16, true);
+    const cdSize = view.getUint32(eocdOffset + 12, true);
+    
+    // Parse central directory entries to find PNG file
+    let offset = cdOffset;
+    while (offset < cdOffset + cdSize) {
+        if (view.getUint32(offset, true) !== 0x02014b50) break; // Central directory signature
+        
+        const filenameLength = view.getUint16(offset + 28, true);
+        const extraLength = view.getUint16(offset + 30, true);
+        const commentLength = view.getUint16(offset + 32, true);
+        const localHeaderOffset = view.getUint32(offset + 42, true);
+        
+        // Check if filename ends with .png
+        const filename = new TextDecoder().decode(zipBytes.slice(offset + 46, offset + 46 + filenameLength));
+        if (filename.toLowerCase().endsWith('.png')) {
+            // Found PNG file, extract it from local file header
+            const localSig = view.getUint32(localHeaderOffset, true);
+            if (localSig === 0x04034b50) { // Local file header signature
+                const localFilenameLength = view.getUint16(localHeaderOffset + 26, true);
+                const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+                const compressedSize = view.getUint32(localHeaderOffset + 18, true);
+                
+                const dataOffset = localHeaderOffset + 30 + localFilenameLength + localExtraLength;
+                return zipBytes.slice(dataOffset, dataOffset + compressedSize);
+            }
+        }
+        
+        offset += 46 + filenameLength + extraLength + commentLength;
+    }
+    
+    return null;
 }
 
 async function genArliAI(prompt, negative, s) {
