@@ -365,7 +365,7 @@ Tags:`;
         const timestamp = Date.now();
         log(`Generation timestamp: ${timestamp}`);
         
-        let cleaned = (llmPrompt || "").split('\n')[0].trim();
+        let cleaned = (llmPrompt || "").trim();
         
         // Remove any generation ID that might have leaked into the response
         cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '').trim();
