@@ -332,13 +332,16 @@ Prompt:`;
             // Only generate default instruction if no custom instruction was set
             let enhancements = "";
             let restrictions = "";
+            
+            // Critical restrictions - ALWAYS apply these regardless of settings
+            restrictions += "\nCRITICAL RESTRICTIONS (MUST FOLLOW):";
+            restrictions += "\n- NEVER use realistic style tags (e.g., realistic, photorealistic, hyperrealistic, photography, etc.)";
+            restrictions += "\n- NEVER use realistic artists (e.g., wlop, artgerm, rossdraws, etc.)";
+            restrictions += "\n- NEVER use common/overused artists (e.g., sakimichan, greg rutkowski, alphonse mucha, etc.)";
+            restrictions += "\n- DO NOT include any artist names unless specifically requested above";
+            
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
-            if (s.llmAddArtist) {
-                const randomArtist = getRandomArtist(true);
-                enhancements += `\n- Art style references from well-known artists (e.g., ${randomArtist}, etc.)`;
-            }
-            else restrictions += "\n- DO NOT include artist names or art style tags";
             
             instruction = `### IMAGE GENERATION TASK ###${skinEnforce}
 
@@ -352,7 +355,8 @@ Required tags:
 - Clothing and accessories
 - Pose and expression
 - Background/setting
-- Quality tags${enhancements}${restrictions}
+- Quality tags${enhancements}
+${restrictions}
 
  Tags:`;
         }
