@@ -12,6 +12,9 @@ const defaultSettings = {
     llmPromptStyle: "tags",
     llmCustomInstruction: "",
     llmEditPrompt: false,
+    llmAddQuality: false,
+    llmAddLighting: false,
+    llmAddArtist: false,
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -286,6 +289,11 @@ async function generateLLMPrompt(s, basePrompt) {
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
         } else if (isNatural) {
+            let enhancements = "";
+            if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
+            if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
+            if (s.llmAddArtist) enhancements += "\n- Art style references from well-known artists";
+            
             instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
@@ -298,10 +306,15 @@ Write a detailed image prompt (up to 500 characters) describing:
 - Their poses, expressions, and body language
 - The setting/background
 - Lighting and atmosphere
-- High quality visual details (sharp focus, detailed rendering, etc.)
+- High quality visual details (sharp focus, detailed rendering, etc.)${enhancements}
 
 Prompt:`;
         } else {
+            let enhancements = "";
+            if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
+            if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
+            if (s.llmAddArtist) enhancements += "\n- Artist style tags (by artist_name, art_style, etc.)";
+            
             instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
 
 CHARACTER REFERENCE:
@@ -314,7 +327,7 @@ Generate detailed Danbooru/Booru-style tags (up to 500 characters) including:
 - Clothing and accessories in detail
 - Pose, expression, action
 - Setting/background tags
-${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}
+${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}${enhancements}
 
 Tags:`;
         }
@@ -1490,6 +1503,18 @@ function createUI() {
                         <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
                         <span>Edit LLM prompt before generation</span>
                     </label>
+                    <label class="checkbox_label">
+                        <input id="qig-llm-quality" type="checkbox" ${s.llmAddQuality ? "checked" : ""}>
+                        <span>Add enhanced quality tags</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input id="qig-llm-lighting" type="checkbox" ${s.llmAddLighting ? "checked" : ""}>
+                        <span>Add lighting tags</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input id="qig-llm-artist" type="checkbox" ${s.llmAddArtist ? "checked" : ""}>
+                        <span>Add random artist tags</span>
+                    </label>
                     <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                         <label>Custom LLM Instruction</label>
                         <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${s.llmCustomInstruction || ""}</textarea>
@@ -1657,6 +1682,9 @@ function createUI() {
     bind("qig-llm-style", "llmPromptStyle");
     bind("qig-llm-custom", "llmCustomInstruction");
     bindCheckbox("qig-llm-edit", "llmEditPrompt");
+    bindCheckbox("qig-llm-quality", "llmAddQuality");
+    bindCheckbox("qig-llm-lighting", "llmAddLighting");
+    bindCheckbox("qig-llm-artist", "llmAddArtist");
     document.getElementById("qig-llm-style").onchange = e => {
         getSettings().llmPromptStyle = e.target.value;
         saveSettingsDebounced();
