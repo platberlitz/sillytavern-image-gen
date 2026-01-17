@@ -364,10 +364,15 @@ Prompt:`;
             restrictions += "\n- NEVER use realistic style tags (e.g., realistic, photorealistic, hyperrealistic, photography, etc.)";
             restrictions += "\n- NEVER use realistic artists (e.g., wlop, artgerm, rossdraws, etc.)";
             restrictions += "\n- NEVER use common/overused artists (e.g., sakimichan, greg rutkowski, alphonse mucha, etc.)";
-            restrictions += "\n- DO NOT include any artist names unless specifically requested";
 
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
+            if (s.llmAddArtist) {
+                const randomArtist = getRandomArtist(true); // Use tag format for Danbooru style
+                enhancements += `\n- Include artist tags from anime/manga artists (e.g., ${randomArtist}, etc.)`;
+            } else {
+                restrictions += "\n- DO NOT include any artist names";
+            }
 
             instruction = `### STANDALONE IMAGE GENERATION TASK ###${skinEnforce}
 
