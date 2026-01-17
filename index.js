@@ -358,7 +358,7 @@ Tags:`;
         }
         
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
-        let llmPrompt = await generateQuietPrompt(instruction + `\n\n[Generation ID: ${Date.now()}]`, false, true, false, "");
+        let llmPrompt = await generateQuietPrompt(instruction, true, false, false, "");
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
         log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
