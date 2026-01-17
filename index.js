@@ -421,8 +421,24 @@ ${restrictions}
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
 
-        // Use generateQuietPrompt for ALL instruction types
-        let llmPrompt = await generateQuietPrompt(instructionWithEntropy);
+        // Use generateQuietPrompt with options to bypass caching
+        // skipWIAN: true - skip World Info and Author's Note (can cause cache hits)
+        // quietName: unique name per request to prevent prompt caching
+        const quietOptions = {
+            skipWIAN: true,
+            quietName: `ImageGen_${timestamp}`,
+            quietToLoud: false
+        };
+
+        let llmPrompt;
+        try {
+            // Try calling with options first (newer SillyTavern versions)
+            llmPrompt = await generateQuietPrompt(instructionWithEntropy, quietOptions);
+        } catch (e) {
+            // Fallback to simple call for older versions
+            log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
+            llmPrompt = await generateQuietPrompt(instructionWithEntropy);
+        }
 
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
