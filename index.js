@@ -440,68 +440,20 @@ function findPngEnd(bytes, start) {
 }
 
 async function extractPngFromZip(zipBytes) {
-    // Simple ZIP extraction - look for PNG file in ZIP central directory
-    const view = new DataView(zipBytes.buffer);
-    
-    // Find end of central directory record (signature: 0x06054b50)
-    let eocdOffset = -1;
-    for (let i = zipBytes.length - 22; i >= 0; i--) {
-        if (view.getUint32(i, true) === 0x06054b50) {
-            eocdOffset = i;
-            break;
-        }
-    }
-    
-    if (eocdOffset === -1) return null;
-    
-    // Get central directory offset and size
-    const cdOffset = view.getUint32(eocdOffset + 16, true);
-    const cdSize = view.getUint32(eocdOffset + 12, true);
-    
-    // Parse central directory entries to find PNG file
-    let offset = cdOffset;
-    while (offset < cdOffset + cdSize) {
-        if (view.getUint32(offset, true) !== 0x02014b50) break; // Central directory signature
-        
-        const filenameLength = view.getUint16(offset + 28, true);
-        const extraLength = view.getUint16(offset + 30, true);
-        const commentLength = view.getUint16(offset + 32, true);
-        const localHeaderOffset = view.getUint32(offset + 42, true);
-        
-        // Check if filename ends with .png
-        const filename = new TextDecoder().decode(zipBytes.slice(offset + 46, offset + 46 + filenameLength));
-        if (filename.toLowerCase().endsWith('.png')) {
-            // Found PNG file, extract it from local file header
-            const localSig = view.getUint32(localHeaderOffset, true);
-            if (localSig === 0x04034b50) { // Local file header signature
-                const compressionMethod = view.getUint16(localHeaderOffset + 8, true);
-                const localFilenameLength = view.getUint16(localHeaderOffset + 26, true);
-                const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
-                const compressedSize = view.getUint32(localHeaderOffset + 18, true);
-                const uncompressedSize = view.getUint32(localHeaderOffset + 22, true);
-                
-                const dataOffset = localHeaderOffset + 30 + localFilenameLength + localExtraLength;
-                const compressedData = zipBytes.slice(dataOffset, dataOffset + compressedSize);
-                
-                // Handle compression method
-                if (compressionMethod === 0) {
-                    // No compression (stored)
-                    return compressedData;
-                } else if (compressionMethod === 8) {
-                    // Deflate compression - try simple approach first
-                    console.log("PNG is compressed with deflate, attempting extraction...");
-                    // For now, return the compressed data and see if browser can handle it
-                    return compressedData;
-                } else {
-                    console.error("Unsupported compression method:", compressionMethod);
-                    return null;
+    // Simple approach: look for PNG signature directly in ZIP data
+    for (let i = 0; i < zipBytes.length - 8; i++) {
+        if (zipBytes[i] === 0x89 && zipBytes[i+1] === 0x50 && zipBytes[i+2] === 0x4E && zipBytes[i+3] === 0x47) {
+            // Found PNG signature, find the end
+            for (let j = i + 8; j < zipBytes.length - 8; j++) {
+                if (zipBytes[j] === 0x49 && zipBytes[j+1] === 0x45 && zipBytes[j+2] === 0x4E && zipBytes[j+3] === 0x44) {
+                    // Found IEND chunk
+                    const pngData = zipBytes.slice(i, j + 8);
+                    console.log(`Found PNG in ZIP: ${pngData.length} bytes`);
+                    return pngData;
                 }
             }
         }
-        
-        offset += 46 + filenameLength + extraLength + commentLength;
     }
-    
     return null;
 }
 
