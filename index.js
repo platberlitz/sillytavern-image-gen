@@ -301,6 +301,7 @@ async function generateLLMPrompt(s, basePrompt) {
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
         } else if (isCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
+            // Don't set instruction here - let it fall through to default tags style
         } else if (isNatural) {
             let enhancements = "";
             let restrictions = "";
@@ -328,6 +329,7 @@ Write a detailed image prompt describing:
 
 Prompt:`;
         } else {
+            // Only generate default instruction if no custom instruction was set
             let enhancements = "";
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
@@ -357,6 +359,7 @@ Tags:`;
         
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
+        log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
         if (skinTones.length && cleaned) {
