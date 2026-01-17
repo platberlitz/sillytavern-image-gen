@@ -1076,18 +1076,19 @@ function createPopup(id, title, content, onShow) {
         popup.id = id;
         popup.className = "qig-popup";
         popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
-        popup.innerHTML = `
-            <div class="qig-popup-content" onclick="event.stopPropagation()">
-                <div class="qig-popup-header">
-                    <span>${title}</span>
-                    <button class="qig-close-btn">✕</button>
-                </div>
-                ${content}
-            </div>`;
         document.body.appendChild(popup);
-        popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
-        popup.onclick = () => popup.style.display = "none";
     }
+    // ALWAYS update innerHTML to ensure fresh content each time
+    popup.innerHTML = `
+        <div class="qig-popup-content" onclick="event.stopPropagation()">
+            <div class="qig-popup-header">
+                <span>${title}</span>
+                <button class="qig-close-btn">✕</button>
+            </div>
+            ${content}
+        </div>`;
+    popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
+    popup.onclick = () => popup.style.display = "none";
     if (onShow) onShow(popup);
     popup.style.display = "flex";
     return popup;
