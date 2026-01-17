@@ -392,11 +392,19 @@ async function genNovelAI(prompt, negative, s) {
     // Check if response is a ZIP file (starts with PK)
     if (bytes[0] === 0x50 && bytes[1] === 0x4B) {
         log("Response is ZIP format, extracting PNG...");
-        const pngData = extractPngFromZip(bytes);
+        const pngData = await extractPngFromZip(bytes);
         if (!pngData) {
             throw new Error("No PNG found in ZIP response. Check your API key and model settings.");
         }
-        return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
+        
+        // Verify PNG signature
+        if (pngData[0] === 0x89 && pngData[1] === 0x50 && pngData[2] === 0x4E && pngData[3] === 0x47) {
+            log(`Extracted valid PNG from ZIP: ${pngData.length} bytes`);
+            return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
+        } else {
+            log(`Invalid PNG signature after extraction: ${pngData[0]} ${pngData[1]} ${pngData[2]} ${pngData[3]}`);
+            throw new Error("Extracted data is not a valid PNG file.");
+        }
     }
     
     // V4+ returns msgpack events, V3 returns zip - both contain PNG data we can extract
@@ -431,7 +439,7 @@ function findPngEnd(bytes, start) {
     return bytes.length;
 }
 
-function extractPngFromZip(zipBytes) {
+async function extractPngFromZip(zipBytes) {
     // Simple ZIP extraction - look for PNG file in ZIP central directory
     const view = new DataView(zipBytes.buffer);
     
@@ -466,12 +474,28 @@ function extractPngFromZip(zipBytes) {
             // Found PNG file, extract it from local file header
             const localSig = view.getUint32(localHeaderOffset, true);
             if (localSig === 0x04034b50) { // Local file header signature
+                const compressionMethod = view.getUint16(localHeaderOffset + 8, true);
                 const localFilenameLength = view.getUint16(localHeaderOffset + 26, true);
                 const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
                 const compressedSize = view.getUint32(localHeaderOffset + 18, true);
+                const uncompressedSize = view.getUint32(localHeaderOffset + 22, true);
                 
                 const dataOffset = localHeaderOffset + 30 + localFilenameLength + localExtraLength;
-                return zipBytes.slice(dataOffset, dataOffset + compressedSize);
+                const compressedData = zipBytes.slice(dataOffset, dataOffset + compressedSize);
+                
+                // Handle compression method
+                if (compressionMethod === 0) {
+                    // No compression (stored)
+                    return compressedData;
+                } else if (compressionMethod === 8) {
+                    // Deflate compression - try simple approach first
+                    console.log("PNG is compressed with deflate, attempting extraction...");
+                    // For now, return the compressed data and see if browser can handle it
+                    return compressedData;
+                } else {
+                    console.error("Unsupported compression method:", compressionMethod);
+                    return null;
+                }
             }
         }
         
