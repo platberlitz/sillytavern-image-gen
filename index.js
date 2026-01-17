@@ -367,6 +367,9 @@ Tags:`;
         
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
+        // Remove any generation ID that might have leaked into the response
+        cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '').trim();
+        
         if (skinTones.length && cleaned) {
             const outputLower = cleaned.toLowerCase();
             const skinTags = [];
