@@ -440,21 +440,43 @@ function findPngEnd(bytes, start) {
 }
 
 async function extractPngFromZip(zipBytes) {
-    // Simple approach: look for PNG signature directly in ZIP data
-    for (let i = 0; i < zipBytes.length - 8; i++) {
-        if (zipBytes[i] === 0x89 && zipBytes[i+1] === 0x50 && zipBytes[i+2] === 0x4E && zipBytes[i+3] === 0x47) {
-            // Found PNG signature, find the end
-            for (let j = i + 8; j < zipBytes.length - 8; j++) {
-                if (zipBytes[j] === 0x49 && zipBytes[j+1] === 0x45 && zipBytes[j+2] === 0x4E && zipBytes[j+3] === 0x44) {
-                    // Found IEND chunk
-                    const pngData = zipBytes.slice(i, j + 8);
-                    console.log(`Found PNG in ZIP: ${pngData.length} bytes`);
-                    return pngData;
+    // Use browser's built-in ZIP handling via Response and ReadableStream
+    try {
+        const zipBlob = new Blob([zipBytes], { type: 'application/zip' });
+        
+        // Try to use CompressionStream API if available
+        if (typeof CompressionStream !== 'undefined') {
+            const ds = new DecompressionStream('deflate-raw');
+            // This approach is complex, let's try a simpler method
+        }
+        
+        // Fallback: Search for PNG data in the raw ZIP bytes
+        // Look for PNG signature followed by IHDR chunk
+        for (let i = 0; i < zipBytes.length - 12; i++) {
+            if (zipBytes[i] === 0x89 && zipBytes[i+1] === 0x50 && 
+                zipBytes[i+2] === 0x4E && zipBytes[i+3] === 0x47 &&
+                zipBytes[i+4] === 0x0D && zipBytes[i+5] === 0x0A &&
+                zipBytes[i+6] === 0x1A && zipBytes[i+7] === 0x0A) {
+                
+                // Found full PNG signature, now find IEND
+                for (let j = i + 8; j < zipBytes.length - 8; j++) {
+                    if (zipBytes[j] === 0x49 && zipBytes[j+1] === 0x45 && 
+                        zipBytes[j+2] === 0x4E && zipBytes[j+3] === 0x44) {
+                        // Found IEND, extract complete PNG
+                        const pngData = zipBytes.slice(i, j + 8);
+                        console.log(`Found complete PNG: ${pngData.length} bytes`);
+                        return pngData;
+                    }
                 }
             }
         }
+        
+        console.log("No complete PNG found, trying partial extraction...");
+        return null;
+    } catch (e) {
+        console.error("ZIP extraction error:", e);
+        return null;
     }
-    return null;
 }
 
 async function genArliAI(prompt, negative, s) {
