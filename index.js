@@ -85,6 +85,7 @@ const defaultSettings = {
     localUrl: "http://127.0.0.1:7860",
     localUrl: "http://127.0.0.1:7860",
     localType: "a1111",
+    localModel: "model.safetensors",
     localRefImage: "",
     localDenoise: 0.75,
 };
@@ -108,7 +109,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localRefImage", "localDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -971,11 +972,52 @@ async function genLocal(prompt, negative, s) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
     if (s.localType === "comfyui") {
+        // Map sampler names to ComfyUI format
+        const comfySamplerMap = {
+            "euler_a": "euler_ancestral",
+            "euler": "euler",
+            "dpm++_2m": "dpmpp_2m",
+            "dpm++_sde": "dpmpp_sde",
+            "dpmpp_2m": "dpmpp_2m",
+            "dpmpp_sde": "dpmpp_sde",
+            "ddim": "ddim",
+            "lms": "lms",
+            "heun": "heun",
+            "uni_pc": "uni_pc",
+            "dpm_2": "dpm_2",
+            "dpm_2_ancestral": "dpm_2_ancestral"
+        };
+        const comfySchedulerMap = {
+            "euler_a": "normal",
+            "dpm++_2m": "karras",
+            "dpmpp_2m": "karras",
+            "dpm++_sde": "karras",
+            "dpmpp_sde": "karras"
+        };
+
+        const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/_/g, "_");
+        const schedulerName = comfySchedulerMap[s.sampler] || "normal";
+        const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+
         // ComfyUI API
         const workflow = {
             prompt: {
-                "3": { class_type: "KSampler", inputs: { seed: s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed, steps: s.steps, cfg: s.cfgScale, sampler_name: s.sampler.replace("_", ""), scheduler: "normal", denoise: 1, model: ["4", 0], positive: ["6", 0], negative: ["7", 0], latent_image: ["5", 0] } },
-                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "model.safetensors" } },
+                "3": {
+                    class_type: "KSampler",
+                    inputs: {
+                        seed: seed,
+                        steps: s.steps,
+                        cfg: s.cfgScale,
+                        sampler_name: samplerName,
+                        scheduler: schedulerName,
+                        denoise: 1,
+                        model: ["4", 0],
+                        positive: ["6", 0],
+                        negative: ["7", 0],
+                        latent_image: ["5", 0]
+                    }
+                },
+                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
                 "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
                 "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["4", 1] } },
                 "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: ["4", 1] } },
@@ -983,6 +1025,9 @@ async function genLocal(prompt, negative, s) {
                 "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
             }
         };
+
+        log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, size=${s.width}x${s.height}`);
+
         const res = await fetch(`${baseUrl}/prompt`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1813,6 +1858,11 @@ function createUI() {
                         <option value="a1111" ${s.localType === "a1111" ? "selected" : ""}>Automatic1111</option>
                         <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
                     </select>
+                    <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
+                         <label>Checkpoint Name</label>
+                         <input id="qig-local-model" type="text" value="${s.localModel}" placeholder="model.safetensors">
+                         <div class="form-hint">Must match exactly with your ComfyUI checkpoints folder</div>
+                    </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Reference Image (Img2Img)</label>
                          <div style="display:flex;gap:4px;align-items:center;">
@@ -2008,9 +2058,11 @@ function createUI() {
     bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
+    bind("qig-local-model", "localModel");
     document.getElementById("qig-local-type").onchange = (e) => {
         getSettings().localType = e.target.value;
         document.getElementById("qig-local-a1111-opts").style.display = e.target.value === "a1111" ? "block" : "none";
+        document.getElementById("qig-local-comfyui-opts").style.display = e.target.value === "comfyui" ? "block" : "none";
         saveSettingsDebounced();
     };
     bind("qig-local-denoise", "localDenoise", true);
