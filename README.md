@@ -27,6 +27,7 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 - 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts
 - ✏️ **Prompt Editing** - Edit LLM-generated prompts before generation
 - 🏷️ **Three Prompt Modes** - Danbooru tags, natural descriptions, or custom instruction
+- ⭐ **LLM Enhancements** - Add quality tags, lighting tags, and artist tags to LLM prompts
 - ✨ **Quality Tags** - Auto-prepend quality boosters
 - 📍 **Message Selector** - Choose which chat message to use
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
@@ -88,6 +89,9 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Use chat message** | Use last chat message as prompt |
 | **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
 | **Edit LLM prompt** | Review and edit AI-generated prompts before generation |
+| **Add enhanced quality tags** | LLM includes additional quality descriptors |
+| **Add lighting tags** | LLM includes professional lighting descriptions |
+| **Add random artist tags** | LLM includes art style references from artists |
 | **Batch Count** | Number of images to generate (1-10) |
 | **Size** | Image dimensions (custom or NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
