@@ -440,42 +440,132 @@ function findPngEnd(bytes, start) {
 }
 
 async function extractPngFromZip(zipBytes) {
-    // Use browser's built-in ZIP handling via Response and ReadableStream
     try {
-        const zipBlob = new Blob([zipBytes], { type: 'application/zip' });
+        const view = new DataView(zipBytes.buffer);
         
-        // Try to use CompressionStream API if available
-        if (typeof CompressionStream !== 'undefined') {
-            const ds = new DecompressionStream('deflate-raw');
-            // This approach is complex, let's try a simpler method
-        }
-        
-        // Fallback: Search for PNG data in the raw ZIP bytes
-        // Look for PNG signature followed by IHDR chunk
-        for (let i = 0; i < zipBytes.length - 12; i++) {
-            if (zipBytes[i] === 0x89 && zipBytes[i+1] === 0x50 && 
-                zipBytes[i+2] === 0x4E && zipBytes[i+3] === 0x47 &&
-                zipBytes[i+4] === 0x0D && zipBytes[i+5] === 0x0A &&
-                zipBytes[i+6] === 0x1A && zipBytes[i+7] === 0x0A) {
-                
-                // Found full PNG signature, now find IEND
-                for (let j = i + 8; j < zipBytes.length - 8; j++) {
-                    if (zipBytes[j] === 0x49 && zipBytes[j+1] === 0x45 && 
-                        zipBytes[j+2] === 0x4E && zipBytes[j+3] === 0x44) {
-                        // Found IEND, extract complete PNG
-                        const pngData = zipBytes.slice(i, j + 8);
-                        console.log(`Found complete PNG: ${pngData.length} bytes`);
-                        return pngData;
-                    }
-                }
+        // Find end of central directory record
+        let eocdOffset = -1;
+        for (let i = zipBytes.length - 22; i >= 0; i--) {
+            if (view.getUint32(i, true) === 0x06054b50) {
+                eocdOffset = i;
+                break;
             }
         }
         
-        console.log("No complete PNG found, trying partial extraction...");
-        return null;
+        if (eocdOffset === -1) {
+            console.log("No EOCD found, trying direct PNG search...");
+            return searchForPngInBytes(zipBytes);
+        }
+        
+        // Get central directory info
+        const cdOffset = view.getUint32(eocdOffset + 16, true);
+        const cdEntries = view.getUint16(eocdOffset + 10, true);
+        
+        // Parse central directory entries
+        let offset = cdOffset;
+        for (let i = 0; i < cdEntries; i++) {
+            if (view.getUint32(offset, true) !== 0x02014b50) break;
+            
+            const compressionMethod = view.getUint16(offset + 10, true);
+            const compressedSize = view.getUint32(offset + 20, true);
+            const uncompressedSize = view.getUint32(offset + 24, true);
+            const filenameLength = view.getUint16(offset + 28, true);
+            const extraLength = view.getUint16(offset + 30, true);
+            const commentLength = view.getUint16(offset + 32, true);
+            const localHeaderOffset = view.getUint32(offset + 42, true);
+            
+            // Get filename
+            const filename = new TextDecoder().decode(zipBytes.slice(offset + 46, offset + 46 + filenameLength));
+            
+            if (filename.toLowerCase().endsWith('.png')) {
+                console.log(`Found PNG file: ${filename}, compression: ${compressionMethod}`);
+                
+                // Get local file header
+                const localFilenameLength = view.getUint16(localHeaderOffset + 26, true);
+                const localExtraLength = view.getUint16(localHeaderOffset + 28, true);
+                const dataOffset = localHeaderOffset + 30 + localFilenameLength + localExtraLength;
+                
+                if (compressionMethod === 0) {
+                    // No compression
+                    return zipBytes.slice(dataOffset, dataOffset + compressedSize);
+                } else if (compressionMethod === 8) {
+                    // Deflate compression - try to decompress
+                    const compressedData = zipBytes.slice(dataOffset, dataOffset + compressedSize);
+                    return await decompressDeflate(compressedData);
+                }
+            }
+            
+            offset += 46 + filenameLength + extraLength + commentLength;
+        }
+        
+        console.log("No PNG found in central directory, trying direct search...");
+        return searchForPngInBytes(zipBytes);
+        
     } catch (e) {
-        console.error("ZIP extraction error:", e);
-        return null;
+        console.error("ZIP parsing error:", e);
+        return searchForPngInBytes(zipBytes);
+    }
+}
+
+function searchForPngInBytes(bytes) {
+    // Search for PNG signature in raw bytes
+    for (let i = 0; i < bytes.length - 8; i++) {
+        if (bytes[i] === 0x89 && bytes[i+1] === 0x50 && bytes[i+2] === 0x4E && bytes[i+3] === 0x47 &&
+            bytes[i+4] === 0x0D && bytes[i+5] === 0x0A && bytes[i+6] === 0x1A && bytes[i+7] === 0x0A) {
+            
+            // Find IEND
+            for (let j = i + 8; j < bytes.length - 8; j++) {
+                if (bytes[j] === 0x49 && bytes[j+1] === 0x45 && bytes[j+2] === 0x4E && bytes[j+3] === 0x44) {
+                    const pngData = bytes.slice(i, j + 8);
+                    console.log(`Found PNG via direct search: ${pngData.length} bytes`);
+                    return pngData;
+                }
+            }
+        }
+    }
+    return null;
+}
+
+async function decompressDeflate(compressedData) {
+    try {
+        // Use pako if available (common in many environments)
+        if (typeof pako !== 'undefined') {
+            return pako.inflate(compressedData);
+        }
+        
+        // Try browser's DecompressionStream
+        if (typeof DecompressionStream !== 'undefined') {
+            const stream = new DecompressionStream('deflate-raw');
+            const writer = stream.writable.getWriter();
+            const reader = stream.readable.getReader();
+            
+            writer.write(compressedData);
+            writer.close();
+            
+            const chunks = [];
+            let done = false;
+            while (!done) {
+                const { value, done: readerDone } = await reader.read();
+                done = readerDone;
+                if (value) chunks.push(value);
+            }
+            
+            const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            const result = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+                result.set(chunk, offset);
+                offset += chunk.length;
+            }
+            return result;
+        }
+        
+        console.log("No decompression method available, returning compressed data");
+        return compressedData;
+        
+    } catch (e) {
+        console.error("Decompression failed:", e);
+        return compressedData;
     }
 }
 
