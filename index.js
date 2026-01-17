@@ -354,25 +354,7 @@ Required tags:
 - Background/setting
 - Quality tags${enhancements}${restrictions}
 
-Tags:`;
-        }
-            else restrictions += "\n- DO NOT include artist names or art style tags";
-            
-            instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
-
-CHARACTER REFERENCE:
-${appearanceContext}
-CURRENT SCENE: ${basePrompt}
-
-Generate detailed Danbooru/Booru-style tags including:
-- Character name + series name if from known media (e.g., "hatsune_miku, vocaloid")
-- Physical traits: hair color/style, eye color, body type, skin tone
-- Clothing and accessories in detail
-- Pose, expression, action
-- Setting/background tags
-${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}${enhancements}${restrictions}
-
-Tags:`;
+ Tags:`;
         }
         
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
