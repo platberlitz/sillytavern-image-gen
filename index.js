@@ -344,7 +344,8 @@ async function genPollinations(prompt, negative, s) {
 
 async function genNovelAI(prompt, negative, s) {
     const isV4 = s.naiModel.includes("-4");
-    const sampler = s.sampler === "euler_a" ? "k_euler_ancestral" : s.sampler === "euler" ? "k_euler" : s.sampler === "dpm++_2m" ? "k_dpmpp_2m" : s.sampler === "dpm++_sde" ? "k_dpmpp_sde" : s.sampler === "ddim" ? (isV4 ? "ddim_v3" : "ddim") : "k_euler_ancestral";
+    // NovelAI backend only reliably supports k_euler_ancestral
+    const sampler = "k_euler_ancestral";
     const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
     
     const params = {
