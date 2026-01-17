@@ -241,21 +241,40 @@ function getLastMessage() {
     return msg?.mes || "";
 }
 
-const styleCache = new Map();
-function applyStyle(prompt, s) {
-    const cacheKey = `${s.style}|${prompt}`;
-    if (styleCache.has(cacheKey)) return styleCache.get(cacheKey);
-    const style = STYLES[s.style] || STYLES.none;
-    const result = style.prefix + prompt + style.suffix;
-    styleCache.set(cacheKey, result);
-    if (styleCache.size > 100) styleCache.delete(styleCache.keys().next().value);
-    return result;
-}
+    const styleCache = new Map();
+    
+    function applyStyle(prompt, s) {
+        if (!s.style || s.style === "none") return prompt;
+        
+        const cacheKey = `${s.style}|${prompt}`;
+        if (styleCache.has(cacheKey)) return styleCache.get(cacheKey);
+        
+        const styles = STYLE_PRESETS[s.style] || [];
+        let result = prompt;
+        styles.forEach(style => {
+            if (style.type === "tag") result = `${result}, ${style.content}`;
+            else if (style.type === "prefix") result = `${style.content} ${result}`;
+            else if (style.type === "suffix") result = `${result} ${style.content}`;
+        });
+        
+        styleCache.set(cacheKey, result);
+        if (styleCache.size > 100) styleCache.delete(styleCache.keys().next().value);
+        
+        return result;
+    }
+    
+    function clearStyleCache() {
+        styleCache.clear();
+        log("Style cache cleared");
+    }
 
 const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
 
 async function generateLLMPrompt(s, basePrompt) {
     if (!s.useLLMPrompt) return basePrompt;
+    
+    // Clear any cached styles before generating new prompt
+    clearStyleCache();
     
     log("Generating prompt via SillyTavern LLM...");
     showStatus("🤖 Creating image prompt...");
@@ -363,15 +382,20 @@ ${restrictions}
         
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
         
+        // Add unique ID to prevent caching
+        const uniqueId = Date.now() + '_' + Math.random().toString(36).substring(2, 9);
+        log(`Request ID: ${uniqueId}`);
+        
         let llmPrompt;
         if (isCustom && s.llmCustomInstruction) {
             // For custom instructions, use the instruction directly without going through generateQuietPrompt
             // generateQuietPrompt includes chat history which interferes with custom instructions
             log("Custom instruction mode - using instruction directly");
-            llmPrompt = await callAPIForCustomInstruction(instruction, s);
+            llmPrompt = await callAPIForCustomInstruction(instruction, uniqueId);
         } else {
-            // For built-in instructions (tags/natural), use generateQuietPrompt
-            llmPrompt = await generateQuietPrompt(instruction);
+            // For built-in instructions (tags/natural), use generateQuietPrompt with cache-busting
+            const instructionWithId = `${instruction}\n\n[Request ID: ${uniqueId}]`;
+            llmPrompt = await generateQuietPrompt(instructionWithId);
         }
         
         log(`LLM raw response: ${llmPrompt}`);
@@ -383,7 +407,8 @@ ${restrictions}
         
         let cleaned = (llmPrompt || "").trim();
         
-        // Remove any generation ID that might have leaked into the response
+        // Remove any IDs that might have leaked into the response (cache-busting identifiers)
+        cleaned = cleaned.replace(/\[Request ID: [^\]]+\]/g, '').trim();
         cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '').trim();
         
         if (skinTones.length && cleaned) {
@@ -1862,25 +1887,34 @@ async function generateImage() {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
         }
+        // Clear caches after each generation to prevent reusing stale prompts
+        clearStyleCache();
+        log("Cleared all caches after generation");
     }
 }
 
-async function callAPIForCustomInstruction(instruction, s) {
+async function callAPIForCustomInstruction(instruction, uniqueId) {
     try {
         log("Attempting direct API call for custom instruction");
+        log(`Request ID: ${uniqueId}`);
         
         // Try to use the generation API directly via context
         const ctx = getContext();
         
+        // Add cache-busting ID to the instruction
+        const instructionWithId = `${instruction}\n\n[Request ID: ${uniqueId}]`;
+        
         // Build a minimal API request that only includes the instruction
         // This avoids the chat history context that causes issues
-        const request = await fetch('/api/generate', {
+        const request = await fetch('/api/generate?' + new Date().getTime(), {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
+                'Pragma': 'no-cache'
             },
             body: JSON.stringify({
-                prompt: instruction,
+                prompt: instructionWithId,
                 system_prompt: `You are an image prompt generator. Convert the user's request into an appropriate image generation prompt.`,
                 temperature: 0.7,
                 max_length: 200
@@ -1889,7 +1923,13 @@ async function callAPIForCustomInstruction(instruction, s) {
         
         if (request.ok) {
             const data = await request.json();
-            return data.results || data.content || data;
+            const response = data.results || data.content || data;
+            
+            // Remove the request ID from response if present
+            if (typeof response === 'string') {
+                return response.replace(/\[Request ID: [^\]]+\]/g, '').trim();
+            }
+            return response;
         }
         
         throw new Error(`API request failed: ${request.status}`);
