@@ -1156,6 +1156,21 @@ async function genProxy(prompt, negative, s) {
 
         // Handle content as string
         const contentStr = typeof msgContent === 'string' ? msgContent : '';
+
+        // Check for plain URL (like LinkAPI/Naistera style)
+        const urlMatch = contentStr.match(/^https?:\/\/[^\s]+\.(png|jpg|jpeg|webp|gif)(\?[^\s]*)?$/i);
+        if (urlMatch) {
+            log(`Found image URL in content: ${contentStr.substring(0, 50)}...`);
+            return contentStr.trim();
+        }
+
+        // Check for URL embedded in text
+        const embeddedUrlMatch = contentStr.match(/(https?:\/\/[^\s]+\.(png|jpg|jpeg|webp|gif)(\?[^\s]*)?)/i);
+        if (embeddedUrlMatch) {
+            log(`Found embedded image URL: ${embeddedUrlMatch[1].substring(0, 50)}...`);
+            return embeddedUrlMatch[1];
+        }
+
         const b64Match = contentStr.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
         if (b64Match) return b64Match[0];
 
