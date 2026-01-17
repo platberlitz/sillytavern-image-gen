@@ -11,6 +11,7 @@ const defaultSettings = {
     useLLMPrompt: false,
     llmPromptStyle: "tags",
     llmCustomInstruction: "",
+    llmEditPrompt: false,
     messageIndex: -1,
     width: 512,
     height: 512,
@@ -977,7 +978,55 @@ function displayImage(url) {
     });
 }
 
-function showGallery() {
+function showPromptEditDialog(prompt) {
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-prompt-edit-popup", "Edit LLM Generated Prompt", `
+            <div style="background:#16213e;padding:20px;border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                    <h3 style="margin:0;color:#e94560;">Edit Generated Prompt</h3>
+                    <button id="qig-prompt-edit-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+                </div>
+                <textarea id="qig-prompt-edit-text" style="width:100%;height:200px;resize:vertical;background:#0f1419;color:#fff;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;" placeholder="Edit the generated prompt...">${prompt}</textarea>
+                <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+                    <button id="qig-prompt-edit-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-prompt-edit-use" class="menu_button">Use Prompt</button>
+                </div>
+            </div>`, (popup) => {
+            const textarea = document.getElementById("qig-prompt-edit-text");
+            const closeBtn = document.getElementById("qig-prompt-edit-close");
+            const cancelBtn = document.getElementById("qig-prompt-edit-cancel");
+            const useBtn = document.getElementById("qig-prompt-edit-use");
+            
+            textarea.focus();
+            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            
+            const close = () => {
+                popup.style.display = "none";
+                resolve(null);
+            };
+            
+            const use = () => {
+                popup.style.display = "none";
+                resolve(textarea.value);
+            };
+            
+            closeBtn.onclick = close;
+            cancelBtn.onclick = close;
+            useBtn.onclick = use;
+            
+            textarea.onkeydown = (e) => {
+                if (e.key === "Enter" && e.ctrlKey) {
+                    e.preventDefault();
+                    use();
+                }
+                if (e.key === "Escape") {
+                    e.preventDefault();
+                    close();
+                }
+            };
+        });
+    });
+}
     const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
         <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -1434,6 +1483,10 @@ function createUI() {
                         <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
                         <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
                     </select>
+                    <label class="checkbox_label">
+                        <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
+                        <span>Edit LLM prompt before generation</span>
+                    </label>
                     <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                         <label>Custom LLM Instruction</label>
                         <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${s.llmCustomInstruction || ""}</textarea>
@@ -1600,6 +1653,7 @@ function createUI() {
     };
     bind("qig-llm-style", "llmPromptStyle");
     bind("qig-llm-custom", "llmCustomInstruction");
+    bindCheckbox("qig-llm-edit", "llmEditPrompt");
     document.getElementById("qig-llm-style").onchange = e => {
         getSettings().llmPromptStyle = e.target.value;
         saveSettingsDebounced();
@@ -1677,6 +1731,23 @@ async function generateImage() {
     }
     
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
+    
+    // Show prompt editing dialog if enabled
+    if (s.useLLMPrompt && s.llmEditPrompt && prompt !== basePrompt) {
+        const editedPrompt = await showPromptEditDialog(prompt);
+        if (editedPrompt !== null) {
+            prompt = editedPrompt;
+        } else {
+            // User cancelled
+            hideStatus();
+            if (paletteBtn) {
+                paletteBtn.classList.remove("fa-spinner", "fa-spin");
+                paletteBtn.classList.add("fa-palette");
+            }
+            return;
+        }
+    }
+    
     prompt = applyStyle(prompt, s);
     
     if (s.appendQuality && s.qualityTags) {
