@@ -1,3 +1,13 @@
+// Artist lists for random selection
+const ARTISTS_NATURAL = ["abubu", "afrobull", "aiue oka", "akairiot", "akamatsu ken", "alex ahad", "alzi xiaomi", "amazuyu tatsuki", "ask (askzy)", "atdan", "ayami kojima", "azto dio", "bkub", "butcha-u", "ciloranko", "dino (dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi (snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon (kwonchan)", "lack", "lm7", "mika pikazo", "mikeinel", "morikura en", "nardack", "neco", "nian", "nixeu", "pochi (pochi-goya)", "redjuice", "rei (sanbonzakura)", "rurudo", "shirataki", "sky-freedom", "tofuubear", "wanke", "yaegashi nan", "yamakaze", "yoshiaki", "yuuki tatsuya"];
+
+const ARTISTS_TAGS = ["abubu", "afrobull", "aiue_oka", "akairiot", "akamatsu_ken", "alex_ahad", "alzi_xiaomi", "amazuyu_tatsuki", "ask_(askzy)", "atdan", "ayami_kojima", "azto_dio", "bkub", "butcha-u", "ciloranko", "dino_(dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi_(snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon_(kwonchan)", "lack", "lm7", "mika_pikazo", "mikeinel", "morikura_en", "nardack", "neco", "nian", "nixeu", "pochi_(pochi-goya)", "redjuice", "rei_(sanbonzakura)", "rurudo", "shirataki", "sky-freedom", "tofuubear", "wanke", "yaegashi_nan", "yamakaze", "yoshiaki", "yuuki_tatsuya"];
+
+function getRandomArtist(useTagFormat = false) {
+    const artists = useTagFormat ? ARTISTS_TAGS : ARTISTS_NATURAL;
+    return artists[Math.floor(Math.random() * artists.length)];
+}
+
 const extensionName = "quick-image-gen";
 let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt;
 const defaultSettings = {
@@ -294,8 +304,7 @@ async function generateLLMPrompt(s, basePrompt) {
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
             if (s.llmAddArtist) {
-                const artists = ["abubu", "afrobull", "aiue oka", "akairiot", "akamatsu ken", "alex ahad", "alzi xiaomi", "amazuyu tatsuki", "ask (askzy)", "atdan", "ayami kojima", "azto dio", "bkub", "butcha-u", "ciloranko", "dino (dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi (snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon (kwonchan)", "lack", "lm7", "mika pikazo", "mikeinel", "morikura en", "nardack", "neco", "nian", "nixeu", "pochi (pochi-goya)", "redjuice", "rei (sanbonzakura)", "rurudo", "shirataki", "sky-freedom", "tofuubear", "wanke", "yaegashi nan", "yamakaze", "yoshiaki", "yuuki tatsuya"];
-                const randomArtist = artists[Math.floor(Math.random() * artists.length)];
+                const randomArtist = getRandomArtist(false);
                 enhancements += `\n- Art style references from well-known artists (e.g., ${randomArtist}, etc.)`;
             }
             else restrictions += "\n- DO NOT include artist names or art style references";
@@ -321,8 +330,7 @@ Prompt:`;
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
             if (s.llmAddArtist) {
-                const artists = ["abubu", "afrobull", "aiue_oka", "akairiot", "akamatsu_ken", "alex_ahad", "alzi_xiaomi", "amazuyu_tatsuki", "ask_(askzy)", "atdan", "ayami_kojima", "azto_dio", "bkub", "butcha-u", "ciloranko", "dino_(dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi_(snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon_(kwonchan)", "lack", "lm7", "mika_pikazo", "mikeinel", "morikura_en", "nardack", "neco", "nian", "nixeu", "pochi_(pochi-goya)", "redjuice", "rei_(sanbonzakura)", "rurudo", "shirataki", "sky-freedom", "tofuubear", "wanke", "yaegashi_nan", "yamakaze", "yoshiaki", "yuuki_tatsuya"];
-                const randomArtist = artists[Math.floor(Math.random() * artists.length)];
+                const randomArtist = getRandomArtist(true);
                 enhancements += `\n- Artist style tags (by ${randomArtist}, etc.)`;
             }
             else restrictions += "\n- DO NOT include artist names or art style tags";
@@ -1306,7 +1314,7 @@ window.removeNanobananaRefImage = function(idx) {
 };
 
 function bind(id, key, isNum = false, isCheckbox = false) {
-    const el = document.getElementById(id);
+    const el = getOrCacheElement(id);
     if (!el) return;
     el.onchange = (e) => {
         const value = isCheckbox ? e.target.checked : (isNum ? parseInt(e.target.value) : e.target.value);
