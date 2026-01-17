@@ -293,7 +293,7 @@ async function generateLLMPrompt(s, basePrompt) {
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
-            if (s.llmAddArtist) enhancements += "\n- Art style references from well-known artists";
+            if (s.llmAddArtist) enhancements += "\n- Art style references from well-known artists (e.g., Akira Toriyama, Alex Grey, Alphonse Mucha, Bill Watterson, Carl Barks, Claude Monet, Craig Mullins, Dan Mumford, Johannes Vermeer, etc.)";
             else restrictions += "\n- DO NOT include artist names or art style references";
             
             instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
@@ -316,7 +316,7 @@ Prompt:`;
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
-            if (s.llmAddArtist) enhancements += "\n- Artist style tags (by artist_name, art_style, etc.)";
+            if (s.llmAddArtist) enhancements += "\n- Artist style tags (by akira_toriyama, by alex_grey, by alphonse_mucha, by bill_watterson, by carl_barks, by claude_monet, by craig_mullins, by dan_mumford, by johannes_vermeer, etc.)";
             else restrictions += "\n- DO NOT include artist names or art style tags";
             
             instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
