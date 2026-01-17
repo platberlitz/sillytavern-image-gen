@@ -357,8 +357,10 @@ ${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "mas
 Tags:`;
         }
         
+        log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
         let llmPrompt = await generateQuietPrompt(instruction + `\n\n[Generation ID: ${Date.now()}]`, false, true, false, "");
-        log(`LLM prompt: ${llmPrompt}`);
+        log(`LLM raw response: ${llmPrompt}`);
+        log(`LLM response length: ${(llmPrompt || "").length} chars`);
         log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
         
         // Add timestamp to prevent caching
