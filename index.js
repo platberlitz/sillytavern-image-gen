@@ -332,12 +332,30 @@ Prompt:`;
             // Only generate default instruction if no custom instruction was set
             let enhancements = "";
             let restrictions = "";
-            if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
-            if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
+            if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, etc.)";
+            if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
             if (s.llmAddArtist) {
                 const randomArtist = getRandomArtist(true);
-                enhancements += `\n- Artist style tags (by ${randomArtist}, etc.)`;
+                enhancements += `\n- Art style references from well-known artists (e.g., ${randomArtist}, etc.)`;
             }
+            else restrictions += "\n- DO NOT include artist names or art style tags";
+            
+            instruction = `### IMAGE GENERATION TASK ###${skinEnforce}
+
+Create Danbooru/Booru-style tags for this scene: ${basePrompt}
+
+Character info: ${appearanceContext}
+
+Required tags:
+- Character name + series name
+- Physical traits (hair, eyes, body, skin)
+- Clothing and accessories
+- Pose and expression
+- Background/setting
+- Quality tags${enhancements}${restrictions}
+
+Tags:`;
+        }
             else restrictions += "\n- DO NOT include artist names or art style tags";
             
             instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
