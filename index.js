@@ -95,6 +95,11 @@ const defaultSettings = {
     a1111IpAdapter: false,
     a1111IpAdapterMode: "ip-adapter-faceid-portrait_sd15",
     a1111IpAdapterWeight: 0.7,
+    a1111IpAdapterPixelPerfect: true,
+    a1111IpAdapterResizeMode: "Crop and Resize",
+    a1111IpAdapterControlMode: "Balanced",
+    a1111IpAdapterStartStep: 0,
+    a1111IpAdapterEndStep: 1,
     // ComfyUI specific
     comfyWorkflow: "",
     comfyClipSkip: 1,
@@ -120,7 +125,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1233,9 +1238,11 @@ async function genLocal(prompt, negative, s) {
                 model: s.a1111IpAdapterMode || "ip-adapter-faceid-portrait_sd15",
                 weight: parseFloat(s.a1111IpAdapterWeight) || 0.7,
                 image: s.localRefImage.replace(/^data:image\/.+;base64,/, ''),
-                resize_mode: "Crop and Resize",
-                control_mode: "Balanced",
-                pixel_perfect: true
+                resize_mode: s.a1111IpAdapterResizeMode || "Crop and Resize",
+                control_mode: s.a1111IpAdapterControlMode || "Balanced",
+                pixel_perfect: s.a1111IpAdapterPixelPerfect ?? true,
+                guidance_start: parseFloat(s.a1111IpAdapterStartStep) || 0,
+                guidance_end: parseFloat(s.a1111IpAdapterEndStep) || 1
             }]
         };
         log(`A1111: Using IP-Adapter Face with model=${s.a1111IpAdapterMode}, weight=${s.a1111IpAdapterWeight}`);
@@ -2104,6 +2111,35 @@ function createUI() {
                              </select>
                              <label>Weight: <span id="qig-a1111-ipadapter-weight-val">${s.a1111IpAdapterWeight || 0.7}</span></label>
                              <input id="qig-a1111-ipadapter-weight" type="range" min="0" max="1.5" step="0.05" value="${s.a1111IpAdapterWeight || 0.7}">
+                             
+                             <label class="checkbox_label" style="margin-top:4px;">
+                                 <input id="qig-a1111-ipadapter-pixel" type="checkbox" ${s.a1111IpAdapterPixelPerfect ? "checked" : ""}>
+                                 <span>Pixel Perfect</span>
+                             </label>
+
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div>
+                                     <label>Control Mode</label>
+                                     <select id="qig-a1111-ipadapter-control">
+                                         <option value="Balanced" ${s.a1111IpAdapterControlMode === "Balanced" ? "selected" : ""}>Balanced</option>
+                                         <option value="My prompt is more important" ${s.a1111IpAdapterControlMode === "My prompt is more important" ? "selected" : ""}>Prompt Priority</option>
+                                         <option value="ControlNet is more important" ${s.a1111IpAdapterControlMode === "ControlNet is more important" ? "selected" : ""}>ControlNet Priority</option>
+                                     </select>
+                                 </div>
+                                 <div>
+                                     <label>Resize Mode</label>
+                                     <select id="qig-a1111-ipadapter-resize">
+                                         <option value="Just Resize" ${s.a1111IpAdapterResizeMode === "Just Resize" ? "selected" : ""}>Just Resize</option>
+                                         <option value="Crop and Resize" ${s.a1111IpAdapterResizeMode === "Crop and Resize" ? "selected" : ""}>Crop & Resize</option>
+                                         <option value="Resize and Fill" ${s.a1111IpAdapterResizeMode === "Resize and Fill" ? "selected" : ""}>Resize & Fill</option>
+                                     </select>
+                                 </div>
+                             </div>
+
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Start Step</label><input id="qig-a1111-ipadapter-start" type="number" min="0" max="1" step="0.05" value="${s.a1111IpAdapterStartStep ?? 0}"></div>
+                                 <div><label>End Step</label><input id="qig-a1111-ipadapter-end" type="number" min="0" max="1" step="0.05" value="${s.a1111IpAdapterEndStep ?? 1}"></div>
+                             </div>
                              <div class="form-hint">Requires ControlNet + IP-Adapter extension with FaceID models</div>
                          </div>
                          <hr style="margin:8px 0;opacity:0.2;">
@@ -2335,6 +2371,11 @@ function createUI() {
     document.getElementById("qig-a1111-ipadapter-weight").oninput = (e) => {
         document.getElementById("qig-a1111-ipadapter-weight-val").textContent = e.target.value;
     };
+    bind("qig-a1111-ipadapter-pixel", "a1111IpAdapterPixelPerfect");
+    bind("qig-a1111-ipadapter-resize", "a1111IpAdapterResizeMode");
+    bind("qig-a1111-ipadapter-control", "a1111IpAdapterControlMode");
+    bind("qig-a1111-ipadapter-start", "a1111IpAdapterStartStep", true);
+    bind("qig-a1111-ipadapter-end", "a1111IpAdapterEndStep", true);
 
     // A1111 Model dropdown
     const a1111ModelSelect = document.getElementById("qig-a1111-model");

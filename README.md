@@ -233,6 +233,9 @@ Use these placeholders in custom workflows:
 | **IP-Adapter Face** | Use reference image for face features only (not pose/clothes) |
 | **IP-Adapter Model** | FaceID model (Portrait, Standard, Plus v2 - SD1.5 or SDXL) |
 | **IP-Adapter Weight** | How strongly to apply facial features (0-1.5, default 0.7) |
+| **Pixel Perfect** | Automatically calculate optimal preprocessor resolution |
+| **Control Mode** | Balance between prompt and control image (Balanced, Prompt Priority, ControlNet Priority) |
+| **Steps** | Start/End percentage of steps to apply control (0-1 range) |
 
 ## IP-Adapter Face Setup
 
