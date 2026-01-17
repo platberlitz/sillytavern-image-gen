@@ -357,9 +357,14 @@ ${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "mas
 Tags:`;
         }
         
-        let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
+        let llmPrompt = await generateQuietPrompt(instruction + `\n\n[Generation ID: ${Date.now()}]`, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
+        
+        // Add timestamp to prevent caching
+        const timestamp = Date.now();
+        log(`Generation timestamp: ${timestamp}`);
+        
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
         
         if (skinTones.length && cleaned) {
