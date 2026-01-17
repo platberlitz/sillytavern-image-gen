@@ -298,6 +298,7 @@ Write a detailed image prompt (up to 500 characters) describing:
 - Their poses, expressions, and body language
 - The setting/background
 - Lighting and atmosphere
+- High quality visual details (sharp focus, detailed rendering, etc.)
 
 Prompt:`;
         } else {
@@ -313,7 +314,7 @@ Generate detailed Danbooru/Booru-style tags (up to 500 characters) including:
 - Clothing and accessories in detail
 - Pose, expression, action
 - Setting/background tags
-- Quality tags
+${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}
 
 Tags:`;
         }
