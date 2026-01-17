@@ -88,6 +88,7 @@ const defaultSettings = {
     localRefImage: "",
     localDenoise: 0.75,
     // A1111 specific
+    a1111Model: "",
     a1111ClipSkip: 1,
     a1111Adetailer: false,
     a1111AdetailerModel: "face_yolov8n.pt",
@@ -116,7 +117,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -212,6 +213,53 @@ function log(msg) {
     logs.push(`[${new Date().toLocaleTimeString()}] ${msg}`);
     if (logs.length > 100) logs.shift();
     console.log("[QIG]", msg);
+}
+
+// A1111 Model API helpers
+let a1111ModelsCache = [];
+async function fetchA1111Models(url) {
+    try {
+        const baseUrl = url.replace(/\/$/, "");
+        const res = await fetch(`${baseUrl}/sdapi/v1/sd-models`);
+        if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
+        const models = await res.json();
+        a1111ModelsCache = models.map(m => ({ title: m.title, name: m.model_name }));
+        log(`A1111: Found ${a1111ModelsCache.length} models`);
+        return a1111ModelsCache;
+    } catch (e) {
+        log(`A1111: Error fetching models: ${e.message}`);
+        return [];
+    }
+}
+
+async function switchA1111Model(url, modelTitle) {
+    try {
+        const baseUrl = url.replace(/\/$/, "");
+        log(`A1111: Switching to model: ${modelTitle}`);
+        const res = await fetch(`${baseUrl}/sdapi/v1/options`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sd_model_checkpoint: modelTitle })
+        });
+        if (!res.ok) throw new Error(`Failed to switch model: ${res.status}`);
+        log(`A1111: Model switched successfully`);
+        return true;
+    } catch (e) {
+        log(`A1111: Error switching model: ${e.message}`);
+        return false;
+    }
+}
+
+async function getCurrentA1111Model(url) {
+    try {
+        const baseUrl = url.replace(/\/$/, "");
+        const res = await fetch(`${baseUrl}/sdapi/v1/options`);
+        if (!res.ok) return null;
+        const opts = await res.json();
+        return opts.sd_model_checkpoint || null;
+    } catch {
+        return null;
+    }
 }
 
 const cachedElements = {};
@@ -1991,7 +2039,14 @@ function createUI() {
                          <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
-                         <div class="qig-row">
+                         <label>Model</label>
+                         <div style="display:flex;gap:4px;align-items:center;">
+                             <select id="qig-a1111-model" style="flex:1;">
+                                 <option value="">-- Click Refresh to load models --</option>
+                             </select>
+                             <button id="qig-a1111-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
+                         </div>
+                         <div class="qig-row" style="margin-top:8px;">
                             <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"></div>
                          </div>
                          <label class="checkbox_label">
@@ -2227,6 +2282,50 @@ function createUI() {
     document.getElementById("qig-a1111-adetailer").onchange = (e) => {
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
     };
+
+    // A1111 Model dropdown
+    const a1111ModelSelect = document.getElementById("qig-a1111-model");
+    const a1111ModelRefresh = document.getElementById("qig-a1111-model-refresh");
+
+    async function populateA1111Models() {
+        const s = getSettings();
+        a1111ModelSelect.innerHTML = '<option value="">Loading...</option>';
+        const models = await fetchA1111Models(s.localUrl);
+        const currentModel = s.a1111Model || await getCurrentA1111Model(s.localUrl);
+
+        if (models.length === 0) {
+            a1111ModelSelect.innerHTML = '<option value="">-- Failed to load (check if A1111 running) --</option>';
+            return;
+        }
+
+        a1111ModelSelect.innerHTML = models.map(m =>
+            `<option value="${m.title}" ${m.title === currentModel ? 'selected' : ''}>${m.name}</option>`
+        ).join('');
+
+        if (currentModel && !s.a1111Model) {
+            s.a1111Model = currentModel;
+            saveSettingsDebounced();
+        }
+    }
+
+    a1111ModelSelect.onchange = async (e) => {
+        const s = getSettings();
+        const newModel = e.target.value;
+        if (!newModel) return;
+
+        a1111ModelSelect.disabled = true;
+        const success = await switchA1111Model(s.localUrl, newModel);
+        if (success) {
+            s.a1111Model = newModel;
+            saveSettingsDebounced();
+            toastr?.success?.('Model switched');
+        } else {
+            toastr?.error?.('Failed to switch model');
+        }
+        a1111ModelSelect.disabled = false;
+    };
+
+    a1111ModelRefresh.onclick = () => populateA1111Models();
 
     // Local Ref Image
     const localRefInput = getOrCacheElement("qig-local-ref-input");
