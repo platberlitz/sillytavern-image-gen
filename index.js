@@ -978,6 +978,23 @@ function displayImage(url) {
     });
 }
 
+function showGallery() {
+    const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
+        <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
+                <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+            </div>
+            <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
+        </div>`, (gallery) => {
+        document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
+        const grid = document.getElementById("qig-gallery-grid");
+        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => 
+            `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
+        ).join('') : '<p style="color:#888;">No images yet this session</p>';
+    });
+}
+
 function showPromptEditDialog(prompt) {
     return new Promise((resolve) => {
         const popup = createPopup("qig-prompt-edit-popup", "Edit LLM Generated Prompt", `
@@ -1025,21 +1042,6 @@ function showPromptEditDialog(prompt) {
                 }
             };
         });
-    });
-}
-    const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
-        <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
-                <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
-            </div>
-            <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
-        </div>`, (gallery) => {
-        document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
-        const grid = document.getElementById("qig-gallery-grid");
-        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => 
-            `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
-        ).join('') : '<p style="color:#888;">No images yet this session</p>';
     });
 }
 
