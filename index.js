@@ -9,7 +9,7 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt;
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, generateRaw;
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -358,7 +358,18 @@ Required tags:
         }
         
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
-        let llmPrompt = await generateQuietPrompt(instruction);
+        
+        let llmPrompt;
+        if (isCustom && s.llmCustomInstruction) {
+            // For custom instructions, use the instruction directly without going through generateQuietPrompt
+            // generateQuietPrompt includes chat history which interferes with custom instructions
+            log("Custom instruction mode - using instruction directly");
+            llmPrompt = await callAPIForCustomInstruction(instruction, s);
+        } else {
+            // For built-in instructions (tags/natural), use generateQuietPrompt
+            llmPrompt = await generateQuietPrompt(instruction);
+        }
+        
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
         log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
@@ -1847,6 +1858,41 @@ async function generateImage() {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
         }
+    }
+}
+
+async function callAPIForCustomInstruction(instruction, s) {
+    try {
+        log("Attempting direct API call for custom instruction");
+        
+        // Try to use the generation API directly via context
+        const ctx = getContext();
+        
+        // Build a minimal API request that only includes the instruction
+        // This avoids the chat history context that causes issues
+        const request = await fetch('/api/generate', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                prompt: instruction,
+                system_prompt: `You are an image prompt generator. Convert the user's request into an appropriate image generation prompt.`,
+                temperature: 0.7,
+                max_length: 200
+            })
+        });
+        
+        if (request.ok) {
+            const data = await request.json();
+            return data.results || data.content || data;
+        }
+        
+        throw new Error(`API request failed: ${request.status}`);
+    } catch (e) {
+        log(`Direct API call failed: ${e.message}, falling back to generateQuietPrompt`);
+        // Fallback to generateQuietPrompt
+        return await generateQuietPrompt(instruction);
     }
 }
 
