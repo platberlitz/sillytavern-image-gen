@@ -317,6 +317,21 @@ async function generateLLMPrompt(s, basePrompt) {
                 .replace(/\{\{user\}\}/gi, userName)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
+
+            // Add enhancement options to custom instruction
+            let customEnhancements = "";
+            if (s.llmAddQuality) customEnhancements += "\n- Include quality tags (masterpiece, best quality, highly detailed, sharp focus, etc.)";
+            if (s.llmAddLighting) customEnhancements += "\n- Include lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
+            if (s.llmAddArtist) {
+                const randomArtist = getRandomArtist(true);
+                customEnhancements += `\n- Include artist tags (e.g., ${randomArtist}, etc.)`;
+            }
+            if (customEnhancements) {
+                instruction += `\n\nADDITIONAL REQUIREMENTS:${customEnhancements}`;
+            }
+            if (skinEnforce) {
+                instruction += skinEnforce;
+            }
         } else if (isCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
             // Don't set instruction here - let it fall through to default tags style
