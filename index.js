@@ -300,7 +300,7 @@ CHARACTER REFERENCE:
 ${appearanceContext}
 CURRENT SCENE: ${basePrompt}
 
-Write a detailed image prompt (up to 500 characters) describing:
+Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
 - If from known media/franchise, include the series name and character's canonical appearance
 - Their poses, expressions, and body language
@@ -321,7 +321,7 @@ CHARACTER REFERENCE:
 ${appearanceContext}
 CURRENT SCENE: ${basePrompt}
 
-Generate detailed Danbooru/Booru-style tags (up to 500 characters) including:
+Generate detailed Danbooru/Booru-style tags including:
 - Character name + series name if from known media (e.g., "hatsune_miku, vocaloid")
 - Physical traits: hair color/style, eye color, body type, skin tone
 - Clothing and accessories in detail
@@ -335,15 +335,6 @@ Tags:`;
         let llmPrompt = await generateQuietPrompt(instruction, false, true, false, "");
         log(`LLM prompt: ${llmPrompt}`);
         let cleaned = (llmPrompt || "").split('\n')[0].trim();
-        
-        if (cleaned.length > 500) {
-            cleaned = cleaned.substring(0, 500).trim();
-            const lastComma = cleaned.lastIndexOf(',');
-            const lastSpace = cleaned.lastIndexOf(' ');
-            const cutPoint = Math.max(lastComma, lastSpace);
-            if (cutPoint > 400) cleaned = cleaned.substring(0, cutPoint);
-            log(`LLM prompt truncated to ${cleaned.length} chars`);
-        }
         
         if (skinTones.length && cleaned) {
             const outputLower = cleaned.toLowerCase();
