@@ -44,6 +44,13 @@ const defaultSettings = {
     // Chutes
     chutesKey: "",
     chutesModel: "stabilityai/stable-diffusion-xl-base-1.0",
+    // CivitAI
+    civitaiKey: "",
+    civitaiModel: "urn:air:sd1:checkpoint:civitai:4201@130072",
+    civitaiScheduler: "EulerA",
+    // Nanobanana (Gemini)
+    nanobananaKey: "",
+    nanobananaModel: "gemini-2.5-flash-image",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -64,6 +71,8 @@ const PROVIDER_KEYS = {
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
     chutes: ["chutesKey", "chutesModel"],
+    civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler"],
+    nanobanana: ["nanobananaKey", "nanobananaModel"],
     local: ["localUrl", "localType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
 };
@@ -74,6 +83,8 @@ const PROVIDERS = {
     arliai: { name: "ArliAI", needsKey: true },
     nanogpt: { name: "NanoGPT", needsKey: true },
     chutes: { name: "Chutes", needsKey: true },
+    civitai: { name: "CivitAI", needsKey: true },
+    nanobanana: { name: "Nanobanana (Gemini)", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
@@ -662,6 +673,79 @@ async function genChutes(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
+async function genCivitAI(prompt, negative, s) {
+    const res = await fetch("https://civitai.com/api/v1/jobs", {
+        method: "POST",
+        headers: {
+            "Authorization": `Bearer ${s.civitaiKey}`,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            model: s.civitaiModel,
+            params: {
+                prompt: prompt,
+                negativePrompt: negative,
+                scheduler: s.civitaiScheduler || "EulerA",
+                steps: s.steps,
+                cfgScale: s.cfgScale,
+                width: s.width,
+                height: s.height,
+                seed: s.seed === -1 ? -1 : s.seed,
+                clipSkip: 2
+            },
+            batchSize: 1
+        })
+    });
+    if (!res.ok) throw new Error(`CivitAI error: ${res.status}`);
+    const data = await res.json();
+    
+    // Poll for job completion
+    const jobId = data.id;
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const statusRes = await fetch(`https://civitai.com/api/v1/jobs/${jobId}`, {
+            headers: { "Authorization": `Bearer ${s.civitaiKey}` }
+        });
+        if (!statusRes.ok) throw new Error(`CivitAI status error: ${statusRes.status}`);
+        const status = await statusRes.json();
+        
+        if (status.status === 'completed' && status.result?.images?.[0]) {
+            return status.result.images[0].url;
+        }
+        if (status.status === 'failed') {
+            throw new Error(`CivitAI job failed: ${status.error || 'Unknown error'}`);
+        }
+    }
+    throw new Error("CivitAI job timeout");
+}
+
+async function genNanobanana(prompt, negative, s) {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${s.nanobananaModel}:generateContent?key=${s.nanobananaKey}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            contents: [{ 
+                role: "user", 
+                parts: [{ text: `Generate an image: ${prompt}${negative ? ` Avoid: ${negative}` : ''}` }] 
+            }],
+            generationConfig: {
+                responseModalities: ["TEXT", "IMAGE"]
+            }
+        })
+    });
+    if (!res.ok) throw new Error(`Nanobanana error: ${res.status}`);
+    const data = await res.json();
+    
+    for (const candidate of data.candidates || []) {
+        for (const part of candidate.content?.parts || []) {
+            if (part.inlineData?.data) {
+                return `data:image/png;base64,${part.inlineData.data}`;
+            }
+        }
+    }
+    throw new Error("No image in response");
+}
+
 async function genLocal(prompt, negative, s) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
     
@@ -899,6 +983,8 @@ const providerGenerators = {
     arliai: genArliAI,
     nanogpt: genNanoGPT,
     chutes: genChutes,
+    civitai: genCivitAI,
+    nanobanana: genNanobanana,
     local: genLocal,
     comfyui: genLocal,
     proxy: genProxy
@@ -1073,6 +1159,8 @@ function refreshProviderInputs(provider) {
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
+        civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"]],
+        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -1088,7 +1176,7 @@ function updateProviderUI() {
     const section = document.getElementById(`qig-${s.provider}-settings`);
     if (section) section.style.display = "block";
     
-    const showAdvanced = ["novelai", "arliai", "nanogpt", "chutes", "local"].includes(s.provider);
+    const showAdvanced = ["novelai", "arliai", "nanogpt", "chutes", "civitai", "local"].includes(s.provider);
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
     
     const isNai = s.provider === "novelai";
@@ -1199,6 +1287,31 @@ function createUI() {
                     <input id="qig-chutes-key" type="password" value="${s.chutesKey}">
                     <label>Model</label>
                     <input id="qig-chutes-model" type="text" value="${s.chutesModel}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
+                </div>
+                
+                <div id="qig-civitai-settings" class="qig-provider-section">
+                    <label>CivitAI API Key</label>
+                    <input id="qig-civitai-key" type="password" value="${s.civitaiKey}">
+                    <label>Model URN</label>
+                    <input id="qig-civitai-model" type="text" value="${s.civitaiModel}" placeholder="urn:air:sd1:checkpoint:civitai:4201@130072">
+                    <label>Scheduler</label>
+                    <select id="qig-civitai-scheduler">
+                        <option value="EulerA" ${s.civitaiScheduler === "EulerA" ? "selected" : ""}>Euler A</option>
+                        <option value="Euler" ${s.civitaiScheduler === "Euler" ? "selected" : ""}>Euler</option>
+                        <option value="DPM++ 2M Karras" ${s.civitaiScheduler === "DPM++ 2M Karras" ? "selected" : ""}>DPM++ 2M Karras</option>
+                        <option value="DPM++ SDE Karras" ${s.civitaiScheduler === "DPM++ SDE Karras" ? "selected" : ""}>DPM++ SDE Karras</option>
+                        <option value="DDIM" ${s.civitaiScheduler === "DDIM" ? "selected" : ""}>DDIM</option>
+                    </select>
+                </div>
+                
+                <div id="qig-nanobanana-settings" class="qig-provider-section">
+                    <label>Gemini API Key</label>
+                    <input id="qig-nanobanana-key" type="password" value="${s.nanobananaKey}">
+                    <label>Model</label>
+                    <select id="qig-nanobanana-model">
+                        <option value="gemini-2.5-flash-image" ${s.nanobananaModel === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
+                        <option value="gemini-2.0-flash-exp" ${s.nanobananaModel === "gemini-2.0-flash-exp" ? "selected" : ""}>Gemini 2.0 Flash Exp</option>
+                    </select>
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -1354,6 +1467,11 @@ function createUI() {
     bind("qig-nanogpt-model", "nanogptModel");
     bind("qig-chutes-key", "chutesKey");
     bind("qig-chutes-model", "chutesModel");
+    bind("qig-civitai-key", "civitaiKey");
+    bind("qig-civitai-model", "civitaiModel");
+    bind("qig-civitai-scheduler", "civitaiScheduler");
+    bind("qig-nanobanana-key", "nanobananaKey");
+    bind("qig-nanobanana-model", "nanobananaModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
