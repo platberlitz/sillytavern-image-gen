@@ -89,6 +89,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Use chat message** | Use last chat message as prompt |
 | **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
 | **Edit LLM prompt** | Review and edit AI-generated prompts before generation |
+| **Prefill** | Text to start LLM response with (e.g., "Tags:", "Image prompt:") |
 | **Add enhanced quality tags** | LLM includes additional quality descriptors |
 | **Add lighting tags** | LLM includes professional lighting descriptions |
 | **Add random artist tags** | LLM includes art style references from artists |
@@ -166,6 +167,7 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 
 ### Features
 - **Prompt Editing**: Review and modify AI-generated prompts before generation
+- **Prefill**: Guide LLM output format by specifying text to start the response with
 - **Character Awareness**: Includes character descriptions and appearance details
 - **Skin Tone Detection**: Automatically reinforces detected skin tones
 - **Context Integration**: Uses chat history and character cards for better prompts
