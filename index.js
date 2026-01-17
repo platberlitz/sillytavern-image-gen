@@ -425,7 +425,7 @@ Create Danbooru/Booru-style tags for this scene: ${basePrompt}
 Character info: ${appearanceContext}
 
 Required tags:
-- Character name + series name
+- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized)
 - Physical traits (hair, eyes, body, skin)
 - Clothing and accessories
 - Pose and expression
