@@ -190,7 +190,15 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 - **Prefill**: Guide LLM output format by specifying text to start the response with
 - **Character Awareness**: Includes character descriptions and appearance details
 - **Skin Tone Detection**: Automatically reinforces detected skin tones
+- **Character Awareness**: Includes character descriptions and appearance details
+- **Skin Tone Detection**: Automatically reinforces detected skin tones
 - **Context Integration**: Uses chat history and character cards for better prompts
+
+## Drag and Drop Metadata
+Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model).
+
+## Local Img2Img
+When using the Local (A1111) provider, you can upload a reference image to perform Image-to-Image generation. The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
 
 ### Placeholders (Custom Mode)
 - `{{scene}}` - Current scene/message text

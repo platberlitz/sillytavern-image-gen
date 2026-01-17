@@ -83,7 +83,10 @@ const defaultSettings = {
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:7860",
-    localType: "a1111"
+    localUrl: "http://127.0.0.1:7860",
+    localType: "a1111",
+    localRefImage: "",
+    localDenoise: 0.75,
 };
 
 let sessionGallery = [];
@@ -105,7 +108,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType"],
+    local: ["localUrl", "localType", "localRefImage", "localDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1001,19 +1004,29 @@ async function genLocal(prompt, negative, s) {
     }
 
     // A1111 API
-    const res = await fetch(`${baseUrl}/sdapi/v1/txt2img`, {
+    const isImg2Img = s.localType === "a1111" && s.localRefImage;
+    const endpoint = isImg2Img ? "/sdapi/v1/img2img" : "/sdapi/v1/txt2img";
+
+    const payload = {
+        prompt: prompt,
+        negative_prompt: negative,
+        width: s.width,
+        height: s.height,
+        steps: s.steps,
+        cfg_scale: s.cfgScale,
+        sampler_name: s.sampler,
+        seed: s.seed
+    };
+
+    if (isImg2Img) {
+        payload.init_images = [s.localRefImage.replace(/^data:image\/.+;base64,/, '')];
+        payload.denoising_strength = parseFloat(s.localDenoise) || 0.75;
+    }
+
+    const res = await fetch(`${baseUrl}${endpoint}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            prompt: prompt,
-            negative_prompt: negative,
-            width: s.width,
-            height: s.height,
-            steps: s.steps,
-            cfg_scale: s.cfgScale,
-            sampler_name: s.sampler,
-            seed: s.seed
-        })
+        body: JSON.stringify(payload)
     });
     if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
     const data = await res.json();
@@ -1766,6 +1779,20 @@ function createUI() {
                         <option value="a1111" ${s.localType === "a1111" ? "selected" : ""}>Automatic1111</option>
                         <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
                     </select>
+                    <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
+                         <label>Reference Image (Img2Img)</label>
+                         <div style="display:flex;gap:4px;align-items:center;">
+                             <img id="qig-local-ref-preview" src="${s.localRefImage || ''}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                             <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
+                             <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
+                         </div>
+                         <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
+                         
+                         <div style="display:${s.localRefImage ? 'block' : 'none'};margin-top:4px;">
+                            <label>Denoising Strength: <span id="qig-local-denoise-val">${s.localDenoise}</span></label>
+                            <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${s.localDenoise}">
+                         </div>
+                    </div>
                 </div>
                 
                 <div id="qig-proxy-settings" class="qig-provider-section">
@@ -1947,6 +1974,47 @@ function createUI() {
     bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
+    document.getElementById("qig-local-type").onchange = (e) => {
+        getSettings().localType = e.target.value;
+        document.getElementById("qig-local-a1111-opts").style.display = e.target.value === "a1111" ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bind("qig-local-denoise", "localDenoise", true);
+    document.getElementById("qig-local-denoise").oninput = (e) => {
+        document.getElementById("qig-local-denoise-val").textContent = e.target.value;
+    };
+
+    // Local Ref Image
+    const localRefInput = getOrCacheElement("qig-local-ref-input");
+    const localRefBtn = getOrCacheElement("qig-local-ref-btn");
+    const localRefClear = getOrCacheElement("qig-local-ref-clear");
+    if (localRefBtn) localRefBtn.onclick = () => localRefInput.click();
+    if (localRefClear) localRefClear.onclick = () => {
+        const s = getSettings();
+        s.localRefImage = "";
+        saveSettingsDebounced();
+        document.getElementById("qig-local-ref-preview").style.display = "none";
+        document.getElementById("qig-local-ref-preview").src = "";
+        localRefClear.style.display = "none";
+        document.getElementById("qig-local-denoise").parentElement.style.display = "none";
+    };
+    localRefInput.onchange = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            const s = getSettings();
+            s.localRefImage = ev.target.result;
+            saveSettingsDebounced();
+            document.getElementById("qig-local-ref-preview").src = s.localRefImage;
+            document.getElementById("qig-local-ref-preview").style.display = "block";
+            localRefClear.style.display = "block";
+            document.getElementById("qig-local-denoise").parentElement.style.display = "block";
+            localRefInput.value = "";
+        };
+        reader.readAsDataURL(file);
+    };
+
     bind("qig-proxy-url", "proxyUrl");
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
@@ -2068,6 +2136,13 @@ function createUI() {
     bind("qig-seed", "seed", true);
 
     updateProviderUI();
+
+    // Drag and Drop Metadata Listener
+    const settingsPanel = document.getElementById("qig-settings");
+    if (settingsPanel) {
+        settingsPanel.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); };
+        settingsPanel.ondrop = handleMetadataDrop;
+    }
 }
 
 function addInputButton() {
@@ -2209,6 +2284,187 @@ jQuery(function () {
         }
     })();
 });
+
+
+// Metadata Drag and Drop Handlers
+async function readInfoFromPNG(file) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const buffer = e.target.result;
+            const view = new DataView(buffer);
+            let offset = 8; // Skip PNG signature
+
+            while (offset < view.byteLength) {
+                const length = view.getUint32(offset);
+                const type = String.fromCharCode(
+                    view.getUint8(offset + 4),
+                    view.getUint8(offset + 5),
+                    view.getUint8(offset + 6),
+                    view.getUint8(offset + 7)
+                );
+
+                if (type === 'tEXt') {
+                    const dataOffset = offset + 8;
+                    const data = new Uint8Array(buffer, dataOffset, length);
+                    let keywordEnd = 0;
+                    for (let i = 0; i < length; i++) {
+                        if (data[i] === 0) {
+                            keywordEnd = i;
+                            break;
+                        }
+                    }
+                    const keyword = new TextDecoder().decode(data.slice(0, keywordEnd));
+                    if (keyword === 'parameters') {
+                        const text = new TextDecoder().decode(data.slice(keywordEnd + 1));
+                        resolve(text);
+                        return;
+                    }
+                }
+
+                offset += length + 12; // Length + Type + Data + CRC
+            }
+            resolve(null);
+        };
+        reader.readAsArrayBuffer(file);
+    });
+}
+
+function parseGenerationParameters(text) {
+    if (!text) return null;
+
+    // Split into prompt and negative/params
+    const parts = text.split(/Negative prompt: /);
+    let prompt = parts[0].trim();
+    let negative = "";
+    let params = "";
+
+    if (parts.length > 1) {
+        const remaining = parts[1];
+        const lastLineIdx = remaining.lastIndexOf("\nSteps: ");
+        if (lastLineIdx !== -1) {
+            negative = remaining.substring(0, lastLineIdx).trim();
+            params = remaining.substring(lastLineIdx).trim();
+        } else {
+            // No params line found
+            negative = remaining.trim();
+        }
+    } else {
+        // Look for Steps: in the first part if no negative prompt
+        const lastLineIdx = text.lastIndexOf("\nSteps: ");
+        if (lastLineIdx !== -1) {
+            prompt = text.substring(0, lastLineIdx).trim();
+            params = text.substring(lastLineIdx).trim();
+        }
+    }
+
+    const result = { prompt, negativePrompt: negative };
+
+    // Parse key-value params
+    const getParam = (key) => {
+        const match = params.match(new RegExp(`${key}: ([^,]+)`));
+        return match ? match[1].trim() : null;
+    };
+
+    const steps = getParam("Steps");
+    const sampler = getParam("Sampler");
+    const cfg = getParam("CFG scale");
+    const seed = getParam("Seed");
+    const size = getParam("Size");
+    const model = getParam("Model");
+
+    if (steps) result.steps = parseInt(steps);
+    if (sampler) result.sampler = sampler;
+    if (cfg) result.cfgScale = parseFloat(cfg);
+    if (seed) result.seed = parseInt(seed);
+    if (size) {
+        const [w, h] = size.split("x").map(Number);
+        result.width = w;
+        result.height = h;
+    }
+    if (model) result.model = model;
+
+    return result;
+}
+
+async function handleMetadataDrop(e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const file = e.dataTransfer.files[0];
+    if (!file || !file.type.startsWith('image/png')) return;
+
+    showStatus("🔍 Reading metadata...");
+    try {
+        const info = await readInfoFromPNG(file);
+        if (!info) {
+            showStatus("❌ No generation parameters found");
+            setTimeout(() => showStatus(null), 2000);
+            return;
+        }
+
+        const params = parseGenerationParameters(info);
+        if (params) {
+            const s = getSettings();
+            if (params.prompt) {
+                s.prompt = params.prompt;
+                const el = document.getElementById("qig-prompt");
+                if (el) el.value = s.prompt;
+            }
+            if (params.negativePrompt) {
+                s.negativePrompt = params.negativePrompt;
+                const el = document.getElementById("qig-negative");
+                if (el) el.value = s.negativePrompt;
+            }
+            if (params.steps) {
+                s.steps = params.steps;
+                const el = document.getElementById("qig-steps");
+                if (el) el.value = s.steps;
+            }
+            if (params.cfgScale) {
+                s.cfgScale = params.cfgScale;
+                const el = document.getElementById("qig-cfg");
+                if (el) el.value = s.cfgScale;
+            }
+            if (params.seed) {
+                s.seed = params.seed;
+                const el = document.getElementById("qig-seed");
+                if (el) el.value = s.seed;
+            }
+            if (params.width && params.height) {
+                s.width = params.width;
+                s.height = params.height;
+                const wEl = document.getElementById("qig-width");
+                const hEl = document.getElementById("qig-height");
+                if (wEl) wEl.value = s.width;
+                if (hEl) hEl.value = s.height;
+            }
+            // Try to map sampler (approximate match)
+            if (params.sampler) {
+                // Not perfect but helps
+                const samplerMap = {
+                    "Euler a": "euler_a",
+                    "Euler": "euler",
+                    "DPM++ 2M Karras": "dpmpp_2m",
+                    "DPM++ SDE Karras": "dpmpp_sde"
+                };
+                if (samplerMap[params.sampler]) {
+                    s.sampler = samplerMap[params.sampler];
+                    // Also update dropdown
+                    const el = document.getElementById("qig-sampler");
+                    if (el) el.value = s.sampler;
+                }
+            }
+
+            saveSettingsDebounced();
+            showStatus("✅ Settings updated from image!");
+            setTimeout(() => showStatus(null), 2000);
+        }
+    } catch (err) {
+        log("Error reading metadata: " + err);
+        showStatus("❌ Error reading metadata");
+    }
+}
 
 // Export module info for SillyTavern
 export { extensionName };
