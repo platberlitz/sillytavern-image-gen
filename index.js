@@ -321,7 +321,7 @@ async function generateLLMPrompt(s, basePrompt) {
         } else if (isCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
             // Don't set instruction here - let it fall through to default tags style
-        } else if (isNatural) {
+        } else         if (isNatural) {
             let enhancements = "";
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
@@ -332,7 +332,15 @@ async function generateLLMPrompt(s, basePrompt) {
             }
             else restrictions += "\n- DO NOT include artist names or art style references";
             
-            instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
+            instruction = `[STANDALONE IMAGE PROMPT GENERATION TASK]
+
+CRITICAL INSTRUCTIONS:
+- IGNORE ALL chat messages, roleplay dialogue, and conversation history
+- Generate ONLY a new image prompt based on the scene below
+- DO NOT repeat, paraphrase, or use any roleplay text as input
+- This is a standalone task, not a continuation of chat
+
+[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
 CHARACTER REFERENCE:
 ${appearanceContext}
@@ -357,12 +365,20 @@ Prompt:`;
             restrictions += "\n- NEVER use realistic style tags (e.g., realistic, photorealistic, hyperrealistic, photography, etc.)";
             restrictions += "\n- NEVER use realistic artists (e.g., wlop, artgerm, rossdraws, etc.)";
             restrictions += "\n- NEVER use common/overused artists (e.g., sakimichan, greg rutkowski, alphonse mucha, etc.)";
-            restrictions += "\n- DO NOT include any artist names unless specifically requested above";
+            restrictions += "\n- DO NOT include any artist names unless specifically requested";
             
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
             
-            instruction = `### IMAGE GENERATION TASK ###${skinEnforce}
+            instruction = `### STANDALONE IMAGE GENERATION TASK ###${skinEnforce}
+
+CRITICAL - THIS IS NOT A CONTINUATION OF CHAT:
+- IGNORE ALL previous messages and roleplay dialogue
+- Generate a FRESH image prompt based ONLY on scene below
+- DO NOT repeat, rephrase, or incorporate any chat text
+- This is a standalone generation task
+
+### IMAGE GENERATION TASK ###
 
 Create Danbooru/Booru-style tags for this scene: ${basePrompt}
 
@@ -393,9 +409,25 @@ ${restrictions}
             log("Custom instruction mode - using instruction directly");
             llmPrompt = await callAPIForCustomInstruction(instruction, uniqueId);
         } else {
-            // For built-in instructions (tags/natural), use generateQuietPrompt with cache-busting
-            const instructionWithId = `${instruction}\n\n[Request ID: ${uniqueId}]`;
+            // For built-in instructions (tags/natural), we need to be extra careful with generateQuietPrompt
+            // generateQuietPrompt includes chat history, so we add very explicit instructions to ignore it
+            log("Built-in instruction mode - adding explicit context-ignoring prefix");
+            
+            // Prepend explicit instructions to ignore chat context
+            const prefix = `SYSTEM OVERRIDE: This is a standalone image prompt generation task.
+DO NOT use any chat history, messages, or roleplay dialogue as input.
+Generate ONLY a new image prompt based on the instruction below.
+
+--- INSTRUCTION START ---
+`;
+            const instructionWithId = `${prefix}${instruction}\n\n[Request ID: ${uniqueId}]`;
+            
             llmPrompt = await generateQuietPrompt(instructionWithId);
+            
+            // The instruction prefix might appear in response, so we try to clean it
+            if (llmPrompt && llmPrompt.includes("--- INSTRUCTION START ---")) {
+                llmPrompt = llmPrompt.split("--- INSTRUCTION START ---")[1]?.trim() || llmPrompt;
+            }
         }
         
         log(`LLM raw response: ${llmPrompt}`);
@@ -410,14 +442,19 @@ ${restrictions}
         // Remove any IDs that might have leaked into the response (cache-busting identifiers)
         cleaned = cleaned.replace(/\[Request ID: [^\]]+\]/g, '').trim();
         cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '').trim();
+        cleaned = cleaned.replace(/--- INSTRUCTION START ---/g, '').trim();
         
-        if (skinTones.length && cleaned) {
-            const outputLower = cleaned.toLowerCase();
-            const skinTags = [];
-            if (charSkin && !outputLower.includes("dark skin") && !outputLower.includes("dark-skin") && !outputLower.includes("brown skin")) {
-                skinTags.push("dark skin");
-            }
-            if (skinTags.length) cleaned = skinTags.join(", ") + ", " + cleaned;
+        // CRITICAL: Check if response looks like roleplay dialogue (indicates LLM used chat context)
+        // Roleplay dialogue typically has dialogue markers, quotation marks, or narrative text
+        const looksLikeRoleplay = /["'"].*\s["']|said:|thought:|thought\s*:|^[A-Z][a-z]+\s+(?:nods|smiles|frowns|laughs|gasps)/i.test(cleaned);
+        
+        if (looksLikeRoleplay) {
+            log("⚠️ WARNING: Response appears to be roleplay dialogue, not an image prompt!");
+            log("This indicates LLM used chat context despite our instructions.");
+            
+            // Force a minimal, literal instruction as fallback
+            log("Attempting literal fallback instruction...");
+            cleaned = await generateLiteralFallback(instruction);
         }
         
         return cleaned || basePrompt;
@@ -427,6 +464,31 @@ ${restrictions}
     }
 }
 
+async function generateLiteralFallback(originalInstruction) {
+    try {
+        // This is a last resort: we extract just the scene/action from the instruction
+        // and return it as-is without LLM processing
+        log("Using literal fallback to avoid chat context issues");
+        
+        // Extract scene/action part by looking for common patterns
+        let extracted = originalInstruction;
+        
+        // Remove instruction headers if present
+        extracted = extracted.replace(/^###.*?###\s*/g, '');
+        extracted = extracted.replace(/CRITICAL.*?\n*/gi, '');
+        extracted = extracted.replace(/Create.*?for\s+this\s+scene:/gi, '');
+        extracted = extracted.replace(/Scene:\s*/gi, '');
+        
+        // Clean up but keep essence
+        extracted = extracted.replace(/\n\n+/g, '\n').trim();
+        
+        log(`Literal fallback extracted: ${extracted.substring(0, 100)}...`);
+        return extracted;
+    } catch (e) {
+        log(`Literal fallback failed: ${e.message}`);
+        return originalInstruction;
+    }
+}
 async function genPollinations(prompt, negative, s) {
     const seed = s.seed === -1 ? Date.now() : s.seed;
     let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
@@ -1898,11 +1960,20 @@ async function callAPIForCustomInstruction(instruction, uniqueId) {
         log("Attempting direct API call for custom instruction");
         log(`Request ID: ${uniqueId}`);
         
-        // Try to use the generation API directly via context
-        const ctx = getContext();
-        
         // Add cache-busting ID to the instruction
         const instructionWithId = `${instruction}\n\n[Request ID: ${uniqueId}]`;
+        
+        // CRITICAL: Make this a system instruction to override any implicit chat context
+        const systemInstruction = `You are an AI image prompt generator. Your ONLY task is to create image generation prompts based on the user's instruction below.
+
+CRITICAL CONSTRAINTS:
+1. IGNORE ALL previous chat messages, roleplay content, or conversation history
+2. Generate ONLY the image prompt based on the instruction below
+3. DO NOT repeat, reference, or rewrite any roleplay dialogue or narrative text
+4. Create a fresh, original prompt for image generation
+
+User instruction:
+${instructionWithId}`;
         
         // Build a minimal API request that only includes the instruction
         // This avoids the chat history context that causes issues
@@ -1914,10 +1985,13 @@ async function callAPIForCustomInstruction(instruction, uniqueId) {
                 'Pragma': 'no-cache'
             },
             body: JSON.stringify({
-                prompt: instructionWithId,
-                system_prompt: `You are an image prompt generator. Convert the user's request into an appropriate image generation prompt.`,
+                prompt: systemInstruction,
+                system_prompt: systemInstruction,
                 temperature: 0.7,
-                max_length: 200
+                max_length: 200,
+                // Try to disable chat history context
+                instruct: true,
+                instruct_mode_prompt: systemInstruction
             })
         });
         
@@ -1934,9 +2008,33 @@ async function callAPIForCustomInstruction(instruction, uniqueId) {
         
         throw new Error(`API request failed: ${request.status}`);
     } catch (e) {
-        log(`Direct API call failed: ${e.message}, falling back to generateQuietPrompt`);
-        // Fallback to generateQuietPrompt
-        return await generateQuietPrompt(instruction);
+        log(`Direct API call failed: ${e.message}, trying alternative approach`);
+        
+        // Alternative: Try using the instruction as both prompt and system prompt
+        // This maximizes the chance of it being followed
+        const altRequest = await fetch('/api/generate?alt=' + new Date().getTime(), {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                prompt: `IGNORE ALL PREVIOUS CONTEXT. Generate an image prompt for: ${instruction}`,
+                system_prompt: `Generate image prompts. Ignore chat history. Only respond with the image prompt.`,
+                max_length: 150,
+                temperature: 0.8
+            })
+        });
+        
+        if (altRequest.ok) {
+            const data = await altRequest.json();
+            const response = data.results || data.content || data;
+            if (typeof response === 'string') {
+                return response.trim();
+            }
+            return response;
+        }
+        
+        throw new Error(`Alternative approach also failed: ${e.message}`);
     }
 }
 
