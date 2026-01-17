@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 7 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, Local, Proxy), 40+ styles, LLM prompt generation, connection profiles, batch generation. Images in popup, never added to chat.
+One-click image generation for SillyTavern. 9 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Images in popup, never added to chat.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -13,22 +13,27 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 
 ### Providers
 - 🆓 **Pollinations** - Free, no API key
-- 🎨 **NovelAI** - Premium anime (nai-diffusion-4-5-curated/full)
+- 🎨 **NovelAI** - Premium anime (nai-diffusion-4-5-curated/full) with proper sampler support
 - 🤖 **ArliAI** - Affordable API
 - ⚡ **NanoGPT** - Fast Flux models
 - 🪂 **Chutes** - Decentralized AI (FLUX models)
+- 🏛️ **CivitAI** - Community models with URN format, schedulers
+- 🧠 **Nanobanana (Gemini)** - Google's Gemini image generation with reference images
 - 🖥️ **Local** - A1111/ComfyUI
-- 🔌 **Reverse Proxy** - PixAI, custom endpoints
+- 🔌 **Reverse Proxy** - PixAI, custom endpoints with multimodal support
 
 ### Generation
 - 🖼️ **40+ Style Presets** - Anime, Realistic, Cyberpunk, Ghibli, etc.
 - 🤖 **LLM Prompt Generation** - Auto-convert scenes to image prompts
+- ✏️ **Prompt Editing** - Edit LLM-generated prompts before generation
 - 🏷️ **Three Prompt Modes** - Danbooru tags, natural descriptions, or custom instruction
 - ✨ **Quality Tags** - Auto-prepend quality boosters
 - 📍 **Message Selector** - Choose which chat message to use
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
+- 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
+- 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
 ### Profiles & Settings
 - 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
@@ -40,12 +45,11 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 - 🔄 **Quick Regenerate** - Same prompt, new seed
 - ⚡ **Auto-generate** - Generate after each AI response
 
-### Reverse Proxy Features
-- 🖼️ **Reference Images** - Upload up to 15 reference images
-- 📝 **Extra Instructions** - Additional text instructions for the model
-- 🎭 **LoRA Support** - Multiple LoRAs with weights
-- 👤 **Face Fix** - ADetailer
-- ⚙️ **Full Control** - Steps, CFG, Sampler, Seed
+### Advanced Features
+- 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
+- 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy)
+- 👤 **Face Fix** - ADetailer support (Proxy)
+- ⚙️ **Full Control** - Steps, CFG, Sampler, Seed for compatible providers
 
 ---
 
@@ -75,7 +79,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 | Setting | Description |
 |---------|-------------|
-| **Provider** | Image generation backend |
+| **Provider** | Image generation backend (9 options) |
 | **Connection Profile** | Save/load provider settings |
 | **Style** | Visual style preset (40+ options) |
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
@@ -83,8 +87,9 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Quality Tags** | Tags prepended to prompt |
 | **Use chat message** | Use last chat message as prompt |
 | **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
+| **Edit LLM prompt** | Review and edit AI-generated prompts before generation |
 | **Batch Count** | Number of images to generate (1-10) |
-| **Size** | Image dimensions |
+| **Size** | Image dimensions (custom or NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
 
 ---
@@ -103,6 +108,32 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 ---
 
+## Provider Details
+
+### NovelAI
+- **Samplers**: k_euler_ancestral, k_euler, k_dpmpp_2m, k_dpmpp_sde, ddim, k_lms, k_heun
+- **Models**: nai-diffusion-4-5-curated, nai-diffusion-4-5-full, nai-diffusion-3
+- **Features**: SMEA support, resolution presets, ZIP response handling
+
+### CivitAI
+- **Model Format**: URN format (`urn:air:sd1:checkpoint:civitai:4201@130072`)
+- **Schedulers**: EulerA, Euler, DPM++ 2M Karras, DPM++ SDE Karras, DDIM
+- **Features**: Job polling, community models, CLIP skip
+
+### Nanobanana (Gemini)
+- **Models**: Gemini 2.5 Flash Image, Gemini 2.0 Flash Exp
+- **Features**: Reference images (up to 15), extra instructions for Pro features
+- **Format**: Multimodal input with inlineData support
+
+### Reverse Proxy
+- **Reference Images**: Upload up to 15 reference images
+- **Extra Instructions**: Additional text instructions for the model
+- **LoRA Support**: Multiple LoRAs with weights (`id:weight` format)
+- **Face Fix**: ADetailer support
+- **Compatibility**: OpenAI-compatible endpoints, PixAI, custom backends
+
+---
+
 ## Connection Profiles
 
 Save and load provider configurations per-provider:
@@ -111,10 +142,36 @@ Save and load provider configurations per-provider:
 - **ArliAI**: API key, model
 - **NanoGPT**: API key, model
 - **Chutes**: API key, model
+- **CivitAI**: API key, model URN, scheduler
+- **Nanobanana**: API key, model, extra instructions, reference images
 - **Local**: URL, type (A1111/ComfyUI)
-- **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions
+- **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
+
+---
+
+## LLM Prompt Generation
+
+The extension can use SillyTavern's LLM to convert chat messages into optimized image prompts:
+
+### Modes
+- **Danbooru Tags**: Anime-style comma-separated tags
+- **Natural Description**: Realistic scene descriptions
+- **Custom Instruction**: Your own prompt template with placeholders
+
+### Features
+- **Prompt Editing**: Review and modify AI-generated prompts before generation
+- **Character Awareness**: Includes character descriptions and appearance details
+- **Skin Tone Detection**: Automatically reinforces detected skin tones
+- **Context Integration**: Uses chat history and character cards for better prompts
+
+### Placeholders (Custom Mode)
+- `{{scene}}` - Current scene/message text
+- `{{char}}` - Character name
+- `{{user}}` - User name
+- `{{charDesc}}` - Character description
+- `{{userDesc}}` - User persona
 
 ---
 
