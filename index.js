@@ -292,12 +292,15 @@ async function generateLLMPrompt(s, basePrompt) {
         
         let instruction;
         if (isCustom && s.llmCustomInstruction) {
+            log(`Using custom instruction: ${s.llmCustomInstruction.substring(0, 100)}...`);
             instruction = s.llmCustomInstruction
                 .replace(/\{\{scene\}\}/gi, basePrompt)
                 .replace(/\{\{char\}\}/gi, charName)
                 .replace(/\{\{user\}\}/gi, userName)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
+        } else if (isCustom) {
+            log("Custom instruction selected but empty, falling back to tags style");
         } else if (isNatural) {
             let enhancements = "";
             let restrictions = "";
