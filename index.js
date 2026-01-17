@@ -293,7 +293,11 @@ async function generateLLMPrompt(s, basePrompt) {
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
-            if (s.llmAddArtist) enhancements += "\n- Art style references from well-known artists (e.g., Akira Toriyama, Alex Grey, Alphonse Mucha, Bill Watterson, Carl Barks, Claude Monet, Craig Mullins, Dan Mumford, Johannes Vermeer, etc.)";
+            if (s.llmAddArtist) {
+                const artists = ["akira toriyama", "abubu", "afrobull", "aiue oka", "akairiot", "akamatsu ken", "alex ahad", "alzi xiaomi", "amano jack", "amazuyu tatsuki", "ask (askzy)", "atdan", "ayami kojima", "azto dio", "bkub", "butcha-u", "ciloranko", "dino (dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi (snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon (kwonchan)", "lack", "lm7", "mika pikazo", "mikeinel", "morikura en", "nardack", "neco", "nian", "nixeu", "pochi (pochi-goya)", "redjuice", "rei (sanbonzakura)", "rurudo", "sakimichan", "shirataki", "sky-freedom", "tofuubear", "wanke", "wlop", "yaegashi nan", "yamakaze", "yoshiaki", "yuuki tatsuya"];
+                const randomArtist = artists[Math.floor(Math.random() * artists.length)];
+                enhancements += `\n- Art style references from well-known artists (e.g., ${randomArtist}, etc.)`;
+            }
             else restrictions += "\n- DO NOT include artist names or art style references";
             
             instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
@@ -316,7 +320,11 @@ Prompt:`;
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
-            if (s.llmAddArtist) enhancements += "\n- Artist style tags (by akira_toriyama, by alex_grey, by alphonse_mucha, by bill_watterson, by carl_barks, by claude_monet, by craig_mullins, by dan_mumford, by johannes_vermeer, etc.)";
+            if (s.llmAddArtist) {
+                const artists = ["akira_toriyama", "abubu", "afrobull", "aiue_oka", "akairiot", "akamatsu_ken", "alex_ahad", "alzi_xiaomi", "amano_jack", "amazuyu_tatsuki", "ask_(askzy)", "atdan", "ayami_kojima", "azto_dio", "bkub", "butcha-u", "ciloranko", "dino_(dinoartforame)", "dishwasher1910", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hews", "hiten", "hoshi_(snacherubi)", "kantoku", "kawacy", "ke-ta", "kuavera", "kuon_(kwonchan)", "lack", "lm7", "mika_pikazo", "mikeinel", "morikura_en", "nardack", "neco", "nian", "nixeu", "pochi_(pochi-goya)", "redjuice", "rei_(sanbonzakura)", "rurudo", "sakimichan", "shirataki", "sky-freedom", "tofuubear", "wanke", "wlop", "yaegashi_nan", "yamakaze", "yoshiaki", "yuuki_tatsuya"];
+                const randomArtist = artists[Math.floor(Math.random() * artists.length)];
+                enhancements += `\n- Artist style tags (by ${randomArtist}, etc.)`;
+            }
             else restrictions += "\n- DO NOT include artist names or art style tags";
             
             instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
