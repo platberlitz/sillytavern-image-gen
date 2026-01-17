@@ -51,6 +51,8 @@ const defaultSettings = {
     // Nanobanana (Gemini)
     nanobananaKey: "",
     nanobananaModel: "gemini-2.5-flash-image",
+    nanobananaExtraInstructions: "",
+    nanobananaRefImages: [],
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -72,9 +74,9 @@ const PROVIDER_KEYS = {
     nanogpt: ["nanogptKey", "nanogptModel"],
     chutes: ["chutesKey", "chutesModel"],
     civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler"],
-    nanobanana: ["nanobananaKey", "nanobananaModel"],
+    nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
     local: ["localUrl", "localType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
 const PROVIDERS = {
@@ -720,14 +722,29 @@ async function genCivitAI(prompt, negative, s) {
 }
 
 async function genNanobanana(prompt, negative, s) {
+    // Build parts array with reference images and prompt
+    const parts = [];
+    if (s.nanobananaRefImages?.length) {
+        log(`Adding ${s.nanobananaRefImages.length} reference images to Nanobanana request`);
+        for (const img of s.nanobananaRefImages) {
+            const match = img.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+                parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+            }
+        }
+    }
+    
+    let finalPrompt = `Generate an image: ${prompt}`;
+    if (negative) finalPrompt += ` Avoid: ${negative}`;
+    if (s.nanobananaExtraInstructions) finalPrompt += ` ${s.nanobananaExtraInstructions}`;
+    
+    parts.push({ text: finalPrompt });
+    
     const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${s.nanobananaModel}:generateContent?key=${s.nanobananaKey}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            contents: [{ 
-                role: "user", 
-                parts: [{ text: `Generate an image: ${prompt}${negative ? ` Avoid: ${negative}` : ''}` }] 
-            }],
+            contents: [{ role: "user", parts }],
             generationConfig: {
                 responseModalities: ["TEXT", "IMAGE"]
             }
@@ -1160,7 +1177,7 @@ function refreshProviderInputs(provider) {
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"]],
-        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"]],
+        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -1168,6 +1185,10 @@ function refreshProviderInputs(provider) {
         const el = document.getElementById(id);
         if (el) el.type === "checkbox" ? el.checked = s[key] : el.value = s[key] ?? "";
     });
+    
+    // Update reference images display
+    if (provider === "proxy") renderRefImages();
+    if (provider === "nanobanana") renderNanobananaRefImages();
 }
 
 function updateProviderUI() {
@@ -1198,6 +1219,22 @@ window.removeRefImage = function(idx) {
     s.proxyRefImages.splice(idx, 1);
     saveSettingsDebounced();
     renderRefImages();
+};
+
+function renderNanobananaRefImages() {
+    const container = getOrCacheElement("qig-nanobanana-refs");
+    if (!container) return;
+    const imgs = getSettings().nanobananaRefImages || [];
+    container.innerHTML = imgs.map((src, i) => 
+        `<div style="position:relative;"><img src="${src}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeNanobananaRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+    ).join('');
+}
+
+window.removeNanobananaRefImage = function(idx) {
+    const s = getSettings();
+    s.nanobananaRefImages.splice(idx, 1);
+    saveSettingsDebounced();
+    renderNanobananaRefImages();
 };
 
 function bind(id, key, isNum = false, isCheckbox = false) {
@@ -1312,6 +1349,12 @@ function createUI() {
                         <option value="gemini-2.5-flash-image" ${s.nanobananaModel === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
                         <option value="gemini-2.0-flash-exp" ${s.nanobananaModel === "gemini-2.0-flash-exp" ? "selected" : ""}>Gemini 2.0 Flash Exp</option>
                     </select>
+                    <label>Extra Instructions</label>
+                    <textarea id="qig-nanobanana-extra" rows="2" placeholder="Additional instructions for Nanobanana Pro...">${s.nanobananaExtraInstructions || ""}</textarea>
+                    <label>Reference Images (up to 15)</label>
+                    <div id="qig-nanobanana-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
+                    <input type="file" id="qig-nanobanana-ref-input" accept="image/*" multiple style="display:none">
+                    <button id="qig-nanobanana-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
@@ -1472,6 +1515,7 @@ function createUI() {
     bind("qig-civitai-scheduler", "civitaiScheduler");
     bind("qig-nanobanana-key", "nanobananaKey");
     bind("qig-nanobanana-model", "nanobananaModel");
+    bind("qig-nanobanana-extra", "nanobananaExtraInstructions");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
@@ -1511,6 +1555,33 @@ function createUI() {
         refInput.value = "";
     };
     renderRefImages();
+    
+    // Nanobanana reference images handling
+    const nanoRefInput = getOrCacheElement("qig-nanobanana-ref-input");
+    const nanoRefBtn = getOrCacheElement("qig-nanobanana-ref-btn");
+    if (nanoRefBtn) nanoRefBtn.onclick = () => nanoRefInput.click();
+    nanoRefInput.onchange = async (e) => {
+        const files = Array.from(e.target.files);
+        const s = getSettings();
+        if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
+        const remaining = 15 - s.nanobananaRefImages.length;
+        const filesToProcess = files.slice(0, remaining);
+        
+        const readPromises = filesToProcess.map(file => 
+            new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (ev) => resolve(ev.target.result);
+                reader.readAsDataURL(file);
+            })
+        );
+        
+        const results = await Promise.all(readPromises);
+        s.nanobananaRefImages.push(...results);
+        saveSettingsDebounced();
+        renderNanobananaRefImages();
+        nanoRefInput.value = "";
+    };
+    renderNanobananaRefImages();
     
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
