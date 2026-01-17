@@ -2094,10 +2094,13 @@ function createUI() {
                              <label>IP-Adapter Model</label>
                              <select id="qig-a1111-ipadapter-mode">
                                  <option value="ip-adapter-faceid-portrait_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait_sd15" ? "selected" : ""}>FaceID Portrait (SD1.5)</option>
+                                 <option value="ip-adapter-faceid-portrait-v11_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait-v11_sd15" ? "selected" : ""}>FaceID Portrait v1.1 (SD1.5)</option>
                                  <option value="ip-adapter-faceid_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid_sd15" ? "selected" : ""}>FaceID (SD1.5)</option>
                                  <option value="ip-adapter-faceid-plusv2_sd15" ${s.a1111IpAdapterMode === "ip-adapter-faceid-plusv2_sd15" ? "selected" : ""}>FaceID Plus v2 (SD1.5)</option>
                                  <option value="ip-adapter-faceid-portrait_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait_sdxl" ? "selected" : ""}>FaceID Portrait (SDXL)</option>
+                                 <option value="ip-adapter-faceid-portrait_sdxl_unnorm" ${s.a1111IpAdapterMode === "ip-adapter-faceid-portrait_sdxl_unnorm" ? "selected" : ""}>FaceID Portrait Unnorm (SDXL)</option>
                                  <option value="ip-adapter-faceid_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid_sdxl" ? "selected" : ""}>FaceID (SDXL)</option>
+                                 <option value="ip-adapter-faceid-plusv2_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid-plusv2_sdxl" ? "selected" : ""}>FaceID Plus v2 (SDXL)</option>
                              </select>
                              <label>Weight: <span id="qig-a1111-ipadapter-weight-val">${s.a1111IpAdapterWeight || 0.7}</span></label>
                              <input id="qig-a1111-ipadapter-weight" type="range" min="0" max="1.5" step="0.05" value="${s.a1111IpAdapterWeight || 0.7}">
