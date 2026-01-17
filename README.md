@@ -200,6 +200,15 @@ Drag and drop any A1111-generated PNG image onto the settings panel to automatic
 ## Local Img2Img
 When using the Local (A1111) provider, you can upload a reference image to perform Image-to-Image generation. The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
 
+## ComfyUI Setup
+When using ComfyUI, you must start it with CORS headers enabled to allow cross-origin requests from SillyTavern:
+
+```bash
+python main.py --enable-cors-header
+```
+
+Without this flag, you'll get "403 Forbidden" errors due to origin mismatch.
+
 ### Placeholders (Custom Mode)
 - `{{scene}}` - Current scene/message text
 - `{{char}}` - Character name
