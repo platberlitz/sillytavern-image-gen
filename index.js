@@ -1081,11 +1081,42 @@ async function genProxy(prompt, negative, s) {
             const img = images[0];
             if (img.image_url?.url) return img.image_url.url;
             if (img.url) return img.url;
+            if (img.b64_json) return `data:image/png;base64,${img.b64_json}`;
+            // Direct base64 string
+            if (typeof img === 'string' && img.length > 100) {
+                return img.startsWith('data:') ? img : `data:image/png;base64,${img}`;
+            }
         }
 
-        const msgContent = data.choices?.[0]?.message?.content || "";
-        const b64Match = msgContent.match(/data:image\/[^;]+;base64,([A-Za-z0-9+/=]+)/);
+        const msgContent = data.choices?.[0]?.message?.content;
+
+        // Handle content as array (multimodal response)
+        if (Array.isArray(msgContent)) {
+            for (const item of msgContent) {
+                if (item.type === 'image_url' && item.image_url?.url) {
+                    return item.image_url.url;
+                }
+                if (item.type === 'image' && item.source?.data) {
+                    return `data:${item.source.media_type || 'image/png'};base64,${item.source.data}`;
+                }
+                if (item.image_url?.url) {
+                    return item.image_url.url;
+                }
+                // Inline base64 in content array
+                if (typeof item === 'string' && item.startsWith('data:image')) {
+                    return item;
+                }
+            }
+        }
+
+        // Handle content as string
+        const contentStr = typeof msgContent === 'string' ? msgContent : '';
+        const b64Match = contentStr.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
         if (b64Match) return b64Match[0];
+
+        // Check for raw base64 (no data: prefix) - common in some APIs
+        const rawB64Match = contentStr.match(/^[A-Za-z0-9+/]{100,}[=]{0,2}$/);
+        if (rawB64Match) return `data:image/png;base64,${rawB64Match[0]}`;
 
         const parts = data.choices?.[0]?.message?.parts;
         if (parts) {
@@ -1095,6 +1126,9 @@ async function genProxy(prompt, negative, s) {
                 }
             }
         }
+
+        // Log full response structure for debugging
+        log(`Full message structure: ${JSON.stringify(data.choices?.[0]?.message || {}).substring(0, 500)}`);
         throw new Error("No image in response");
     }
 
