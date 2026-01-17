@@ -83,11 +83,14 @@ const defaultSettings = {
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:7860",
-    localUrl: "http://127.0.0.1:7860",
     localType: "a1111",
     localModel: "model.safetensors",
     localRefImage: "",
     localDenoise: 0.75,
+    // ComfyUI specific
+    comfyWorkflow: "",
+    comfyClipSkip: 1,
+    comfyDenoise: 1.0,
 };
 
 let sessionGallery = [];
@@ -109,7 +112,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -998,51 +1001,128 @@ async function genLocal(prompt, negative, s) {
         const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/_/g, "_");
         const schedulerName = comfySchedulerMap[s.sampler] || "normal";
         const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+        const denoise = parseFloat(s.comfyDenoise) || 1.0;
+        const clipSkip = parseInt(s.comfyClipSkip) || 1;
 
-        // ComfyUI API
-        const workflow = {
-            prompt: {
-                "3": {
-                    class_type: "KSampler",
-                    inputs: {
-                        seed: seed,
-                        steps: s.steps,
-                        cfg: s.cfgScale,
-                        sampler_name: samplerName,
-                        scheduler: schedulerName,
-                        denoise: 1,
-                        model: ["4", 0],
-                        positive: ["6", 0],
-                        negative: ["7", 0],
-                        latent_image: ["5", 0]
+        // Check for custom workflow JSON
+        if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
+            try {
+                let customWorkflow = JSON.parse(s.comfyWorkflow);
+
+                // Replace placeholders like sd-proxy does
+                const replacements = {
+                    '%prompt%': prompt,
+                    '%negative%': negative,
+                    '%seed%': String(seed),
+                    '%width%': String(s.width),
+                    '%height%': String(s.height),
+                    '%steps%': String(s.steps),
+                    '%cfg%': String(s.cfgScale),
+                    '%denoise%': String(denoise),
+                    '%clip_skip%': String(clipSkip),
+                    '%sampler%': samplerName,
+                    '%scheduler%': schedulerName,
+                    '%model%': s.localModel || 'model.safetensors'
+                };
+
+                const replaceInObj = (obj) => {
+                    for (const key in obj) {
+                        if (typeof obj[key] === 'string') {
+                            for (const [placeholder, value] of Object.entries(replacements)) {
+                                obj[key] = obj[key].split(placeholder).join(value);
+                            }
+                        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
+                            replaceInObj(obj[key]);
+                        }
                     }
-                },
-                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
-                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
-                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: ["4", 1] } },
-                "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: ["4", 1] } },
-                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
+                };
+                replaceInObj(customWorkflow);
+
+                log(`ComfyUI: Using custom workflow with ${Object.keys(customWorkflow).length} nodes`);
+
+                const res = await fetch(`${baseUrl}/prompt`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ prompt: customWorkflow })
+                });
+                if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
+                const data = await res.json();
+
+                const promptId = data.prompt_id;
+                for (let i = 0; i < 120; i++) {
+                    await new Promise(r => setTimeout(r, 1000));
+                    const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
+                    const result = hist[promptId];
+                    if (result?.outputs) {
+                        for (const nodeId in result.outputs) {
+                            const output = result.outputs[nodeId];
+                            if (output.images?.[0]) {
+                                const img = output.images[0];
+                                return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
+                            }
+                        }
+                    }
+                }
+                throw new Error("ComfyUI timeout");
+            } catch (e) {
+                if (e.message.includes('timeout') || e.message.includes('ComfyUI error')) throw e;
+                log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
             }
+        }
+
+        // ComfyUI API - Default workflow
+        const workflowNodes = {
+            "3": {
+                class_type: "KSampler",
+                inputs: {
+                    seed: seed,
+                    steps: s.steps,
+                    cfg: s.cfgScale,
+                    sampler_name: samplerName,
+                    scheduler: schedulerName,
+                    denoise: denoise,
+                    model: ["4", 0],
+                    positive: ["6", 0],
+                    negative: ["7", 0],
+                    latent_image: ["5", 0]
+                }
+            },
+            "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
+            "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
+            "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
+            "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
+            "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
+            "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
         };
 
-        log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, size=${s.width}x${s.height}`);
+        // Add CLIP SetLastLayer if clip_skip > 1
+        if (clipSkip > 1) {
+            workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
+        }
+
+        log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}`);
 
         const res = await fetch(`${baseUrl}/prompt`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(workflow)
+            body: JSON.stringify({ prompt: workflowNodes })
         });
         if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
         const data = await res.json();
-        // Poll for result
+        // Poll for result - find any SaveImage output
         const promptId = data.prompt_id;
         for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 1000));
             const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
-            if (hist[promptId]?.outputs?.["9"]?.images?.[0]) {
-                const img = hist[promptId].outputs["9"].images[0];
-                return `${baseUrl}/view?filename=${img.filename}&subfolder=${img.subfolder || ""}&type=${img.type}`;
+            const result = hist[promptId];
+            if (result?.outputs) {
+                for (const nodeId in result.outputs) {
+                    const output = result.outputs[nodeId];
+                    if (output.images?.[0]) {
+                        const img = output.images[0];
+                        return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
+                    }
+                }
             }
         }
         throw new Error("ComfyUI timeout");
@@ -1877,6 +1957,13 @@ function createUI() {
                          <label>Checkpoint Name</label>
                          <input id="qig-local-model" type="text" value="${s.localModel}" placeholder="model.safetensors">
                          <div class="form-hint">Must match exactly with your ComfyUI checkpoints folder</div>
+                         <div class="qig-row">
+                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${s.comfyDenoise || 1.0}" min="0" max="1" step="0.05"></div>
+                            <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${s.comfyClipSkip || 1}" min="1" max="12" step="1"></div>
+                         </div>
+                         <label>Custom Workflow JSON (optional)</label>
+                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${s.comfyWorkflow || ""}</textarea>
+                         <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Reference Image (Img2Img)</label>
@@ -2084,6 +2171,10 @@ function createUI() {
     document.getElementById("qig-local-denoise").oninput = (e) => {
         document.getElementById("qig-local-denoise-val").textContent = e.target.value;
     };
+    // ComfyUI specific bindings
+    bind("qig-comfy-denoise", "comfyDenoise", true);
+    bind("qig-comfy-clip", "comfyClipSkip", true);
+    bind("qig-comfy-workflow", "comfyWorkflow");
 
     // Local Ref Image
     const localRefInput = getOrCacheElement("qig-local-ref-input");

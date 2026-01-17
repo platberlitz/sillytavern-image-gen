@@ -209,6 +209,21 @@ python main.py --enable-cors-header
 
 Without this flag, you'll get "403 Forbidden" errors due to origin mismatch.
 
+### ComfyUI Settings
+| Setting | Description |
+|---------|-------------|
+| **Checkpoint Name** | Exact filename from your ComfyUI checkpoints folder |
+| **Denoise** | Denoising strength (0-1, default 1.0) |
+| **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
+| **Custom Workflow** | Paste workflow JSON from ComfyUI "Save (API Format)" |
+
+### Workflow Placeholders
+Use these placeholders in custom workflows:
+- `%prompt%` - Positive prompt
+- `%negative%` - Negative prompt
+- `%seed%`, `%width%`, `%height%`, `%steps%`, `%cfg%`
+- `%denoise%`, `%clip_skip%`, `%sampler%`, `%scheduler%`, `%model%`
+
 ### Placeholders (Custom Mode)
 - `{{scene}}` - Current scene/message text
 - `{{char}}` - Character name
