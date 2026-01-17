@@ -358,12 +358,11 @@ Tags:`;
         }
         
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
-        let llmPrompt = await generateQuietPrompt(instruction, true, false, false, "");
+        let llmPrompt = await generateQuietPrompt(instruction);
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
         log(`Final instruction sent to LLM: ${instruction.substring(0, 200)}...`);
         
-        // Add timestamp to prevent caching
         const timestamp = Date.now();
         log(`Generation timestamp: ${timestamp}`);
         
