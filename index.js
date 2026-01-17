@@ -397,14 +397,27 @@ ${restrictions}
 
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
 
-        // Cache-busting: Add unique ID at START of instruction (not end where LLMs ignore it)
-        const uniqueId = Date.now() + '_' + Math.random().toString(36).substring(2, 9);
-        const entropyToken = `[GEN:${uniqueId}]`;
+        // CRITICAL: Strong cache-busting by embedding random entropy INSIDE the instruction
+        // SillyTavern caches based on instruction text, so we must make each request unique
+        const timestamp = Date.now();
+        const randomPart = Math.random().toString(36).substring(2, 11);
+        const uniqueId = `${timestamp}_${randomPart}`;
+
+        // Inject entropy directly into the scene/instruction at multiple points
+        // This ensures cache invalidation even if prefix is stripped
+        const entropyInline = `{{${uniqueId}}}`;
+        let instructionWithEntropy = instruction
+            .replace(/(CURRENT SCENE:|Scene:|scene:)/i, `$1 ${entropyInline}`)
+            .replace(/(Tags:|Prompt:)\s*$/m, `$1 [ref:${randomPart}]`);
+
+        // Also add at start as backup
+        instructionWithEntropy = `[${timestamp}]\n${instructionWithEntropy}`;
+
         log(`Request ID: ${uniqueId}`);
 
-        // Build the full instruction with entropy token and optional prefill
+        // Build the full instruction with optional prefill
         const prefillHint = s.llmPrefill ? `\n\nStart your response with: "${s.llmPrefill}"` : "";
-        const instructionWithEntropy = `${entropyToken}\n${instruction}${prefillHint}`;
+        instructionWithEntropy += prefillHint;
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
 
@@ -416,10 +429,14 @@ ${restrictions}
 
         let cleaned = (llmPrompt || "").trim();
 
-        // Remove cache-busting tokens and clean up response
-        cleaned = cleaned.replace(/\[GEN:[^\]]+\]/g, '').trim();
-        cleaned = cleaned.replace(/\[Request ID: [^\]]+\]/g, '').trim();
-        cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '').trim();
+        // Remove all cache-busting tokens and entropy markers from response
+        cleaned = cleaned.replace(/\[\d+\]\s*/g, '');              // [timestamp] at start
+        cleaned = cleaned.replace(/\{\{\d+_[a-z0-9]+\}\}/gi, '');  // {{timestamp_random}} inline
+        cleaned = cleaned.replace(/\[ref:[a-z0-9]+\]/gi, '');      // [ref:random] markers
+        cleaned = cleaned.replace(/\[GEN:[^\]]+\]/g, '');          // legacy [GEN:...] format
+        cleaned = cleaned.replace(/\[Request ID: [^\]]+\]/g, '');  // legacy Request ID
+        cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '');  // legacy Generation ID
+        cleaned = cleaned.trim();
 
         // Remove prefill text if it appears at start of response
         if (s.llmPrefill && cleaned.toLowerCase().startsWith(s.llmPrefill.toLowerCase())) {
