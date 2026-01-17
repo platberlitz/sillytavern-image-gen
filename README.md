@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 9 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Images in popup, never added to chat.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Images in popup, never added to chat.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -19,6 +19,10 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 - 🪂 **Chutes** - Decentralized AI (FLUX models)
 - 🏛️ **CivitAI** - Community models with URN format, schedulers
 - 🧠 **Nanobanana (Gemini)** - Google's Gemini image generation with reference images
+- 🎨 **Stability AI** - Official SDXL API
+- 🚀 **Replicate** - Run AI models in the cloud (SDXL, etc.)
+- ⚡ **Fal.ai** - Fast Flux models
+- 🤝 **Together AI** - Open source models (SDXL, etc.)
 - 🖥️ **Local** - A1111/ComfyUI
 - 🔌 **Reverse Proxy** - PixAI, custom endpoints with multimodal support
 
@@ -132,6 +136,17 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 ### Reverse Proxy
 - **Reference Images**: Upload up to 15 reference images
+
+### Stability AI
+- **Models**: SDXL 1.0
+- **Features**: Official API access
+
+### Replicate, Fal.ai, Together AI
+- **Models**: Configurable model endpoints (SDXL, Flux, etc.)
+- **Features**: Fast inference, wide model selection
+
+### Reverse Proxy
+- **Reference Images**: Upload up to 15 reference images
 - **Extra Instructions**: Additional text instructions for the model
 - **LoRA Support**: Multiple LoRAs with weights (`id:weight` format)
 - **Face Fix**: ADetailer support
@@ -148,7 +163,12 @@ Save and load provider configurations per-provider:
 - **NanoGPT**: API key, model
 - **Chutes**: API key, model
 - **CivitAI**: API key, model URN, scheduler
+- **CivitAI**: API key, model URN, scheduler
 - **Nanobanana**: API key, model, extra instructions, reference images
+- **Stability AI**: API key
+- **Replicate**: API key, model
+- **Fal.ai**: API key, model
+- **Together AI**: API key, model
 - **Local**: URL, type (A1111/ComfyUI)
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 

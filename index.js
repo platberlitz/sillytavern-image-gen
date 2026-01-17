@@ -68,6 +68,17 @@ const defaultSettings = {
     nanobananaModel: "gemini-2.5-flash-image",
     nanobananaExtraInstructions: "",
     nanobananaRefImages: [],
+    // Stability AI
+    stabilityKey: "",
+    // Replicate
+    replicateKey: "",
+    replicateModel: "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b",
+    // Fal.ai
+    falKey: "",
+    falModel: "fal-ai/flux/schnell",
+    // Together AI
+    togetherKey: "",
+    togetherModel: "stabilityai/stable-diffusion-xl-base-1.0",
     // Pollinations
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
@@ -90,6 +101,10 @@ const PROVIDER_KEYS = {
     chutes: ["chutesKey", "chutesModel"],
     civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler"],
     nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
+    stability: ["stabilityKey"],
+    replicate: ["replicateKey", "replicateModel"],
+    fal: ["falKey", "falModel"],
+    together: ["togetherKey", "togetherModel"],
     local: ["localUrl", "localType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
@@ -102,6 +117,10 @@ const PROVIDERS = {
     chutes: { name: "Chutes", needsKey: true },
     civitai: { name: "CivitAI", needsKey: true },
     nanobanana: { name: "Nanobanana (Gemini)", needsKey: true },
+    stability: { name: "Stability AI", needsKey: true },
+    replicate: { name: "Replicate", needsKey: true },
+    fal: { name: "Fal.ai", needsKey: true },
+    together: { name: "Together AI", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
     proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
 };
@@ -1227,6 +1246,124 @@ function showPromptEditDialog(prompt) {
     });
 }
 
+async function genStability(prompt, negative, s) {
+    if (!s.stabilityKey) throw new Error("Stability AI API key required");
+    const res = await fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${s.stabilityKey}`
+        },
+        body: JSON.stringify({
+            text_prompts: [
+                { text: prompt, weight: 1 },
+                { text: negative || "", weight: -1 }
+            ],
+            cfg_scale: s.cfgScale,
+            steps: Math.min(Math.max(s.steps, 10), 50),
+            width: s.width,
+            height: s.height,
+            samples: 1
+        })
+    });
+    if (!res.ok) throw new Error(`Stability error: ${res.status}`);
+    const data = await res.json();
+    if (data.artifacts?.[0]) return `data:image/png;base64,${data.artifacts[0].base64}`;
+    throw new Error("No image in response");
+}
+
+async function genReplicate(prompt, negative, s) {
+    if (!s.replicateKey) throw new Error("Replicate API key required");
+    // Default to SDXL if no model specified
+    const version = s.replicateModel || "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b";
+
+    // Create prediction
+    const res = await fetch("https://api.replicate.com/v1/predictions", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Token ${s.replicateKey}`
+        },
+        body: JSON.stringify({
+            version: version,
+            input: {
+                prompt: prompt,
+                negative_prompt: negative,
+                width: s.width,
+                height: s.height,
+                num_outputs: 1,
+                scheduler: "K_EULER" // Reasonable default
+            }
+        })
+    });
+    if (!res.ok) throw new Error(`Replicate error: ${res.status}`);
+    const pred = await res.json();
+
+    // Poll for result
+    for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
+            headers: { "Authorization": `Token ${s.replicateKey}` }
+        });
+        const status = await statusRes.json();
+        if (status.status === "succeeded" && status.output?.[0]) return status.output[0];
+        if (status.status === "failed") throw new Error(status.error || "Generation failed");
+    }
+    throw new Error("Replicate timeout");
+}
+
+async function genFal(prompt, negative, s) {
+    if (!s.falKey) throw new Error("Fal.ai API key required");
+    // Default to Flux Schnell
+    const model = s.falModel || "fal-ai/flux/schnell";
+    const endpoint = `https://fal.run/${model}`;
+
+    const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Key ${s.falKey}`
+        },
+        body: JSON.stringify({
+            prompt: prompt,
+            image_size: { width: s.width, height: s.height },
+            num_images: 1,
+            enable_safety_checker: false
+        })
+    });
+    if (!res.ok) throw new Error(`Fal.ai error: ${res.status}`);
+    const data = await res.json();
+    if (data.images?.[0]?.url) return data.images[0].url;
+    throw new Error("No image in response");
+}
+
+async function genTogether(prompt, negative, s) {
+    if (!s.togetherKey) throw new Error("Together AI API key required");
+    const model = s.togetherModel || "stabilityai/stable-diffusion-xl-base-1.0";
+
+    const res = await fetch("https://api.together.xyz/v1/images/generations", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${s.togetherKey}`
+        },
+        body: JSON.stringify({
+            model: model,
+            prompt: prompt,
+            negative_prompt: negative,
+            width: s.width,
+            height: s.height,
+            steps: Math.min(s.steps, 50),
+            n: 1
+        })
+    });
+    if (!res.ok) throw new Error(`Together AI error: ${res.status}`);
+    const data = await res.json();
+    if (data.data?.[0]?.url) return data.data[0].url;
+    if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+    throw new Error("No image in response");
+}
+
 const providerGenerators = {
     pollinations: genPollinations,
     novelai: genNovelAI,
@@ -1235,6 +1372,10 @@ const providerGenerators = {
     chutes: genChutes,
     civitai: genCivitAI,
     nanobanana: genNanobanana,
+    stability: genStability,
+    replicate: genReplicate,
+    fal: genFal,
+    together: genTogether,
     local: genLocal,
     comfyui: genLocal,
     proxy: genProxy
@@ -1589,6 +1730,33 @@ function createUI() {
                     <input type="file" id="qig-nanobanana-ref-input" accept="image/*" multiple style="display:none">
                     <button id="qig-nanobanana-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
                 </div>
+
+                <div id="qig-stability-settings" class="qig-provider-section">
+                    <label>Stability AI API Key</label>
+                    <input id="qig-stability-key" type="password" value="${s.stabilityKey}">
+                    <div class="form-hint">Uses SDXL 1.0</div>
+                </div>
+
+                <div id="qig-replicate-settings" class="qig-provider-section">
+                    <label>Replicate API Key</label>
+                    <input id="qig-replicate-key" type="password" value="${s.replicateKey}">
+                    <label>Model Version</label>
+                    <input id="qig-replicate-model" type="text" value="${s.replicateModel}" placeholder="stability-ai/sdxl:...">
+                </div>
+
+                <div id="qig-fal-settings" class="qig-provider-section">
+                    <label>Fal.ai API Key</label>
+                    <input id="qig-fal-key" type="password" value="${s.falKey}">
+                    <label>Model Endpoint</label>
+                    <input id="qig-fal-model" type="text" value="${s.falModel}" placeholder="fal-ai/flux/schnell">
+                </div>
+
+                <div id="qig-together-settings" class="qig-provider-section">
+                    <label>Together AI API Key</label>
+                    <input id="qig-together-key" type="password" value="${s.togetherKey}">
+                    <label>Model</label>
+                    <input id="qig-together-model" type="text" value="${s.togetherModel}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
+                </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
                     <label>Local URL</label>
@@ -1770,6 +1938,13 @@ function createUI() {
     bind("qig-nanobanana-key", "nanobananaKey");
     bind("qig-nanobanana-model", "nanobananaModel");
     bind("qig-nanobanana-extra", "nanobananaExtraInstructions");
+    bind("qig-stability-key", "stabilityKey");
+    bind("qig-replicate-key", "replicateKey");
+    bind("qig-replicate-model", "replicateModel");
+    bind("qig-fal-key", "falKey");
+    bind("qig-fal-model", "falModel");
+    bind("qig-together-key", "togetherKey");
+    bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-type", "localType");
     bind("qig-proxy-url", "proxyUrl");
