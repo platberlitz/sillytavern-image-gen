@@ -290,9 +290,11 @@ async function generateLLMPrompt(s, basePrompt) {
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
         } else if (isNatural) {
             let enhancements = "";
+            let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Professional lighting descriptions (dramatic lighting, soft lighting, rim lighting, etc.)";
             if (s.llmAddArtist) enhancements += "\n- Art style references from well-known artists";
+            else restrictions += "\n- DO NOT include artist names or art style references";
             
             instruction = `[Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
@@ -306,14 +308,16 @@ Write a detailed image prompt describing:
 - Their poses, expressions, and body language
 - The setting/background
 - Lighting and atmosphere
-- High quality visual details (sharp focus, detailed rendering, etc.)${enhancements}
+- High quality visual details (sharp focus, detailed rendering, etc.)${enhancements}${restrictions}
 
 Prompt:`;
         } else {
             let enhancements = "";
+            let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality tags (masterpiece, best quality, highly detailed, sharp focus, 8k, etc.)";
             if (s.llmAddLighting) enhancements += "\n- Lighting tags (dramatic lighting, soft lighting, rim lighting, volumetric lighting, etc.)";
             if (s.llmAddArtist) enhancements += "\n- Artist style tags (by artist_name, art_style, etc.)";
+            else restrictions += "\n- DO NOT include artist names or art style tags";
             
             instruction = `[Output ONLY comma-separated tags for image generation. No commentary.]${skinEnforce}
 
@@ -327,7 +331,7 @@ Generate detailed Danbooru/Booru-style tags including:
 - Clothing and accessories in detail
 - Pose, expression, action
 - Setting/background tags
-${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}${enhancements}
+${s.qualityTags ? `- Quality tags: ${s.qualityTags}` : '- Quality tags like "masterpiece, best quality, highly detailed"'}${enhancements}${restrictions}
 
 Tags:`;
         }
