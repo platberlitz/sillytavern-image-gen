@@ -351,7 +351,9 @@ Write a detailed image prompt describing:
 - Their poses, expressions, and body language
 - The setting/background
 - Lighting and atmosphere
-- High quality visual details (sharp focus, detailed rendering, etc.)${enhancements}${restrictions}
+- High quality visual details (sharp focus, detailed rendering, etc.)${enhancements ? `
+
+YOU MUST ALSO INCLUDE:${enhancements}` : ""}${restrictions}
 
 Prompt:`;
         } else {
@@ -394,10 +396,12 @@ Required tags:
 - Clothing and accessories
 - Pose and expression
 - Background/setting
-- Quality tags${enhancements}
+- Quality tags (masterpiece, best quality, etc.)${enhancements ? `
+
+MUST INCLUDE these additional elements:${enhancements}` : ""}
 ${restrictions}
 
- Tags:`;
+Tags:`;
         }
 
         log(`Sending instruction to LLM (length: ${instruction.length} chars)`);
