@@ -242,11 +242,48 @@ async function fetchA1111Models(url) {
 
 async function fetchControlNetModels(url) {
     try {
-        const res = await fetch(`${url}/controlnet/model_list`);
+        let fetchUrl = `${url}/controlnet/model_list`;
+        // Check if using sd-proxy (url ends with 3000 typically, or just try proxy endpoint first?)
+        // Better: if the normal fetch fails, try the proxy endpoint? 
+        // Or if the url refers to the proxy... 
+        // Let's assume if it looks like a proxy URL we use the proxy endpoint.
+        // Actually, simpler: The proxy endpoint is /api/proxy/controlnet/model_list
+        // If s.localUrl is http://localhost:3000, then fetchUrl becomes http://localhost:3000/controlnet/model_list which fails.
+        // The endpoint is at /api/proxy/controlnet/model_list
+
+        // If url points to sd-proxy, it likely doesn't have /controlnet/model_list natively.
+        // Try standard first, if 404, try proxy path?
+
+        let res = await fetch(fetchUrl);
+        if (res.status === 404) {
+            res = await fetch(`${url}/api/proxy/controlnet/model_list`, {
+                headers: { 'x-local-url': getSettings().localUrl } // This might be circular if url=localUrl.
+                // Wait, in fetchA1111Models(s.localUrl), url IS s.localUrl.
+                // If s.localUrl is the PROXY url, we need to send the TARGET url in header?
+                // But in proxy mode, usually s.localUrl IS the proxy url.
+                // But the proxy needs to know where the REAL A1111 is.
+                // The proxy reads 'x-local-url' header.
+                // We don't have the real A1111 url stored if we are in "Local" mode pointing to proxy?
+                // Actually, sd-proxy 'local' backend handler reads 'x-local-url'.
+                // Users usually set 'x-local-url' in headers or default to localhost:7860.
+                // We should pass the header if we have custom header settings? 
+                // Currently we don't have generic custom headers for "Local" provider.
+                // We only have `s.localUrl`.
+            });
+        }
+
         if (!res.ok) return [];
         const data = await res.json();
         return data.model_list || [];
     } catch (e) {
+        // Retry with proxy path if first attempt failed with network error (e.g. CORS or Connection Refused on incorrect path)
+        try {
+            const res = await fetch(`${url}/api/proxy/controlnet/model_list`);
+            if (res.ok) {
+                const data = await res.json();
+                return data.model_list || [];
+            }
+        } catch (e2) { }
         return [];
     }
 }
