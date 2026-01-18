@@ -1281,12 +1281,19 @@ async function genLocal(prompt, negative, s) {
 
     // IP-Adapter Face - use reference image for face only
     if (s.a1111IpAdapter && s.localRefImage) {
+        // Determine correct preprocessor based on model type
+        // Plus/Plus v2 variants need ip-adapter_face_id_plus, others use ip-adapter_face_id
+        const ipAdapterModel = s.a1111IpAdapterMode || "ip-adapter-faceid-portrait_sd15";
+        const ipAdapterPreprocessor = ipAdapterModel.toLowerCase().includes('plus')
+            ? 'ip-adapter_face_id_plus'
+            : 'ip-adapter_face_id';
+
         payload.alwayson_scripts = payload.alwayson_scripts || {};
         payload.alwayson_scripts.controlnet = {
             args: [{
                 enabled: true,
-                module: "ip-adapter_face_id",
-                model: s.a1111IpAdapterMode || "ip-adapter-faceid-portrait_sd15",
+                module: ipAdapterPreprocessor,
+                model: ipAdapterModel,
                 weight: parseFloat(s.a1111IpAdapterWeight) || 0.7,
                 image: s.localRefImage.replace(/^data:image\/.+;base64,/, ''),
                 resize_mode: s.a1111IpAdapterResizeMode || "Crop and Resize",
@@ -1299,7 +1306,7 @@ async function genLocal(prompt, negative, s) {
         const logPayload = JSON.parse(JSON.stringify(payload.alwayson_scripts.controlnet));
         if (logPayload.args[0].image) logPayload.args[0].image = "BASE64_IMAGE_TRUNCATED";
         log(`A1111 ControlNet Payload: ${JSON.stringify(logPayload)}`);
-        log(`A1111: Using IP-Adapter Face with model=${s.a1111IpAdapterMode}, weight=${s.a1111IpAdapterWeight}`);
+        log(`A1111: Using IP-Adapter Face with preprocessor=${ipAdapterPreprocessor}, model=${ipAdapterModel}, weight=${s.a1111IpAdapterWeight}`);
     }
 
     log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}`);
