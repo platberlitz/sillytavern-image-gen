@@ -635,7 +635,8 @@ async function genNovelAI(prompt, negative, s) {
         "lms": "k_lms",
         "heun": "k_heun"
     };
-    const sampler = (s.sampler === "ddim" && s.naiModel.includes("diffusion-3"))
+    const isV3OrNewer = s.naiModel.includes("diffusion-3") || s.naiModel.includes("diffusion-4");
+    const sampler = (s.sampler === "ddim" && isV3OrNewer)
         ? "ddim_v3"
         : (samplerMap[s.sampler] || "k_euler_ancestral");
     const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
