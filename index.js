@@ -240,6 +240,17 @@ async function fetchA1111Models(url) {
     }
 }
 
+async function fetchControlNetModels(url) {
+    try {
+        const res = await fetch(`${url}/controlnet/model_list`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        return data.model_list || [];
+    } catch (e) {
+        return [];
+    }
+}
+
 async function switchA1111Model(url, modelTitle) {
     try {
         const baseUrl = url.replace(/\/$/, "");
@@ -1248,6 +1259,9 @@ async function genLocal(prompt, negative, s) {
                 guidance_end: parseFloat(s.a1111IpAdapterEndStep) || 1
             }]
         };
+        const logPayload = JSON.parse(JSON.stringify(payload.alwayson_scripts.controlnet));
+        if (logPayload.args[0].image) logPayload.args[0].image = "BASE64_IMAGE_TRUNCATED";
+        log(`A1111 ControlNet Payload: ${JSON.stringify(logPayload)}`);
         log(`A1111: Using IP-Adapter Face with model=${s.a1111IpAdapterMode}, weight=${s.a1111IpAdapterWeight}`);
     }
 
@@ -2387,21 +2401,50 @@ function createUI() {
     async function populateA1111Models() {
         const s = getSettings();
         a1111ModelSelect.innerHTML = '<option value="">Loading...</option>';
+
+        // Fetch SD Checkpoints
         const models = await fetchA1111Models(s.localUrl);
         const currentModel = s.a1111Model || await getCurrentA1111Model(s.localUrl);
 
         if (models.length === 0) {
             a1111ModelSelect.innerHTML = '<option value="">-- Failed to load (check if A1111 running) --</option>';
-            return;
+        } else {
+            a1111ModelSelect.innerHTML = models.map(m =>
+                `<option value="${m.title}" ${m.title === currentModel ? 'selected' : ''}>${m.name}</option>`
+            ).join('');
+
+            if (currentModel && !s.a1111Model) {
+                s.a1111Model = currentModel;
+                saveSettingsDebounced();
+            }
         }
 
-        a1111ModelSelect.innerHTML = models.map(m =>
-            `<option value="${m.title}" ${m.title === currentModel ? 'selected' : ''}>${m.name}</option>`
-        ).join('');
+        // Fetch ControlNet Models for IP-Adapter
+        const cnModels = await fetchControlNetModels(s.localUrl);
+        const cnSelect = document.getElementById("qig-a1111-ipadapter-mode");
 
-        if (currentModel && !s.a1111Model) {
-            s.a1111Model = currentModel;
-            saveSettingsDebounced();
+        // Filter for IP-Adapter/FaceID models
+        const ipModels = cnModels.filter(m => m.toLowerCase().includes("ip-adapter") || m.toLowerCase().includes("faceid"));
+
+        if (ipModels.length > 0) {
+            // Preserve current selection if possible, otherwise default
+            const currentCn = s.a1111IpAdapterMode;
+
+            cnSelect.innerHTML = ipModels.map(m =>
+                `<option value="${m}" ${m === currentCn ? 'selected' : ''}>${m}</option>`
+            ).join('');
+
+            // Add a separator and the standard presets if they aren't in the list?
+            // Actually, best to just show what's available to ensure it works.
+            // But maybe keep the standard ones as a reference if list is huge?
+            // Let's just stick to detected models to fix the "silent failure" issue.
+            cnSelect.insertAdjacentHTML('afterbegin', '<option value="" disabled>-- Detected Models --</option>');
+        } else {
+            // Fallback to presets if no API or no models found
+            console.log("No IP-Adapter models detected via API, using presets.");
+            // We don't change innerHTML here so it keeps the hardcoded presets from HTML
+            // but maybe we should append a warning?
+            cnSelect.insertAdjacentHTML('beforeend', '<option value="" disabled>-- No IP-Adapter models detected --</option>');
         }
     }
 
