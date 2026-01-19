@@ -1516,12 +1516,32 @@ function displayImage(url) {
         img.src = "";
         img.src = url;
         const downloadBtn = document.getElementById("qig-download-btn");
-        downloadBtn.onclick = (e) => {
+        downloadBtn.onclick = async (e) => {
             e.stopPropagation();
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `generated-${Date.now()}.png`;
-            a.click();
+            try {
+                // For cross-origin URLs, we need to fetch as blob first
+                // Data URLs and same-origin URLs will work directly
+                let blobUrl = url;
+                if (!url.startsWith('data:')) {
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    blobUrl = URL.createObjectURL(blob);
+                }
+                const a = document.createElement("a");
+                a.href = blobUrl;
+                a.download = `generated-${Date.now()}.png`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                // Clean up blob URL after download
+                if (blobUrl !== url) {
+                    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+                }
+            } catch (err) {
+                console.error("Download failed:", err);
+                // Fallback: open in new tab
+                window.open(url, '_blank');
+            }
         };
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
