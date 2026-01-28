@@ -2709,10 +2709,10 @@ function addInputButton() {
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = generateImage;
 
-    // Add to right side area
-    const rightArea = document.getElementById("rightSendForm") || document.querySelector("#send_form .right_menu_buttons");
-    if (rightArea) {
-        rightArea.insertBefore(btn, rightArea.firstChild);
+    // Add to left side area (away from send button)
+    const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
+    if (leftArea) {
+        leftArea.appendChild(btn);
     }
 }
 
