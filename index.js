@@ -995,49 +995,62 @@ async function genChutes(prompt, negative, s) {
 }
 
 async function genCivitAI(prompt, negative, s) {
-    const res = await fetch("https://civitai.com/api/v1/jobs", {
+    const res = await fetch("https://civitai.com/api/v1/consumer/jobs", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.civitaiKey}`,
             "Content-Type": "application/json"
         },
         body: JSON.stringify({
-            model: s.civitaiModel,
-            params: {
-                prompt: prompt,
-                negativePrompt: negative,
-                scheduler: s.civitaiScheduler || "EulerA",
-                steps: s.steps,
-                cfgScale: s.cfgScale,
-                width: s.width,
-                height: s.height,
-                seed: s.seed === -1 ? -1 : s.seed,
-                clipSkip: 2
-            },
-            batchSize: 1
+            $type: "textToImage",
+            input: {
+                model: s.civitaiModel,
+                params: {
+                    prompt: prompt,
+                    negativePrompt: negative,
+                    scheduler: s.civitaiScheduler || "EulerA",
+                    steps: s.steps,
+                    cfgScale: s.cfgScale,
+                    width: s.width,
+                    height: s.height,
+                    seed: s.seed === -1 ? -1 : s.seed,
+                    clipSkip: 2
+                },
+                batchSize: 1
+            }
         })
     });
-    if (!res.ok) throw new Error(`CivitAI error: ${res.status}`);
+    if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`CivitAI error: ${res.status} - ${errText}`);
+    }
     const data = await res.json();
 
-    // Poll for job completion
-    const jobId = data.id;
+    // Poll for job completion using token
+    const jobToken = data.token;
+    if (!jobToken) throw new Error(`No job token returned: ${JSON.stringify(data)}`);
+
+    let lastError = null;
     for (let i = 0; i < 60; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const statusRes = await fetch(`https://civitai.com/api/v1/jobs/${jobId}`, {
+        const statusRes = await fetch(`https://civitai.com/api/v1/consumer/jobs?token=${jobToken}`, {
             headers: { "Authorization": `Bearer ${s.civitaiKey}` }
         });
-        if (!statusRes.ok) throw new Error(`CivitAI status error: ${statusRes.status}`);
-        const status = await statusRes.json();
-
-        if (status.status === 'completed' && status.result?.images?.[0]) {
-            return status.result.images[0].url;
+        if (!statusRes.ok) {
+            lastError = `Status error: ${statusRes.status}`;
+            continue;
         }
-        if (status.status === 'failed') {
-            throw new Error(`CivitAI job failed: ${status.error || 'Unknown error'}`);
+        const jobs = await statusRes.json();
+        const job = jobs?.[0];
+
+        if (job?.result?.blobUrl) {
+            return job.result.blobUrl;
+        }
+        if (job?.scheduled === false && !job?.result) {
+            throw new Error(`CivitAI job failed: ${job.message || 'Unknown error'}`);
         }
     }
-    throw new Error("CivitAI job timeout");
+    throw new Error(`CivitAI job timeout. Last error: ${lastError || 'Still processing'}`);
 }
 
 async function genNanobanana(prompt, negative, s) {
