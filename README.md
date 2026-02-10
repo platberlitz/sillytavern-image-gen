@@ -33,7 +33,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🏷️ **Three Prompt Modes** - Danbooru tags, natural descriptions, or custom instruction
 - ⭐ **LLM Enhancements** - Add quality tags, lighting tags, and artist tags to LLM prompts
 - ✨ **Quality Tags** - Auto-prepend quality boosters
-- 📍 **Message Selector** - Choose which chat message to use
+- 📍 **Message Selection** - Choose single, range, or multiple chat messages for context (`-1`, `3-7`, `3,5,7`, `last5`)
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
@@ -92,7 +92,8 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
 | **Negative Prompt** | What to avoid in generation |
 | **Quality Tags** | Tags prepended to prompt |
-| **Use chat message** | Use last chat message as prompt |
+| **Use chat message** | Use chat message(s) as prompt |
+| **Message selection** | Which messages to use: `-1` (last), `5` (single), `3-7` (range), `3,5,7` (specific), `last5` (last N) |
 | **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
 | **Edit LLM prompt** | Review and edit AI-generated prompts before generation |
 | **Prefill** | Text to start LLM response with (e.g., "Tags:", "Image prompt:") |
@@ -196,6 +197,7 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 - **Character Awareness**: Includes character descriptions and appearance details
 - **Skin Tone Detection**: Automatically reinforces detected skin tones
 - **Context Integration**: Uses chat history and character cards for better prompts
+- **Multi-Message Context**: Select multiple messages for richer scene context (ranges, specific indices, or last N)
 
 ## Drag and Drop Metadata
 Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model).

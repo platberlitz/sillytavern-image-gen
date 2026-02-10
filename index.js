@@ -26,7 +26,7 @@ const defaultSettings = {
     llmAddLighting: false,
     llmAddArtist: false,
     llmPrefill: "",
-    messageIndex: -1,
+    messageRange: "-1",
     width: 512,
     height: 512,
     steps: 25,
@@ -352,7 +352,14 @@ function showStatus(msg) {
 const hideStatus = () => showStatus();
 
 async function loadSettings() {
-    extension_settings[extensionName] = { ...defaultSettings, ...extension_settings[extensionName] };
+    const saved = extension_settings[extensionName];
+    extension_settings[extensionName] = { ...defaultSettings, ...saved };
+    const s = extension_settings[extensionName];
+    // Migrate old messageIndex to messageRange
+    if (saved && "messageIndex" in saved && !("messageRange" in saved)) {
+        s.messageRange = String(saved.messageIndex);
+    }
+    delete s.messageIndex;
 }
 
 function getSettings() {
@@ -366,14 +373,82 @@ function resolvePrompt(template) {
         .replace(/\{\{user\}\}/gi, ctx.name1 || "user");
 }
 
-function getLastMessage() {
+function parseMessageRange(rangeStr, chatLength) {
+    if (!chatLength || chatLength === 0) return [];
+    const str = String(rangeStr || "-1").trim().toLowerCase();
+    const indices = new Set();
+    const clamp = (n) => Math.max(0, Math.min(n, chatLength - 1));
+
+    // Handle "lastN" format
+    const lastMatch = str.match(/^last(\d+)$/);
+    if (lastMatch) {
+        const n = parseInt(lastMatch[1]);
+        if (!isNaN(n) && n > 0) {
+            const start = Math.max(0, chatLength - n);
+            for (let i = start; i < chatLength; i++) indices.add(i);
+        }
+        return [...indices].sort((a, b) => a - b);
+    }
+
+    // Split by comma and process each part
+    const parts = str.split(",");
+    for (const part of parts) {
+        const trimmed = part.trim();
+        if (trimmed === "") continue;
+
+        // Check for range (e.g. "3-7")
+        const rangeMatch = trimmed.match(/^(-?\d+)\s*-\s*(-?\d+)$/);
+        if (rangeMatch) {
+            let a = parseInt(rangeMatch[1]);
+            let b = parseInt(rangeMatch[2]);
+            if (isNaN(a) || isNaN(b)) continue;
+            // Resolve -1 as last
+            if (a === -1) a = chatLength - 1;
+            if (b === -1) b = chatLength - 1;
+            // Swap if reversed
+            if (a > b) { const tmp = a; a = b; b = tmp; }
+            a = clamp(a);
+            b = clamp(b);
+            for (let i = a; i <= b; i++) indices.add(i);
+        } else {
+            // Single number
+            let n = parseInt(trimmed);
+            if (isNaN(n)) continue;
+            if (n === -1) n = chatLength - 1;
+            indices.add(clamp(n));
+        }
+    }
+
+    return [...indices].sort((a, b) => a - b);
+}
+
+function getMessages() {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat || chat.length === 0) return "";
     const s = getSettings();
-    const idx = s.messageIndex === -1 ? chat.length - 1 : Math.min(s.messageIndex, chat.length - 1);
-    const msg = chat[idx];
-    return msg?.mes || "";
+    const indices = parseMessageRange(s.messageRange, chat.length);
+    if (indices.length === 0) return "";
+
+    // Single message: return plain text (backward compatible, no labels)
+    if (indices.length === 1) {
+        const msg = chat[indices[0]];
+        return msg?.mes || "";
+    }
+
+    // Multiple messages: return speaker-labeled concatenation
+    const lines = [];
+    for (const i of indices) {
+        const msg = chat[i];
+        if (!msg || !msg.mes) continue;
+        const name = msg.name || (msg.is_user ? ctx.name1 : ctx.name2) || "Unknown";
+        lines.push(`[${name}]: ${msg.mes}`);
+    }
+    const result = lines.join("\n\n");
+    if (result.length > 10000) {
+        console.warn("[QIG] Multi-message context exceeds 10000 chars:", result.length);
+    }
+    return result;
 }
 
 const styleCache = new Map();
@@ -441,6 +516,7 @@ async function generateLLMPrompt(s, basePrompt) {
 
         const isNatural = s.llmPromptStyle === "natural";
         const isCustom = s.llmPromptStyle === "custom";
+        const isMultiMessage = basePrompt.includes("\n\n[") && basePrompt.includes("]: ");
 
         let instruction;
         if (isCustom && s.llmCustomInstruction) {
@@ -492,7 +568,7 @@ CRITICAL INSTRUCTIONS:
 
 CHARACTER REFERENCE:
 ${appearanceContext}
-CURRENT SCENE: ${basePrompt}
+${isMultiMessage ? "SCENE CONTEXT (multiple messages):\n" : "CURRENT SCENE: "}${basePrompt}
 
 Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
@@ -535,7 +611,7 @@ CRITICAL - THIS IS NOT A CONTINUATION OF CHAT:
 
 ### IMAGE GENERATION TASK ###
 
-Create Danbooru/Booru-style tags for this scene: ${basePrompt}
+Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" : "scene: "}${basePrompt}
 
 Character info: ${appearanceContext}
 
@@ -1574,7 +1650,8 @@ async function insertImageIntoMessage(imageUrl) {
     if (!chat || chat.length === 0) throw new Error("No messages in chat");
 
     const s = getSettings();
-    const idx = s.messageIndex === -1 ? chat.length - 1 : Math.min(s.messageIndex, chat.length - 1);
+    const indices = parseMessageRange(s.messageRange, chat.length);
+    const idx = indices.length > 0 ? indices[indices.length - 1] : chat.length - 1;
     const message = chat[idx];
     if (!message) throw new Error("Could not find target message");
 
@@ -2441,8 +2518,12 @@ function createUI() {
                     <span>Use chat message as prompt</span>
                 </label>
                 <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
-                    <label>Message index (-1 = last message)</label>
-                    <input id="qig-msg-index" type="number" value="${s.messageIndex}" min="-1">
+                    <label>Message selection</label>
+                    <input id="qig-msg-range" type="text" value="${s.messageRange}" placeholder="-1"
+                           title="-1 (last), 5 (single), 3-7 (range), 3,5,7 (specific), last5 (last N)">
+                    <small style="color:var(--SmartThemeBodyColor);opacity:0.6;font-size:10px;margin-top:2px;display:block;">
+                        -1 = last | 3-7 = range | 3,5,7 = pick | last5 = last N
+                    </small>
                 </div>
                 <label class="checkbox_label">
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
@@ -2785,7 +2866,7 @@ function createUI() {
         document.getElementById("qig-msg-index-wrap").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced();
     };
-    bind("qig-msg-index", "messageIndex", true);
+    bind("qig-msg-range", "messageRange", false);
     document.getElementById("qig-use-llm").onchange = (e) => {
         getSettings().useLLMPrompt = e.target.checked;
         document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
@@ -2864,10 +2945,10 @@ async function generateImage() {
     let scenePrompt = "";
 
     if (s.useLastMessage) {
-        const lastMsg = getLastMessage();
-        if (lastMsg) {
-            scenePrompt = lastMsg;
-            basePrompt = lastMsg;
+        const messages = getMessages();
+        if (messages) {
+            scenePrompt = messages;
+            basePrompt = messages;
         }
     }
 
