@@ -1,13 +1,13 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Images in popup, never added to chat.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Resizable popup with insert-to-chat support.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
 ---
 
-One-click image generation for SillyTavern. Images appear in a popup and **never get added to chat** - zero tokens.
+One-click image generation for SillyTavern. Images appear in a resizable popup with the option to insert them into chat messages.
 
 ## Features
 
@@ -48,6 +48,8 @@ One-click image generation for SillyTavern. Images appear in a popup and **never
 ### Gallery & Session
 - 🖼️ **Session Gallery** - View all images generated this session
 - 🔄 **Quick Regenerate** - Same prompt, new seed
+- 📌 **Insert to Chat** - Attach generated image to a chat message (persists on reload)
+- 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
 - ⚡ **Auto-generate** - Generate after each AI response
 
 ### Advanced Features
@@ -113,6 +115,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 💾 Save Profile | Save current provider settings |
 | 💾 Save Template | Save current prompt + negative + quality as template |
 | 🔄 Regenerate | Same prompt, new seed |
+| 📌 Insert | Attach image to the target chat message |
 | 🖼️ Gallery | View session images |
 
 ---

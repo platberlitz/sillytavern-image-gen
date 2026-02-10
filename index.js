@@ -1482,6 +1482,49 @@ async function genProxy(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
+let resizeAbortController = null;
+
+function initResizeHandle(popup) {
+    if (resizeAbortController) resizeAbortController.abort();
+    resizeAbortController = new AbortController();
+    const signal = resizeAbortController.signal;
+
+    const handle = popup.querySelector('.qig-resize-handle');
+    if (!handle) return;
+
+    const content = popup.querySelector('.qig-popup-content');
+
+    handle.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const startX = e.clientX;
+        const startY = e.clientY;
+        const startWidth = content.offsetWidth;
+        const startHeight = content.offsetHeight;
+
+        popup.classList.add('qig-resizing');
+
+        const onMouseMove = (e) => {
+            const deltaX = e.clientX - startX;
+            const deltaY = e.clientY - startY;
+            const newWidth = Math.max(300, startWidth + deltaX * 2);
+            const newHeight = Math.max(200, startHeight + deltaY);
+            content.style.maxWidth = newWidth + 'px';
+            content.style.width = newWidth + 'px';
+            content.style.maxHeight = newHeight + 'px';
+        };
+
+        const onMouseUp = () => {
+            popup.classList.remove('qig-resizing');
+            document.removeEventListener('mousemove', onMouseMove);
+            document.removeEventListener('mouseup', onMouseUp);
+        };
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+    }, { signal });
+}
+
 function createPopup(id, title, content, onShow) {
     let popup = document.getElementById(id);
     if (!popup) {
@@ -1499,6 +1542,7 @@ function createPopup(id, title, content, onShow) {
                 <button class="qig-close-btn">✕</button>
             </div>
             ${content}
+            <div class="qig-resize-handle"></div>
         </div>`;
     popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
     popup.onclick = () => popup.style.display = "none";
@@ -1513,6 +1557,71 @@ function showLogs() {
     });
 }
 
+async function blobUrlToDataUrl(blobUrl) {
+    const response = await fetch(blobUrl);
+    const blob = await response.blob();
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
+}
+
+async function insertImageIntoMessage(imageUrl) {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    if (!chat || chat.length === 0) throw new Error("No messages in chat");
+
+    const s = getSettings();
+    const idx = s.messageIndex === -1 ? chat.length - 1 : Math.min(s.messageIndex, chat.length - 1);
+    const message = chat[idx];
+    if (!message) throw new Error("Could not find target message");
+
+    // Convert blob URLs to data URLs for persistence
+    let url = imageUrl;
+    if (imageUrl.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(imageUrl);
+    }
+
+    if (!message.extra || typeof message.extra !== 'object') {
+        message.extra = {};
+    }
+
+    const title = lastPrompt || 'Generated Image';
+
+    // Use modern media API if available
+    if (typeof ctx.appendMediaToMessage === 'function') {
+        if (!Array.isArray(message.extra.media)) {
+            message.extra.media = [];
+        }
+        if (!message.extra.media.length && !message.extra.media_display) {
+            message.extra.media_display = 'gallery';
+        }
+
+        message.extra.media.push({
+            url: url,
+            type: 'image',
+            title: title,
+            source: 'generated',
+        });
+        message.extra.inline_image = true;
+        message.extra.media_index = message.extra.media.length - 1;
+
+        const messageElement = $(`.mes[mesid="${idx}"]`);
+        if (messageElement.length) {
+            ctx.appendMediaToMessage(message, messageElement, 'keep');
+        }
+    } else {
+        // Legacy fallback for older ST versions
+        message.extra.image = url;
+        message.extra.inline_image = true;
+        message.extra.title = title;
+    }
+
+    await ctx.saveChat();
+}
+
 function displayImage(url) {
     sessionGallery.unshift({ url, date: Date.now() });
     if (sessionGallery.length > 20) sessionGallery.pop();
@@ -1521,10 +1630,20 @@ function displayImage(url) {
         <img id="qig-result-img" src="">
         <div class="qig-popup-actions">
             <button id="qig-regenerate-btn">🔄 Regenerate</button>
+            <button id="qig-insert-btn">📌 Insert</button>
             <button id="qig-gallery-btn">🖼️ Gallery</button>
             <button id="qig-download-btn">💾 Download</button>
             <button id="qig-close-popup">Close</button>
         </div>`, (popup) => {
+        // Reset any previous inline resize styles
+        const content = popup.querySelector('.qig-popup-content');
+        if (content) {
+            content.style.maxWidth = '';
+            content.style.width = '';
+            content.style.maxHeight = '';
+        }
+        initResizeHandle(popup);
+
         const img = document.getElementById("qig-result-img");
         img.src = "";
         img.src = url;
@@ -1564,6 +1683,16 @@ function displayImage(url) {
         document.getElementById("qig-gallery-btn").onclick = (e) => {
             e.stopPropagation();
             showGallery();
+        };
+        document.getElementById("qig-insert-btn").onclick = async (e) => {
+            e.stopPropagation();
+            try {
+                await insertImageIntoMessage(url);
+                toastr.success("Image inserted into message");
+            } catch (err) {
+                console.error("[Quick Image Gen] Insert failed:", err);
+                toastr.error("Failed to insert image: " + err.message);
+            }
         };
         document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
     });
