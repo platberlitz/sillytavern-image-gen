@@ -47,6 +47,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 
 ### Gallery & Session
 - 🖼️ **Session Gallery** - View all images generated this session
+- 📝 **Prompt History** - Review full prompts from all generations this session (up to 50)
 - 🔄 **Quick Regenerate** - Same prompt, new seed
 - 📌 **Insert to Chat** - Attach generated image to a chat message (persists on reload)
 - 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
@@ -118,6 +119,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 🔄 Regenerate | Same prompt, new seed |
 | 📌 Insert | Attach image to the target chat message |
 | 🖼️ Gallery | View session images |
+| 📝 Prompts | View full prompt history for this session |
 
 ---
 

@@ -107,6 +107,7 @@ const defaultSettings = {
 };
 
 let sessionGallery = [];
+let promptHistory = [];
 let lastPrompt = "";
 let lastNegative = "";
 let promptTemplates = JSON.parse(localStorage.getItem("qig_templates") || "[]");
@@ -1633,6 +1634,26 @@ function showLogs() {
     });
 }
 
+function showPromptHistory() {
+    createPopup("qig-prompt-history-popup", "Prompt History", `<div id="qig-prompt-history-content"></div>`, (popup) => {
+        const container = document.getElementById("qig-prompt-history-content");
+        if (!promptHistory.length) {
+            container.innerHTML = '<p style="color:#888;">No prompts yet this session</p>';
+            return;
+        }
+        container.innerHTML = promptHistory.map((entry, i) => `
+            <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <span style="color:#e94560;font-size:12px;">#${promptHistory.length - i} - ${entry.time}</span>
+                    <button onclick="navigator.clipboard.writeText(this.closest('div').querySelector('pre').textContent)" style="background:#333;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Copy</button>
+                </div>
+                <pre style="white-space:pre-wrap;word-break:break-word;color:#ddd;margin:0;font-size:13px;">${entry.prompt}</pre>
+                ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${entry.negative}</pre>` : ''}
+            </div>
+        `).join('');
+    });
+}
+
 async function blobUrlToDataUrl(blobUrl) {
     const response = await fetch(blobUrl);
     const blob = await response.blob();
@@ -2251,7 +2272,9 @@ function createUI() {
                 <button id="qig-generate-btn" class="menu_button">🎨 Generate</button>
                 <button id="qig-logs-btn" class="menu_button">📋 Logs</button>
                 <button id="qig-save-char-btn" class="menu_button">💾 Save for Char</button>
-                
+                <button id="qig-gallery-settings-btn" class="menu_button">🖼️ Gallery</button>
+                <button id="qig-prompt-history-btn" class="menu_button">📝 Prompts</button>
+
                 <label>Provider</label>
                 <select id="qig-provider">${providerOpts}</select>
                 
@@ -2608,6 +2631,8 @@ function createUI() {
     document.getElementById("qig-generate-btn").onclick = generateImage;
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
+    document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
+    document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
     document.getElementById("qig-save-template").onclick = saveTemplate;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
     renderTemplates();
@@ -2989,6 +3014,8 @@ async function generateImage() {
 
     lastPrompt = prompt;
     lastNegative = negative;
+    promptHistory.unshift({ prompt, negative, time: new Date().toLocaleTimeString() });
+    if (promptHistory.length > 50) promptHistory.pop();
 
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
