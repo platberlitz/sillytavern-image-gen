@@ -58,8 +58,10 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 
 ### Advanced Features
 - 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
-- 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy)
-- 👤 **Face Fix** - ADetailer support (Proxy)
+- 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy, Local/A1111)
+- 👤 **Face Fix** - ADetailer with custom prompt/negative (Proxy, Local/A1111)
+- 🔍 **Hires Fix** - Upscale generation with configurable upscaler, scale, and denoise (A1111)
+- 📊 **Generation Progress** - Live progress percentage, step count, and ETA (A1111/ComfyUI)
 - ⚙️ **Full Control** - Steps, CFG, Sampler, Seed for compatible providers
 
 ---
@@ -179,7 +181,7 @@ Save and load provider configurations per-provider:
 - **Replicate**: API key, model
 - **Fal.ai**: API key, model
 - **Together AI**: API key, model
-- **Local**: URL, type (A1111/ComfyUI), CLIP skip, ADetailer settings
+- **Local**: URL, type (A1111/ComfyUI), CLIP skip, LoRAs, Hires Fix, ADetailer settings
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
@@ -238,9 +240,17 @@ Use these placeholders in custom workflows:
 ### A1111 Settings
 | Setting | Description |
 |---------|-------------|
+| **LoRAs** | Comma-separated LoRAs in `name:weight` format (e.g., `add_detail:0.7, my_lora:0.8`) |
 | **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
+| **Hires Fix** | Enable upscaling via Hires Fix (txt2img only) |
+| **Hires Upscaler** | Upscaling algorithm (Latent, R-ESRGAN, etc. — populated from A1111 API) |
+| **Hires Scale** | Upscale factor (1-4, default 2) |
+| **Hires 2nd Pass Steps** | Sampling steps for upscale pass (0 = same as first pass) |
+| **Hires Denoise** | Denoising strength for upscale pass (0-1, default 0.55) |
 | **ADetailer** | Enable face/hand fix using ADetailer extension |
 | **ADetailer Model** | Detection model (face_yolov8n, hand_yolov8n, person_yolov8n, mediapipe) |
+| **ADetailer Prompt** | Custom prompt for inpainting (empty = use main prompt) |
+| **ADetailer Negative** | Custom negative for inpainting (empty = use main negative) |
 | **IP-Adapter Face** | Use reference image for face features only (not pose/clothes) |
 | **IP-Adapter Model** | FaceID model (Portrait, Standard, Plus v2 - SD1.5 or SDXL) |
 | **IP-Adapter Weight** | How strongly to apply facial features (0-1.5, default 0.7) |

@@ -93,6 +93,14 @@ const defaultSettings = {
     a1111ClipSkip: 1,
     a1111Adetailer: false,
     a1111AdetailerModel: "face_yolov8n.pt",
+    a1111AdetailerPrompt: "",
+    a1111AdetailerNegative: "",
+    a1111Loras: "",
+    a1111HiresFix: false,
+    a1111HiresUpscaler: "Latent",
+    a1111HiresScale: 2,
+    a1111HiresSteps: 0,
+    a1111HiresDenoise: 0.55,
     a1111IpAdapter: false,
     a1111IpAdapterMode: "ip-adapter-faceid-portrait_sd15",
     a1111IpAdapterWeight: 0.7,
@@ -128,7 +136,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -318,6 +326,18 @@ async function getCurrentA1111Model(url) {
         return opts.sd_model_checkpoint || null;
     } catch {
         return null;
+    }
+}
+
+async function fetchA1111Upscalers(url) {
+    try {
+        const res = await fetch(`${url.replace(/\/$/, "")}/sdapi/v1/upscalers`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        return (await res.json()).map(u => u.name);
+    } catch (e) {
+        return ["Latent", "Latent (antialiased)", "Latent (bicubic)",
+                "Latent (bicubic antialiased)", "Latent (nearest)",
+                "Latent (nearest-exact)", "None"];
     }
 }
 
@@ -1316,6 +1336,7 @@ async function genLocal(prompt, negative, s) {
         const promptId = data.prompt_id;
         for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 1000));
+            showStatus(`Generating... (waiting ${i + 1}s)`);
             const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
             const result = hist[promptId];
             if (result?.outputs) {
@@ -1346,11 +1367,35 @@ async function genLocal(prompt, negative, s) {
         seed: s.seed
     };
 
+    // LoRA injection via A1111 prompt syntax
+    if (s.a1111Loras && s.a1111Loras.trim()) {
+        const loraTags = s.a1111Loras.split(",")
+            .map(l => l.trim()).filter(l => l)
+            .map(l => {
+                const [name, w] = l.split(":");
+                return `<lora:${name.trim()}:${parseFloat(w) || 0.8}>`;
+            }).join(" ");
+        if (loraTags) {
+            payload.prompt = `${payload.prompt} ${loraTags}`;
+            log(`A1111: Injected LoRAs: ${loraTags}`);
+        }
+    }
+
     // CLIP skip
     const clipSkip = parseInt(s.a1111ClipSkip) || 1;
     if (clipSkip > 1) {
         payload.override_settings = payload.override_settings || {};
         payload.override_settings.CLIP_stop_at_last_layers = clipSkip;
+    }
+
+    // Hires Fix (txt2img only)
+    if (s.a1111HiresFix && !isImg2Img) {
+        payload.enable_hr = true;
+        payload.hr_upscaler = s.a1111HiresUpscaler || "Latent";
+        payload.hr_scale = parseFloat(s.a1111HiresScale) || 2;
+        payload.hr_second_pass_steps = parseInt(s.a1111HiresSteps) || 0;
+        payload.denoising_strength = parseFloat(s.a1111HiresDenoise) || 0.55;
+        log(`A1111: Hires Fix: upscaler=${payload.hr_upscaler}, scale=${payload.hr_scale}, denoise=${payload.denoising_strength}`);
     }
 
     // ADetailer
@@ -1359,8 +1404,8 @@ async function genLocal(prompt, negative, s) {
         payload.alwayson_scripts.ADetailer = {
             args: [{
                 ad_model: s.a1111AdetailerModel || "face_yolov8n.pt",
-                ad_prompt: "",
-                ad_negative_prompt: ""
+                ad_prompt: s.a1111AdetailerPrompt || "",
+                ad_negative_prompt: s.a1111AdetailerNegative || ""
             }]
         };
     }
@@ -1408,17 +1453,39 @@ async function genLocal(prompt, negative, s) {
         log(`A1111/Forge: Using IP-Adapter Face with preprocessor=${ipAdapterPreprocessor}, model=${ipAdapterModel}, weight=${s.a1111IpAdapterWeight}`);
     }
 
-    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}`);
+    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, loras=${s.a1111Loras || 'none'}, hires=${s.a1111HiresFix && !isImg2Img ? 'on' : 'off'}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}`);
 
-    const res = await fetch(`${baseUrl}${endpoint}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-    });
-    if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
-    const data = await res.json();
-    if (data.images?.[0]) return `data:image/png;base64,${data.images[0]}`;
-    throw new Error("No image in response");
+    // Start progress polling
+    let progressInterval = null;
+    progressInterval = setInterval(async () => {
+        try {
+            const pr = await fetch(`${baseUrl}/sdapi/v1/progress`);
+            if (pr.ok) {
+                const p = await pr.json();
+                if (p.progress > 0 && p.progress < 1) {
+                    const pct = Math.round(p.progress * 100);
+                    const step = p.state?.sampling_step !== undefined
+                        ? ` | Step ${p.state.sampling_step}/${p.state.sampling_steps}` : "";
+                    const eta = p.eta_relative ? ` | ~${Math.round(p.eta_relative)}s left` : "";
+                    showStatus(`Generating... ${pct}%${step}${eta}`);
+                }
+            }
+        } catch { /* ignore polling errors */ }
+    }, 500);
+
+    try {
+        const res = await fetch(`${baseUrl}${endpoint}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+        if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
+        const data = await res.json();
+        if (data.images?.[0]) return `data:image/png;base64,${data.images[0]}`;
+        throw new Error("No image in response");
+    } finally {
+        if (progressInterval) clearInterval(progressInterval);
+    }
 }
 
 async function genProxy(prompt, negative, s) {
@@ -2318,7 +2385,7 @@ function refreshProviderInputs(provider) {
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
-        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"]],
+        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"], ["qig-a1111-loras", "a1111Loras"], ["qig-a1111-hires", "a1111HiresFix"], ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"], ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"], ["qig-a1111-ad-negative", "a1111AdetailerNegative"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
@@ -2554,8 +2621,26 @@ function createUI() {
                              </select>
                              <button id="qig-a1111-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
+                         <label>LoRAs (name:weight, comma-separated)</label>
+                         <input id="qig-a1111-loras" type="text" value="${s.a1111Loras || ""}" placeholder="my_lora:0.8, detail_lora:0.6">
                          <div class="qig-row" style="margin-top:8px;">
                             <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"></div>
+                         </div>
+                         <label class="checkbox_label" style="margin-top:8px;">
+                             <input id="qig-a1111-hires" type="checkbox" ${s.a1111HiresFix ? "checked" : ""}>
+                             <span>Hires Fix (Upscale)</span>
+                         </label>
+                         <div id="qig-a1111-hires-opts" style="display:${s.a1111HiresFix ? 'block' : 'none'}">
+                             <label>Upscaler</label>
+                             <select id="qig-a1111-hires-upscaler">
+                                 <option value="Latent" selected>Latent</option>
+                             </select>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Scale</label><input id="qig-a1111-hires-scale" type="number" value="${s.a1111HiresScale || 2}" min="1" max="4" step="0.25"></div>
+                                 <div><label>2nd Pass Steps (0=same)</label><input id="qig-a1111-hires-steps" type="number" value="${s.a1111HiresSteps || 0}" min="0" max="150"></div>
+                             </div>
+                             <label>Denoise: <span id="qig-a1111-hires-denoise-val">${s.a1111HiresDenoise || 0.55}</span></label>
+                             <input id="qig-a1111-hires-denoise" type="range" min="0" max="1" step="0.05" value="${s.a1111HiresDenoise || 0.55}">
                          </div>
                          <label class="checkbox_label">
                              <input id="qig-a1111-adetailer" type="checkbox" ${s.a1111Adetailer ? "checked" : ""}>
@@ -2571,6 +2656,10 @@ function createUI() {
                                  <option value="mediapipe_face_full" ${s.a1111AdetailerModel === "mediapipe_face_full" ? "selected" : ""}>MediaPipe Face Full</option>
                                  <option value="mediapipe_face_short" ${s.a1111AdetailerModel === "mediapipe_face_short" ? "selected" : ""}>MediaPipe Face Short</option>
                              </select>
+                             <label>ADetailer Prompt (optional)</label>
+                             <input id="qig-a1111-ad-prompt" type="text" value="${s.a1111AdetailerPrompt || ""}" placeholder="Leave empty to use main prompt">
+                             <label>ADetailer Negative (optional)</label>
+                             <input id="qig-a1111-ad-negative" type="text" value="${s.a1111AdetailerNegative || ""}" placeholder="Leave empty to use main negative">
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-ipadapter" type="checkbox" ${s.a1111IpAdapter ? "checked" : ""}>
@@ -2844,8 +2933,34 @@ function createUI() {
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
+    bind("qig-a1111-loras", "a1111Loras");
+
+    // Hires Fix bindings
+    bindCheckbox("qig-a1111-hires", "a1111HiresFix");
+    bind("qig-a1111-hires-upscaler", "a1111HiresUpscaler");
+    bind("qig-a1111-hires-steps", "a1111HiresSteps", true);
+    document.getElementById("qig-a1111-hires-scale").onchange = (e) => {
+        getSettings().a1111HiresScale = parseFloat(e.target.value);
+        saveSettingsDebounced();
+    };
+    document.getElementById("qig-a1111-hires-denoise").oninput = (e) => {
+        document.getElementById("qig-a1111-hires-denoise-val").textContent = e.target.value;
+    };
+    document.getElementById("qig-a1111-hires-denoise").onchange = (e) => {
+        getSettings().a1111HiresDenoise = parseFloat(e.target.value);
+        saveSettingsDebounced();
+    };
+    document.getElementById("qig-a1111-hires").onchange = (e) => {
+        getSettings().a1111HiresFix = e.target.checked;
+        document.getElementById("qig-a1111-hires-opts").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced();
+    };
+
+    // ADetailer bindings
     bind("qig-a1111-adetailer", "a1111Adetailer");
     bind("qig-a1111-adetailer-model", "a1111AdetailerModel");
+    bind("qig-a1111-ad-prompt", "a1111AdetailerPrompt");
+    bind("qig-a1111-ad-negative", "a1111AdetailerNegative");
     document.getElementById("qig-a1111-adetailer").onchange = (e) => {
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
     };
@@ -2917,6 +3032,16 @@ function createUI() {
             // We don't change innerHTML here so it keeps the hardcoded presets from HTML
             // but maybe we should append a warning?
             cnSelect.insertAdjacentHTML('beforeend', '<option value="" disabled>-- No IP-Adapter models detected --</option>');
+        }
+
+        // Fetch Upscalers for Hires Fix
+        const upscalers = await fetchA1111Upscalers(s.localUrl);
+        const upscalerSelect = document.getElementById("qig-a1111-hires-upscaler");
+        if (upscalers.length > 0 && upscalerSelect) {
+            const cur = s.a1111HiresUpscaler || "Latent";
+            upscalerSelect.innerHTML = upscalers.map(u =>
+                `<option value="${u}" ${u === cur ? 'selected' : ''}>${u}</option>`
+            ).join('');
         }
     }
 
