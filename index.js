@@ -1113,7 +1113,7 @@ async function genCivitAI(prompt, negative, s) {
                     width: s.width,
                     height: s.height,
                     seed: s.seed === -1 ? -1 : s.seed,
-                    clipSkip: 2
+                    clipSkip: parseInt(s.a1111ClipSkip) || 2
                 },
                 batchSize: 1
             }
@@ -1373,8 +1373,10 @@ async function genLocal(prompt, negative, s) {
             .map(l => l.trim()).filter(l => l)
             .map(l => {
                 const [name, w] = l.split(":");
-                return `<lora:${name.trim()}:${parseFloat(w) || 0.8}>`;
-            }).join(" ");
+                const trimmedName = name.trim();
+                if (!trimmedName) return null;
+                return `<lora:${trimmedName}:${parseFloat(w) || 0.8}>`;
+            }).filter(Boolean).join(" ");
         if (loraTags) {
             payload.prompt = `${payload.prompt} ${loraTags}`;
             log(`A1111: Injected LoRAs: ${loraTags}`);
@@ -2098,7 +2100,15 @@ async function genReplicate(prompt, negative, s) {
                 width: s.width,
                 height: s.height,
                 num_outputs: 1,
-                scheduler: "K_EULER" // Reasonable default
+                scheduler: ({
+                    "euler_a": "K_EULER_ANCESTRAL",
+                    "euler": "K_EULER",
+                    "dpm++_2m": "DPMSolverMultistep",
+                    "dpm++_sde": "DPM++SDE",
+                    "ddim": "DDIM",
+                    "lms": "K_LMS",
+                    "heun": "K_HEUN"
+                })[s.sampler] || "K_EULER"
             }
         })
     });
@@ -2132,6 +2142,7 @@ async function genFal(prompt, negative, s) {
         },
         body: JSON.stringify({
             prompt: prompt,
+            negative_prompt: negative || "",
             image_size: { width: s.width, height: s.height },
             num_images: 1,
             enable_safety_checker: false
@@ -2209,6 +2220,7 @@ async function regenerateImage() {
     } catch (e) {
         showStatus(`❌ ${e.message}`);
         log(`Regenerate error: ${e.message}`);
+        setTimeout(hideStatus, 3000);
     }
 }
 
