@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation. Resizable popup with insert-to-chat support.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, and per-character reference images.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -35,6 +35,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - ✨ **Quality Tags** - Auto-prepend quality boosters
 - 📍 **Message Selection** - Choose single, range, or multiple chat messages for context (`-1`, `3-7`, `3,5,7`, `last5`)
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
+- 🔀 **Batch Browsing** - Navigate batch results with prev/next arrows, thumbnails, and keyboard shortcuts
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
@@ -44,6 +45,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
 - 💾 **Prompt Templates** - Save/load/delete templates (prompt + negative + quality tags)
 - 👤 **Character Settings** - Save settings per character
+- 👤 **Per-Character Reference Images** - Reference images saved/loaded with character settings
 
 ### Gallery & Session
 - 🖼️ **Session Gallery** - View all images generated this session
@@ -52,6 +54,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 📌 **Insert to Chat** - Attach generated image to a chat message (persists on reload)
 - 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
 - ⚡ **Auto-generate** - Generate after each AI response
+- 📥 **Auto-insert** - Skip popup and insert images directly into chat
 
 ### Advanced Features
 - 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
@@ -104,6 +107,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Batch Count** | Number of images to generate (1-10) |
 | **Size** | Image dimensions (custom or NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
+| **Auto-insert** | Skip popup and insert images directly into chat |
 
 ---
 

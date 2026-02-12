@@ -34,6 +34,7 @@ const defaultSettings = {
     sampler: "euler_a",
     seed: -1,
     autoGenerate: false,
+    autoInsert: false,
     batchCount: 1,
     // Reverse Proxy
     proxyUrl: "",
@@ -113,6 +114,7 @@ let lastNegative = "";
 let promptTemplates = JSON.parse(localStorage.getItem("qig_templates") || "[]");
 let charSettings = JSON.parse(localStorage.getItem("qig_char_settings") || "{}");
 let connectionProfiles = JSON.parse(localStorage.getItem("qig_profiles") || "{}");
+let charRefImages = JSON.parse(localStorage.getItem("qig_char_ref_images") || "{}");
 
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
@@ -1796,6 +1798,126 @@ function displayImage(url) {
     });
 }
 
+function displayBatchResults(results) {
+    results.forEach(url => {
+        sessionGallery.unshift({ url, date: Date.now() });
+        if (sessionGallery.length > 20) sessionGallery.pop();
+    });
+
+    let currentIndex = 0;
+
+    const thumbsHtml = results.map((url, i) =>
+        `<img class="qig-batch-thumb${i === 0 ? ' active' : ''}" data-index="${i}" src="${url}">`
+    ).join('');
+
+    const popup = createPopup("qig-batch-popup", `Image 1/${results.length}`, `
+        <img id="qig-batch-img" src="" style="max-width:100%;max-height:60vh;object-fit:contain;padding:10px;min-height:100px;">
+        <div class="qig-batch-nav">
+            <button id="qig-batch-prev">◀</button>
+            <span id="qig-batch-counter">1 / ${results.length}</span>
+            <button id="qig-batch-next">▶</button>
+        </div>
+        <div class="qig-batch-thumbs">${thumbsHtml}</div>
+        <div class="qig-popup-actions">
+            <button id="qig-batch-regenerate">🔄 Regenerate</button>
+            <button id="qig-batch-insert">📌 Insert</button>
+            <button id="qig-batch-gallery">🖼️ Gallery</button>
+            <button id="qig-batch-download">💾 Download</button>
+            <button id="qig-batch-close">Close</button>
+        </div>`, (popup) => {
+        const content = popup.querySelector('.qig-popup-content');
+        if (content) {
+            content.style.maxWidth = '';
+            content.style.width = '';
+            content.style.maxHeight = '';
+        }
+        initResizeHandle(popup);
+
+        const img = document.getElementById("qig-batch-img");
+        img.src = results[0];
+
+        function showImage(index) {
+            currentIndex = index;
+            img.src = results[index];
+            document.getElementById("qig-batch-counter").textContent = `${index + 1} / ${results.length}`;
+            popup.querySelector('.qig-popup-header span').textContent = `Image ${index + 1}/${results.length}`;
+            popup.querySelectorAll('.qig-batch-thumb').forEach((t, i) => {
+                t.classList.toggle('active', i === index);
+            });
+        }
+
+        document.getElementById("qig-batch-prev").onclick = (e) => {
+            e.stopPropagation();
+            showImage((currentIndex - 1 + results.length) % results.length);
+        };
+        document.getElementById("qig-batch-next").onclick = (e) => {
+            e.stopPropagation();
+            showImage((currentIndex + 1) % results.length);
+        };
+
+        popup.querySelectorAll('.qig-batch-thumb').forEach(thumb => {
+            thumb.onclick = (e) => {
+                e.stopPropagation();
+                showImage(parseInt(thumb.dataset.index));
+            };
+        });
+
+        const keyHandler = (e) => {
+            if (popup.style.display === "none") {
+                document.removeEventListener("keydown", keyHandler);
+                return;
+            }
+            if (e.key === "ArrowLeft") showImage((currentIndex - 1 + results.length) % results.length);
+            if (e.key === "ArrowRight") showImage((currentIndex + 1) % results.length);
+            if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
+        };
+        document.addEventListener("keydown", keyHandler);
+
+        document.getElementById("qig-batch-download").onclick = async (e) => {
+            e.stopPropagation();
+            const url = results[currentIndex];
+            try {
+                let blobUrl = url;
+                if (!url.startsWith('data:')) {
+                    const response = await fetch(url);
+                    const blob = await response.blob();
+                    blobUrl = URL.createObjectURL(blob);
+                }
+                const a = document.createElement("a");
+                a.href = blobUrl;
+                a.download = `generated-${Date.now()}.png`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                if (blobUrl !== url) setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+            } catch (err) {
+                console.error("Download failed:", err);
+                window.open(url, '_blank');
+            }
+        };
+        document.getElementById("qig-batch-regenerate").onclick = (e) => {
+            e.stopPropagation();
+            popup.style.display = "none";
+            regenerateImage();
+        };
+        document.getElementById("qig-batch-gallery").onclick = (e) => {
+            e.stopPropagation();
+            showGallery();
+        };
+        document.getElementById("qig-batch-insert").onclick = async (e) => {
+            e.stopPropagation();
+            try {
+                await insertImageIntoMessage(results[currentIndex]);
+                toastr.success("Image inserted into message");
+            } catch (err) {
+                console.error("[Quick Image Gen] Insert failed:", err);
+                toastr.error("Failed to insert image: " + err.message);
+            }
+        };
+        document.getElementById("qig-batch-close").onclick = () => popup.style.display = "none";
+    });
+}
+
 function showGallery() {
     const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
         <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
@@ -2075,6 +2197,12 @@ function clearTemplates() {
 }
 
 // Character-specific settings
+function getCurrentRefImages(s) {
+    if (s.provider === "proxy") return s.proxyRefImages || [];
+    if (s.provider === "nanobanana") return s.nanobananaRefImages || [];
+    return [];
+}
+
 function getCurrentCharId() {
     const ctx = getContext();
     return ctx?.characterId || ctx?.characters?.[ctx?.characterId]?.avatar || null;
@@ -2092,20 +2220,41 @@ function saveCharSettings() {
         height: s.height
     };
     localStorage.setItem("qig_char_settings", JSON.stringify(charSettings));
+    const refs = getCurrentRefImages(s);
+    if (refs.length > 0) {
+        charRefImages[charId] = refs;
+    } else {
+        delete charRefImages[charId];
+    }
+    localStorage.setItem("qig_char_ref_images", JSON.stringify(charRefImages));
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
 }
 
 function loadCharSettings() {
     const charId = getCurrentCharId();
-    if (!charId || !charSettings[charId]) return false;
-    const cs = charSettings[charId];
+    if (!charId) return false;
+    const hasSettings = !!charSettings[charId];
+    const hasRefs = !!(charRefImages[charId] && charRefImages[charId].length > 0);
+    if (!hasSettings && !hasRefs) return false;
+    const cs = charSettings[charId] || {};
     const s = getSettings();
     if (cs.prompt) { s.prompt = cs.prompt; document.getElementById("qig-prompt").value = cs.prompt; }
     if (cs.negativePrompt) { s.negativePrompt = cs.negativePrompt; document.getElementById("qig-negative").value = cs.negativePrompt; }
     if (cs.style) { s.style = cs.style; document.getElementById("qig-style").value = cs.style; }
     if (cs.width) { s.width = cs.width; document.getElementById("qig-width").value = cs.width; }
     if (cs.height) { s.height = cs.height; document.getElementById("qig-height").value = cs.height; }
+    const refs = charRefImages[charId];
+    if (refs && refs.length > 0) {
+        if (s.provider === "proxy") {
+            s.proxyRefImages = [...refs];
+            renderRefImages();
+        } else if (s.provider === "nanobanana") {
+            s.nanobananaRefImages = [...refs];
+            renderNanobananaRefImages();
+        }
+        saveSettingsDebounced();
+    }
     return true;
 }
 
@@ -2590,6 +2739,10 @@ function createUI() {
                     <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
                     <span>Auto-generate after AI response</span>
                 </label>
+                <label class="checkbox_label">
+                    <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
+                    <span>Auto-insert into chat (skip popup)</span>
+                </label>
                 
                 <label>Size</label>
                 <div id="qig-size-custom" class="qig-row">
@@ -2910,6 +3063,7 @@ function createUI() {
         document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
     };
     bindCheckbox("qig-auto-generate", "autoGenerate");
+    bindCheckbox("qig-auto-insert", "autoInsert");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     document.getElementById("qig-aspect").onchange = (e) => {
@@ -3035,7 +3189,20 @@ async function generateImage() {
             results.push(result);
         }
         log(`Generated ${results.length} image(s) successfully`);
-        results.forEach(r => displayImage(r));
+        if (s.autoInsert) {
+            for (const r of results) {
+                sessionGallery.unshift({ url: r, date: Date.now() });
+                if (sessionGallery.length > 20) sessionGallery.pop();
+                try { await insertImageIntoMessage(r); } catch (err) {
+                    console.error("[Quick Image Gen] Auto-insert failed:", err);
+                }
+            }
+            toastr.success(`Image${results.length > 1 ? 's' : ''} inserted into chat`);
+        } else if (results.length === 1) {
+            displayImage(results[0]);
+        } else {
+            displayBatchResults(results);
+        }
     } catch (e) {
         log(`Error: ${e.message}`);
         toastr.error("Generation failed: " + e.message);
