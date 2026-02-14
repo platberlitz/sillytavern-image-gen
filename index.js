@@ -35,6 +35,7 @@ const defaultSettings = {
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
+    enableParagraphPicker: false,
     batchCount: 1,
     sequentialSeeds: false,
     // Reverse Proxy
@@ -2119,6 +2120,50 @@ function showPromptEditDialog(prompt) {
     });
 }
 
+function showParagraphPicker(messageText) {
+    return new Promise((resolve) => {
+        const paragraphs = messageText.split(/\n\n+/).filter(p => p.trim());
+        if (paragraphs.length === 0) { resolve(messageText); return; }
+
+        const listHtml = paragraphs.map((p, i) => {
+            const preview = p.length > 120 ? p.substring(0, 120) + "..." : p;
+            const escaped = preview.replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+            return `<label class="qig-paragraph-item">
+                <input type="checkbox" class="qig-para-cb" data-idx="${i}" checked>
+                <span class="qig-paragraph-preview">${escaped}</span>
+            </label>`;
+        }).join("");
+
+        const popup = createPopup("qig-paragraph-picker-popup", "Select Paragraphs", `
+            <div style="padding:12px 16px;">
+                <div style="display:flex;gap:8px;margin-bottom:10px;">
+                    <button id="qig-para-select-all" class="menu_button" style="padding:2px 10px;font-size:11px;">Select All</button>
+                    <button id="qig-para-deselect-all" class="menu_button" style="padding:2px 10px;font-size:11px;">Deselect All</button>
+                </div>
+                <div class="qig-paragraph-list">${listHtml}</div>
+                <div style="display:flex;gap:8px;margin-top:14px;justify-content:flex-end;">
+                    <button id="qig-para-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-para-use" class="menu_button">Use Selected</button>
+                </div>
+            </div>`, (popup) => {
+            const checkboxes = () => popup.querySelectorAll(".qig-para-cb");
+            document.getElementById("qig-para-select-all").onclick = () => checkboxes().forEach(cb => cb.checked = true);
+            document.getElementById("qig-para-deselect-all").onclick = () => checkboxes().forEach(cb => cb.checked = false);
+
+            const close = () => { popup.style.display = "none"; resolve(null); };
+            const use = () => {
+                const selected = [...checkboxes()].filter(cb => cb.checked).map(cb => paragraphs[parseInt(cb.dataset.idx)]);
+                popup.style.display = "none";
+                resolve(selected.length ? selected.join("\n\n") : null);
+            };
+
+            document.getElementById("qig-para-cancel").onclick = close;
+            document.getElementById("qig-para-use").onclick = use;
+            popup.onclick = (e) => { if (e.target === popup) close(); };
+        });
+    });
+}
+
 async function genStability(prompt, negative, s) {
     if (!s.stabilityKey) throw new Error("Stability AI API key required");
     const res = await fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
@@ -3026,6 +3071,10 @@ function createUI() {
                     <small style="color:var(--SmartThemeBodyColor);opacity:0.6;font-size:10px;margin-top:2px;display:block;">
                         -1 = last | 3-7 = range | 3,5,7 = pick | last5 = last N
                     </small>
+                    <label class="checkbox_label" style="margin-top:6px;">
+                        <input id="qig-paragraph-picker" type="checkbox" ${s.enableParagraphPicker ? "checked" : ""}>
+                        <span>Show paragraph picker before generation</span>
+                    </label>
                 </div>
                 <label class="checkbox_label">
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
@@ -3421,6 +3470,7 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-msg-range", "messageRange", false);
+    bindCheckbox("qig-paragraph-picker", "enableParagraphPicker");
     document.getElementById("qig-use-llm").onchange = (e) => {
         getSettings().useLLMPrompt = e.target.checked;
         document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
@@ -3511,6 +3561,16 @@ async function generateImage() {
         if (messages) {
             scenePrompt = messages;
             basePrompt = messages;
+            if (s.enableParagraphPicker) {
+                const filtered = await showParagraphPicker(messages);
+                if (filtered === null) {
+                    isGenerating = false;
+                    hideStatus();
+                    return;
+                }
+                scenePrompt = filtered;
+                basePrompt = filtered;
+            }
         }
     }
 
