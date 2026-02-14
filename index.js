@@ -36,6 +36,7 @@ const defaultSettings = {
     autoGenerate: false,
     autoInsert: false,
     batchCount: 1,
+    sequentialSeeds: false,
     // Reverse Proxy
     proxyUrl: "",
     proxyKey: "",
@@ -115,14 +116,20 @@ const defaultSettings = {
     comfyDenoise: 1.0,
 };
 
-let sessionGallery = [];
-let promptHistory = [];
 let lastPrompt = "";
 let lastNegative = "";
-let promptTemplates = JSON.parse(localStorage.getItem("qig_templates") || "[]");
-let charSettings = JSON.parse(localStorage.getItem("qig_char_settings") || "{}");
-let connectionProfiles = JSON.parse(localStorage.getItem("qig_profiles") || "{}");
-let charRefImages = JSON.parse(localStorage.getItem("qig_char_ref_images") || "{}");
+function safeParse(key, fallback) {
+    try { return JSON.parse(localStorage.getItem(key)) || fallback; }
+    catch { return fallback; }
+}
+let sessionGallery = safeParse("qig_gallery", []);
+let promptHistory = safeParse("qig_prompt_history", []);
+let promptTemplates = safeParse("qig_templates", []);
+let charSettings = safeParse("qig_char_settings", {});
+let connectionProfiles = safeParse("qig_profiles", {});
+let charRefImages = safeParse("qig_char_ref_images", {});
+let generationPresets = safeParse("qig_gen_presets", []);
+let isGenerating = false;
 
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
@@ -394,6 +401,14 @@ function resolvePrompt(template) {
     return template
         .replace(/\{\{char\}\}/gi, ctx.name2 || "character")
         .replace(/\{\{user\}\}/gi, ctx.name1 || "user");
+}
+
+function expandWildcards(text) {
+    return text.replace(/\{([^{}]+)\}/g, (match, inner) => {
+        const options = inner.split('|').map(s => s.trim()).filter(Boolean);
+        if (options.length === 0) return match;
+        return options[Math.floor(Math.random() * options.length)];
+    });
 }
 
 function parseMessageRange(rangeStr, chatLength) {
@@ -1071,7 +1086,8 @@ async function genChutes(prompt, negative, s) {
             width: s.width,
             height: s.height,
             num_inference_steps: s.steps,
-            guidance_scale: s.cfgScale
+            guidance_scale: s.cfgScale,
+            seed: s.seed === -1 ? undefined : s.seed
         })
     });
     if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
@@ -1221,7 +1237,7 @@ async function genLocal(prompt, negative, s) {
             "dpmpp_sde": "karras"
         };
 
-        const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/_/g, "_");
+        const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/\+\+/g, "pp");
         const schedulerName = comfySchedulerMap[s.sampler] || "normal";
         const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
         const denoise = parseFloat(s.comfyDenoise) || 1.0;
@@ -1274,7 +1290,12 @@ async function genLocal(prompt, negative, s) {
                 const promptId = data.prompt_id;
                 for (let i = 0; i < 120; i++) {
                     await new Promise(r => setTimeout(r, 1000));
-                    const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
+                    let hist;
+                    try {
+                        const histRes = await fetch(`${baseUrl}/history/${promptId}`);
+                        if (!histRes.ok) continue;
+                        hist = await histRes.json();
+                    } catch { continue; }
                     const result = hist[promptId];
                     if (result?.outputs) {
                         for (const nodeId in result.outputs) {
@@ -1337,7 +1358,12 @@ async function genLocal(prompt, negative, s) {
         for (let i = 0; i < 120; i++) {
             await new Promise(r => setTimeout(r, 1000));
             showStatus(`Generating... (waiting ${i + 1}s)`);
-            const hist = await fetch(`${baseUrl}/history/${promptId}`).then(r => r.json());
+            let hist;
+            try {
+                const histRes = await fetch(`${baseUrl}/history/${promptId}`);
+                if (!histRes.ok) continue;
+                hist = await histRes.json();
+            } catch { continue; }
             const result = hist[promptId];
             if (result?.outputs) {
                 for (const nodeId in result.outputs) {
@@ -1353,7 +1379,7 @@ async function genLocal(prompt, negative, s) {
     }
 
     // A1111 API
-    const isImg2Img = s.localType === "a1111" && s.localRefImage;
+    const isImg2Img = s.localType === "a1111" && s.localRefImage && !s.a1111IpAdapter;
     const endpoint = isImg2Img ? "/sdapi/v1/img2img" : "/sdapi/v1/txt2img";
 
     const payload = {
@@ -1404,7 +1430,7 @@ async function genLocal(prompt, negative, s) {
     if (s.a1111Adetailer) {
         payload.alwayson_scripts = payload.alwayson_scripts || {};
         payload.alwayson_scripts.ADetailer = {
-            args: [{
+            args: [true, {
                 ad_model: s.a1111AdetailerModel || "face_yolov8n.pt",
                 ad_prompt: s.a1111AdetailerPrompt || "",
                 ad_negative_prompt: s.a1111AdetailerNegative || ""
@@ -1447,7 +1473,7 @@ async function genLocal(prompt, negative, s) {
 
         payload.alwayson_scripts = payload.alwayson_scripts || {};
         // Register under both script names for A1111 extension and Forge Neo built-in ControlNet
-        payload.alwayson_scripts.controlnet = { args: [controlNetUnit] };
+        payload.alwayson_scripts.ControlNet = { args: [controlNetUnit] };
         payload.alwayson_scripts["sd_forge_controlnet"] = { args: [controlNetUnit] };
 
         const logPayload = { ...controlNetUnit, image: "BASE64_TRUNCATED", input_image: "BASE64_TRUNCATED" };
@@ -1709,10 +1735,11 @@ function showPromptHistory() {
     createPopup("qig-prompt-history-popup", "Prompt History", `<div id="qig-prompt-history-content"></div>`, (popup) => {
         const container = document.getElementById("qig-prompt-history-content");
         if (!promptHistory.length) {
-            container.innerHTML = '<p style="color:#888;">No prompts yet this session</p>';
+            container.innerHTML = '<p style="color:#888;">No prompts yet</p>';
             return;
         }
-        container.innerHTML = promptHistory.map((entry, i) => `
+        container.innerHTML = `<div style="text-align:right;margin-bottom:8px;"><button id="qig-clear-history" class="menu_button" style="padding:2px 8px;font-size:11px;">Clear History</button></div>` +
+        promptHistory.map((entry, i) => `
             <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                     <span style="color:#e94560;font-size:12px;">#${promptHistory.length - i} - ${entry.time}</span>
@@ -1722,6 +1749,13 @@ function showPromptHistory() {
                 ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${entry.negative}</pre>` : ''}
             </div>
         `).join('');
+        document.getElementById("qig-clear-history").onclick = () => {
+            if (confirm("Clear all prompt history?")) {
+                promptHistory = [];
+                localStorage.removeItem("qig_prompt_history");
+                container.innerHTML = '<p style="color:#888;">No prompts yet</p>';
+            }
+        };
     });
 }
 
@@ -1791,9 +1825,48 @@ async function insertImageIntoMessage(imageUrl) {
     await ctx.saveChat();
 }
 
+function createThumbnail(url, maxSize = 150) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+            const canvas = document.createElement("canvas");
+            const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+            canvas.width = img.width * scale;
+            canvas.height = img.height * scale;
+            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+            resolve(canvas.toDataURL("image/jpeg", 0.7));
+        };
+        img.onerror = () => resolve(null);
+        img.src = url;
+    });
+}
+
+async function addToGallery(url) {
+    const thumbnail = await createThumbnail(url);
+    sessionGallery.unshift({ url, thumbnail, prompt: lastPrompt, negative: lastNegative, provider: getSettings().provider, date: Date.now() });
+    if (sessionGallery.length > 50) sessionGallery.pop();
+    saveGallery();
+}
+
+function saveGallery() {
+    try {
+        localStorage.setItem("qig_gallery", JSON.stringify(sessionGallery));
+    } catch (e) {
+        // Quota exceeded — trim oldest entries and retry
+        while (sessionGallery.length > 5) {
+            sessionGallery.pop();
+            try { localStorage.setItem("qig_gallery", JSON.stringify(sessionGallery)); return; } catch {}
+        }
+    }
+}
+
+function savePromptHistory() {
+    localStorage.setItem("qig_prompt_history", JSON.stringify(promptHistory));
+}
+
 function displayImage(url) {
-    sessionGallery.unshift({ url, date: Date.now() });
-    if (sessionGallery.length > 20) sessionGallery.pop();
+    addToGallery(url);
 
     const popup = createPopup("qig-popup", "Generated Image", `
         <img id="qig-result-img" src="">
@@ -1819,30 +1892,7 @@ function displayImage(url) {
         const downloadBtn = document.getElementById("qig-download-btn");
         downloadBtn.onclick = async (e) => {
             e.stopPropagation();
-            try {
-                // For cross-origin URLs, we need to fetch as blob first
-                // Data URLs and same-origin URLs will work directly
-                let blobUrl = url;
-                if (!url.startsWith('data:')) {
-                    const response = await fetch(url);
-                    const blob = await response.blob();
-                    blobUrl = URL.createObjectURL(blob);
-                }
-                const a = document.createElement("a");
-                a.href = blobUrl;
-                a.download = `generated-${Date.now()}.png`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                // Clean up blob URL after download
-                if (blobUrl !== url) {
-                    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-                }
-            } catch (err) {
-                console.error("Download failed:", err);
-                // Fallback: open in new tab
-                window.open(url, '_blank');
-            }
+            await downloadWithMetadata(url, `generated-${Date.now()}.png`, lastPrompt, lastNegative, getSettings());
         };
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
@@ -1868,10 +1918,7 @@ function displayImage(url) {
 }
 
 function displayBatchResults(results) {
-    results.forEach(url => {
-        sessionGallery.unshift({ url, date: Date.now() });
-        if (sessionGallery.length > 20) sessionGallery.pop();
-    });
+    results.forEach(url => addToGallery(url));
 
     let currentIndex = 0;
 
@@ -1890,8 +1937,10 @@ function displayBatchResults(results) {
         <div class="qig-popup-actions">
             <button id="qig-batch-regenerate">🔄 Regenerate</button>
             <button id="qig-batch-insert">📌 Insert</button>
+            <button id="qig-batch-insert-all">📌 Insert All</button>
             <button id="qig-batch-gallery">🖼️ Gallery</button>
             <button id="qig-batch-download">💾 Download</button>
+            <button id="qig-batch-save-all">💾 Save All</button>
             <button id="qig-batch-close">Close</button>
         </div>`, (popup) => {
         const content = popup.querySelector('.qig-popup-content');
@@ -1944,24 +1993,25 @@ function displayBatchResults(results) {
 
         document.getElementById("qig-batch-download").onclick = async (e) => {
             e.stopPropagation();
-            const url = results[currentIndex];
+            await downloadWithMetadata(results[currentIndex], `generated-${Date.now()}.png`, lastPrompt, lastNegative, getSettings());
+        };
+        document.getElementById("qig-batch-save-all").onclick = async (e) => {
+            e.stopPropagation();
+            const ts = Date.now();
+            for (let i = 0; i < results.length; i++) {
+                await downloadWithMetadata(results[i], `generated-${ts}-${i + 1}.png`, lastPrompt, lastNegative, getSettings());
+                if (i < results.length - 1) await new Promise(r => setTimeout(r, 300));
+            }
+            toastr.success(`Downloaded ${results.length} images`);
+        };
+        document.getElementById("qig-batch-insert-all").onclick = async (e) => {
+            e.stopPropagation();
             try {
-                let blobUrl = url;
-                if (!url.startsWith('data:')) {
-                    const response = await fetch(url);
-                    const blob = await response.blob();
-                    blobUrl = URL.createObjectURL(blob);
-                }
-                const a = document.createElement("a");
-                a.href = blobUrl;
-                a.download = `generated-${Date.now()}.png`;
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                if (blobUrl !== url) setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+                for (const r of results) await insertImageIntoMessage(r);
+                toastr.success(`Inserted ${results.length} images into message`);
             } catch (err) {
-                console.error("Download failed:", err);
-                window.open(url, '_blank');
+                console.error("[Quick Image Gen] Insert all failed:", err);
+                toastr.error("Failed to insert images: " + err.message);
             }
         };
         document.getElementById("qig-batch-regenerate").onclick = (e) => {
@@ -1988,19 +2038,34 @@ function displayBatchResults(results) {
 }
 
 function showGallery() {
-    const gallery = createPopup("qig-gallery-popup", "Session Gallery", `
+    const gallery = createPopup("qig-gallery-popup", "Gallery", `
         <div style="background:#16213e;padding:20px;border-radius:12px;max-width:800px;width:90%;max-height:80vh;overflow:auto;" onclick="event.stopPropagation()">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                <h3 style="margin:0;color:#e94560;">Session Gallery</h3>
-                <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+                <h3 style="margin:0;color:#e94560;">Gallery (${sessionGallery.length})</h3>
+                <div style="display:flex;gap:8px;">
+                    <button id="qig-gallery-clear" class="menu_button" style="padding:2px 8px;font-size:11px;">Clear Gallery</button>
+                    <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+                </div>
             </div>
             <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
         </div>`, (gallery) => {
         document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
+        document.getElementById("qig-gallery-clear").onclick = () => {
+            if (confirm("Clear entire gallery?")) {
+                sessionGallery = [];
+                localStorage.removeItem("qig_gallery");
+                document.getElementById("qig-gallery-grid").innerHTML = '<p style="color:#888;">No images yet</p>';
+            }
+        };
         const grid = document.getElementById("qig-gallery-grid");
-        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item =>
-            `<img src="${item.url}" style="width:100%;border-radius:6px;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-result-img').src='${item.url}';document.getElementById('qig-gallery-popup').style.display='none';">`
-        ).join('') : '<p style="color:#888;">No images yet this session</p>';
+        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => {
+            const imgSrc = item.thumbnail || item.url;
+            const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
+            return `<div style="position:relative;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-gallery-popup').style.display='none';">` +
+                `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
+                (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${snippet}</div>` : '') +
+                `</div>`;
+        }).join('') : '<p style="color:#888;">No images yet</p>';
     });
 }
 
@@ -2071,6 +2136,7 @@ async function genStability(prompt, negative, s) {
             steps: Math.min(Math.max(s.steps, 10), 50),
             width: s.width,
             height: s.height,
+            seed: s.seed === -1 ? 0 : s.seed,
             samples: 1
         })
     });
@@ -2099,6 +2165,9 @@ async function genReplicate(prompt, negative, s) {
                 negative_prompt: negative,
                 width: s.width,
                 height: s.height,
+                num_inference_steps: s.steps,
+                guidance_scale: s.cfgScale,
+                seed: s.seed === -1 ? undefined : s.seed,
                 num_outputs: 1,
                 scheduler: ({
                     "euler_a": "K_EULER_ANCESTRAL",
@@ -2121,6 +2190,7 @@ async function genReplicate(prompt, negative, s) {
         const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
             headers: { "Authorization": `Token ${s.replicateKey}` }
         });
+        if (!statusRes.ok) throw new Error(`Replicate polling error: ${statusRes.status}`);
         const status = await statusRes.json();
         if (status.status === "succeeded" && status.output?.[0]) return status.output[0];
         if (status.status === "failed") throw new Error(status.error || "Generation failed");
@@ -2144,6 +2214,9 @@ async function genFal(prompt, negative, s) {
             prompt: prompt,
             negative_prompt: negative || "",
             image_size: { width: s.width, height: s.height },
+            num_inference_steps: s.steps,
+            guidance_scale: s.cfgScale,
+            seed: s.seed === -1 ? undefined : s.seed,
             num_images: 1,
             enable_safety_checker: false
         })
@@ -2171,6 +2244,7 @@ async function genTogether(prompt, negative, s) {
             width: s.width,
             height: s.height,
             steps: Math.min(s.steps, 50),
+            seed: s.seed === -1 ? undefined : s.seed,
             n: 1
         })
     });
@@ -2205,10 +2279,12 @@ async function generateForProvider(prompt, negative, settings) {
 }
 
 async function regenerateImage() {
+    if (isGenerating) return;
     if (!lastPrompt) {
         showStatus("❌ No previous prompt to regenerate");
         return;
     }
+    isGenerating = true;
     const s = getSettings();
     s.seed = -1;
     showStatus("🔄 Regenerating...");
@@ -2221,6 +2297,8 @@ async function regenerateImage() {
         showStatus(`❌ ${e.message}`);
         log(`Regenerate error: ${e.message}`);
         setTimeout(hideStatus, 3000);
+    } finally {
+        isGenerating = false;
     }
 }
 
@@ -2259,13 +2337,20 @@ function deleteTemplate(i) {
 function renderTemplates() {
     const container = getOrCacheElement("qig-templates");
     if (!container) return;
-    container.innerHTML = promptTemplates.slice(0, 5).map((t, i) =>
-        `<span style="display:inline-flex;align-items:center;margin:2px;"><button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${t.name}</button><button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deleteTemplate(${i})">×</button></span>`
-    ).join('') + (promptTemplates.length > 0 ? `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">Clear All</button>` : '');
+    const html = promptTemplates.map((t, i) =>
+        `<span style="display:inline-flex;align-items:center;margin:2px;">` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${t.name}</button>` +
+        `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deleteTemplate(${i})">×</button></span>`
+    ).join('');
+    container.innerHTML = promptTemplates.length > 0
+        ? `<div style="max-height:120px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
+          `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearTemplates()">Clear All</button>`
+        : '';
 }
 
 window.loadTemplate = loadTemplate;
 window.deleteTemplate = deleteTemplate;
+window.clearTemplates = clearTemplates;
 
 function clearTemplates() {
     if (confirm("Clear all templates?")) {
@@ -2387,6 +2472,144 @@ function renderProfileSelect() {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
+// === Generation Presets ===
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "batchCount", "sequentialSeeds"];
+
+function savePreset() {
+    const name = prompt("Preset name:");
+    if (!name) return;
+    const s = getSettings();
+    const preset = { name };
+    PRESET_KEYS.forEach(k => preset[k] = s[k]);
+    generationPresets.push(preset);
+    localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets));
+    renderPresets();
+    showStatus(`💾 Saved preset: ${name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function loadPreset(i) {
+    const p = generationPresets[i];
+    if (!p) return;
+    const s = getSettings();
+    PRESET_KEYS.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    saveSettingsDebounced();
+    refreshAllUI(s);
+    showStatus(`📂 Loaded preset: ${p.name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function deletePreset(i) {
+    generationPresets.splice(i, 1);
+    localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets));
+    renderPresets();
+}
+
+function clearPresets() {
+    if (confirm("Clear all presets?")) {
+        generationPresets = [];
+        localStorage.removeItem("qig_gen_presets");
+        renderPresets();
+    }
+}
+
+function renderPresets() {
+    const container = document.getElementById("qig-presets");
+    if (!container) return;
+    const html = generationPresets.map((p, i) =>
+        `<span style="display:inline-flex;align-items:center;margin:2px;">` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadPreset(${i})">${p.name}</button>` +
+        `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deletePreset(${i})">×</button></span>`
+    ).join('');
+    container.innerHTML = generationPresets.length > 0
+        ? `<div style="max-height:80px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
+          `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearPresets()">Clear All</button>`
+        : '';
+}
+
+function refreshAllUI(s) {
+    const fields = {
+        "qig-prompt": "prompt", "qig-negative": "negativePrompt", "qig-quality": "qualityTags",
+        "qig-width": "width", "qig-height": "height", "qig-steps": "steps",
+        "qig-cfg": "cfgScale", "qig-sampler": "sampler", "qig-seed": "seed",
+        "qig-batch": "batchCount", "qig-provider": "provider", "qig-style": "style",
+        "qig-llm-style": "llmPromptStyle"
+    };
+    Object.entries(fields).forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (el) el.value = s[key] ?? "";
+    });
+    const checks = {
+        "qig-append-quality": "appendQuality", "qig-use-last": "useLastMessage",
+        "qig-use-llm": "useLLMPrompt", "qig-seq-seeds": "sequentialSeeds"
+    };
+    Object.entries(checks).forEach(([id, key]) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = !!s[key];
+    });
+    updateProviderUI();
+    renderProfileSelect();
+    // Update seq seeds visibility
+    const seqWrap = document.getElementById("qig-seq-seeds-wrap");
+    if (seqWrap) seqWrap.style.display = (s.batchCount || 1) > 1 ? "" : "none";
+}
+
+window.loadPreset = loadPreset;
+window.deletePreset = deletePreset;
+window.clearPresets = clearPresets;
+
+// === Export / Import Settings ===
+function exportAllSettings() {
+    const data = {
+        version: 1,
+        exportDate: new Date().toISOString(),
+        connectionProfiles,
+        promptTemplates,
+        generationPresets,
+        charSettings,
+        charRefImages
+    };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `qig-settings-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    toastr.success("Settings exported");
+}
+
+function importSettings() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        try {
+            const text = await file.text();
+            const data = JSON.parse(text);
+            if (!data.version) { toastr.error("Invalid settings file"); return; }
+            if (!confirm(`Import settings from ${data.exportDate || 'unknown date'}? This will overwrite current settings.`)) return;
+            if (data.connectionProfiles) { connectionProfiles = data.connectionProfiles; localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles)); }
+            if (data.promptTemplates) { promptTemplates = data.promptTemplates; localStorage.setItem("qig_templates", JSON.stringify(promptTemplates)); }
+            if (data.generationPresets) { generationPresets = data.generationPresets; localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets)); }
+            if (data.charSettings) { charSettings = data.charSettings; localStorage.setItem("qig_char_settings", JSON.stringify(charSettings)); }
+            if (data.charRefImages) { charRefImages = data.charRefImages; localStorage.setItem("qig_char_ref_images", JSON.stringify(charRefImages)); }
+            renderTemplates();
+            renderPresets();
+            renderProfileSelect();
+            toastr.success("Settings imported successfully");
+        } catch (err) {
+            console.error("[Quick Image Gen] Import failed:", err);
+            toastr.error("Failed to import: " + err.message);
+        }
+    };
+    input.click();
+}
+
 function refreshProviderInputs(provider) {
     const s = getSettings();
     const map = {
@@ -2460,7 +2683,7 @@ function bind(id, key, isNum = false, isCheckbox = false) {
     const el = getOrCacheElement(id);
     if (!el) return;
     el.onchange = (e) => {
-        const value = isCheckbox ? e.target.checked : (isNum ? parseInt(e.target.value) : e.target.value);
+        const value = isCheckbox ? e.target.checked : (isNum ? parseFloat(e.target.value) : e.target.value);
         getSettings()[key] = value;
         saveSettingsDebounced();
     };
@@ -2777,6 +3000,12 @@ function createUI() {
                 <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;">💾 Save Template</button></label>
                 <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
                 <div id="qig-templates" style="margin:4px 0;"></div>
+                <div style="display:flex;gap:4px;margin:4px 0;">
+                    <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;">💾 Save Preset</button>
+                    <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
+                    <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
+                </div>
+                <div id="qig-presets" style="margin:4px 0;"></div>
                 <label>Negative Prompt</label>
                 <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
                 
@@ -2865,6 +3094,10 @@ function createUI() {
                 
                 <label>Batch Count</label>
                 <input id="qig-batch" type="number" value="${s.batchCount}" min="1" max="10">
+                <label class="checkbox_label" id="qig-seq-seeds-wrap" style="display:${(s.batchCount || 1) > 1 ? '' : 'none'}">
+                    <input id="qig-seq-seeds" type="checkbox" ${s.sequentialSeeds ? "checked" : ""}>
+                    <span>Sequential seeds (seed, seed+1, seed+2...)</span>
+                </label>
                 
                 <div id="qig-advanced-settings">
                     <label>Steps</label>
@@ -2889,7 +3122,11 @@ function createUI() {
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
     document.getElementById("qig-save-template").onclick = saveTemplate;
     document.getElementById("qig-profile-save").onclick = saveConnectionProfile;
+    document.getElementById("qig-save-preset").onclick = savePreset;
+    document.getElementById("qig-export-btn").onclick = exportAllSettings;
+    document.getElementById("qig-import-btn").onclick = importSettings;
     renderTemplates();
+    renderPresets();
     renderProfileSelect();
 
     document.getElementById("qig-provider").onchange = (e) => {
@@ -2969,19 +3206,21 @@ function createUI() {
     };
 
     // ADetailer bindings
-    bind("qig-a1111-adetailer", "a1111Adetailer");
     bind("qig-a1111-adetailer-model", "a1111AdetailerModel");
     bind("qig-a1111-ad-prompt", "a1111AdetailerPrompt");
     bind("qig-a1111-ad-negative", "a1111AdetailerNegative");
     document.getElementById("qig-a1111-adetailer").onchange = (e) => {
+        getSettings().a1111Adetailer = e.target.checked;
+        saveSettingsDebounced();
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
     };
 
     // IP-Adapter bindings
-    bind("qig-a1111-ipadapter", "a1111IpAdapter");
     bind("qig-a1111-ipadapter-mode", "a1111IpAdapterMode");
     bind("qig-a1111-ipadapter-weight", "a1111IpAdapterWeight", true);
     document.getElementById("qig-a1111-ipadapter").onchange = (e) => {
+        getSettings().a1111IpAdapter = e.target.checked;
+        saveSettingsDebounced();
         document.getElementById("qig-a1111-ipadapter-opts").style.display = e.target.checked ? "block" : "none";
     };
     document.getElementById("qig-a1111-ipadapter-weight").oninput = (e) => {
@@ -3223,6 +3462,11 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-batch", "batchCount", true);
+    document.getElementById("qig-batch").addEventListener("input", (e) => {
+        const wrap = document.getElementById("qig-seq-seeds-wrap");
+        if (wrap) wrap.style.display = parseInt(e.target.value) > 1 ? "" : "none";
+    });
+    bindCheckbox("qig-seq-seeds", "sequentialSeeds");
     bind("qig-steps", "steps", true);
     bind("qig-cfg", "cfgScale", true);
     bind("qig-sampler", "sampler");
@@ -3256,6 +3500,8 @@ function addInputButton() {
 }
 
 async function generateImage() {
+    if (isGenerating) return;
+    isGenerating = true;
     const s = getSettings();
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
@@ -3287,6 +3533,7 @@ async function generateImage() {
             prompt = editedPrompt;
         } else {
             // User cancelled
+            isGenerating = false;
             hideStatus();
             if (paletteBtn) {
                 paletteBtn.classList.remove("fa-spinner", "fa-spin");
@@ -3307,6 +3554,7 @@ async function generateImage() {
     lastNegative = negative;
     promptHistory.unshift({ prompt, negative, time: new Date().toLocaleTimeString() });
     if (promptHistory.length > 50) promptHistory.pop();
+    savePromptHistory();
 
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
@@ -3320,16 +3568,24 @@ async function generateImage() {
     try {
         const results = [];
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
+        const originalSeed = s.seed;
+        let baseSeed = originalSeed;
+        if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+            baseSeed = Math.floor(Math.random() * 2147483647);
+        }
         for (let i = 0; i < batchCount; i++) {
+            if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
-            const result = await generateForProvider(prompt, negative, s);
+            const expandedPrompt = expandWildcards(prompt);
+            const expandedNegative = expandWildcards(negative);
+            const result = await generateForProvider(expandedPrompt, expandedNegative, s);
             results.push(result);
         }
+        s.seed = originalSeed;
         log(`Generated ${results.length} image(s) successfully`);
         if (s.autoInsert) {
             for (const r of results) {
-                sessionGallery.unshift({ url: r, date: Date.now() });
-                if (sessionGallery.length > 20) sessionGallery.pop();
+                addToGallery(r);
                 try { await insertImageIntoMessage(r); } catch (err) {
                     console.error("[Quick Image Gen] Auto-insert failed:", err);
                 }
@@ -3344,6 +3600,7 @@ async function generateImage() {
         log(`Error: ${e.message}`);
         toastr.error("Generation failed: " + e.message);
     } finally {
+        isGenerating = false;
         showStatus(null);
         if (btn) {
             btn.disabled = false;
@@ -3379,7 +3636,7 @@ jQuery(function () {
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, () => {
-                    if (getSettings().autoGenerate) {
+                    if (getSettings().autoGenerate && !isGenerating) {
                         setTimeout(() => generateImage(), 500);
                     }
                 });
@@ -3393,6 +3650,105 @@ jQuery(function () {
     })();
 });
 
+
+// === PNG Metadata Embedding ===
+function crc32(data) {
+    let crc = 0xFFFFFFFF;
+    for (let i = 0; i < data.length; i++) {
+        crc ^= data[i];
+        for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xEDB88320 : 0);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+}
+
+function buildMetadataString(prompt, negative, settings) {
+    const parts = [prompt];
+    if (negative) parts.push(`Negative prompt: ${negative}`);
+    const params = [];
+    if (settings.steps) params.push(`Steps: ${settings.steps}`);
+    if (settings.sampler) params.push(`Sampler: ${settings.sampler}`);
+    if (settings.cfgScale) params.push(`CFG scale: ${settings.cfgScale}`);
+    if (settings.seed !== undefined) params.push(`Seed: ${settings.seed}`);
+    if (settings.width && settings.height) params.push(`Size: ${settings.width}x${settings.height}`);
+    if (settings.provider) params.push(`Model: ${settings.provider}`);
+    if (params.length) parts.push(params.join(', '));
+    return parts.join('\n');
+}
+
+function embedPNGMetadata(arrayBuffer, text) {
+    const src = new Uint8Array(arrayBuffer);
+    // Verify PNG signature
+    if (src[0] !== 0x89 || src[1] !== 0x50) return arrayBuffer;
+
+    const keyword = "parameters";
+    const encoder = new TextEncoder();
+    const keyBytes = encoder.encode(keyword);
+    const valBytes = encoder.encode(text);
+    const dataLen = keyBytes.length + 1 + valBytes.length; // keyword + null separator + value
+    const typeBytes = encoder.encode("tEXt");
+
+    // Build chunk: length(4) + type(4) + data + crc(4)
+    const chunk = new Uint8Array(12 + dataLen);
+    const view = new DataView(chunk.buffer);
+    view.setUint32(0, dataLen);
+    chunk.set(typeBytes, 4);
+    chunk.set(keyBytes, 8);
+    chunk[8 + keyBytes.length] = 0; // null separator
+    chunk.set(valBytes, 8 + keyBytes.length + 1);
+
+    // CRC over type + data
+    const crcData = new Uint8Array(4 + dataLen);
+    crcData.set(typeBytes, 0);
+    crcData.set(keyBytes, 4);
+    crcData[4 + keyBytes.length] = 0;
+    crcData.set(valBytes, 4 + keyBytes.length + 1);
+    view.setUint32(8 + dataLen, crc32(crcData));
+
+    // Find IEND position
+    let iendPos = src.length;
+    let offset = 8;
+    while (offset < src.length) {
+        const len = (src[offset] << 24 | src[offset+1] << 16 | src[offset+2] << 8 | src[offset+3]) >>> 0;
+        const type = String.fromCharCode(src[offset+4], src[offset+5], src[offset+6], src[offset+7]);
+        if (type === 'IEND') { iendPos = offset; break; }
+        offset += len + 12;
+    }
+
+    // Insert chunk before IEND
+    const result = new Uint8Array(src.length + chunk.length);
+    result.set(src.subarray(0, iendPos), 0);
+    result.set(chunk, iendPos);
+    result.set(src.subarray(iendPos), iendPos + chunk.length);
+    return result.buffer;
+}
+
+async function downloadWithMetadata(url, filename, prompt, negative, settings) {
+    try {
+        let arrayBuffer;
+        if (url.startsWith('data:')) {
+            const resp = await fetch(url);
+            arrayBuffer = await resp.arrayBuffer();
+        } else {
+            const resp = await fetch(url);
+            arrayBuffer = await resp.arrayBuffer();
+        }
+        const metaText = buildMetadataString(prompt, negative, settings);
+        const isPNG = new Uint8Array(arrayBuffer).slice(0, 4).join(',') === '137,80,78,71';
+        const finalBuffer = isPNG ? embedPNGMetadata(arrayBuffer, metaText) : arrayBuffer;
+        const blob = new Blob([finalBuffer], { type: isPNG ? 'image/png' : 'image/jpeg' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = blobUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    } catch (err) {
+        console.error("Download with metadata failed:", err);
+        window.open(url, '_blank');
+    }
+}
 
 // Metadata Drag and Drop Handlers
 async function readInfoFromPNG(file) {

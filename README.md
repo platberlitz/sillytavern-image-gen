@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, and per-character reference images.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets, prompt wildcards, PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -33,9 +33,13 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🏷️ **Three Prompt Modes** - Danbooru tags, natural descriptions, or custom instruction
 - ⭐ **LLM Enhancements** - Add quality tags, lighting tags, and artist tags to LLM prompts
 - ✨ **Quality Tags** - Auto-prepend quality boosters
+- 🎲 **Prompt Wildcards** - Use `{red|blue|green}` syntax for random selection per image
 - 📍 **Message Selection** - Choose single, range, or multiple chat messages for context (`-1`, `3-7`, `3,5,7`, `last5`)
 - 🔢 **Batch Count** - Generate multiple images per button press (1-10)
 - 🔀 **Batch Browsing** - Navigate batch results with prev/next arrows, thumbnails, and keyboard shortcuts
+- 🔢 **Sequential Seeds** - Seed variation batches (seed, seed+1, seed+2...) for controlled variation
+- 📌 **Batch Insert All** - Insert all batch images into chat at once
+- 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
@@ -43,13 +47,16 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 
 ### Profiles & Settings
 - 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
-- 💾 **Prompt Templates** - Save/load/delete templates (prompt + negative + quality tags)
+- 💾 **Prompt Templates** - Save/load/delete templates (prompt + negative + quality tags) — all shown in scrollable list
+- 💾 **Generation Presets** - Save/load complete generation settings (provider, style, dimensions, steps, prompt, etc.)
 - 👤 **Character Settings** - Save settings per character
 - 👤 **Per-Character Reference Images** - Reference images saved/loaded with character settings
+- 📤 **Export Settings** - Export all profiles, templates, presets, and character settings to JSON
+- 📥 **Import Settings** - Import settings from a previously exported file
 
 ### Gallery & Session
-- 🖼️ **Session Gallery** - View all images generated this session
-- 📝 **Prompt History** - Review full prompts from all generations this session (up to 50)
+- 🖼️ **Persistent Gallery** - View all generated images with thumbnails and prompt snippets (persists across sessions via localStorage)
+- 📝 **Persistent Prompt History** - Review full prompts from all generations (persists across sessions, up to 50)
 - 🔄 **Quick Regenerate** - Same prompt, new seed
 - 📌 **Insert to Chat** - Attach generated image to a chat message (persists on reload)
 - 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
@@ -62,6 +69,8 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 👤 **Face Fix** - ADetailer with custom prompt/negative (Proxy, Local/A1111)
 - 🔍 **Hires Fix** - Upscale generation with configurable upscaler, scale, and denoise (A1111)
 - 📊 **Generation Progress** - Live progress percentage, step count, and ETA (A1111/ComfyUI)
+- 🖼️ **PNG Metadata Embedding** - Downloads embed A1111-compatible generation parameters (prompt, negative, steps, CFG, seed, size)
+- 🔄 **Metadata Round-Trip** - Drag-and-drop any A1111/embedded PNG to auto-fill settings; download to preserve them
 - ⚙️ **Full Control** - Steps, CFG, Sampler, Seed for compatible providers
 
 ---
@@ -107,6 +116,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Add lighting tags** | LLM includes professional lighting descriptions |
 | **Add random artist tags** | LLM includes art style references from artists |
 | **Batch Count** | Number of images to generate (1-10) |
+| **Sequential Seeds** | Generate batch with incrementing seeds (seed, seed+1, seed+2...) |
 | **Size** | Image dimensions (custom or NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
 | **Auto-insert** | Skip popup and insert images directly into chat |
@@ -122,6 +132,11 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 💾 Save for Char | Save settings for current character |
 | 💾 Save Profile | Save current provider settings |
 | 💾 Save Template | Save current prompt + negative + quality as template |
+| 💾 Save Preset | Save all current generation settings as a named preset |
+| 📤 Export | Export all settings (profiles, templates, presets, char settings) to JSON |
+| 📥 Import | Import settings from a previously exported JSON file |
+| 📌 Insert All | Insert all batch images into chat (batch mode) |
+| 💾 Save All | Download all batch images with metadata (batch mode) |
 | 🔄 Regenerate | Same prompt, new seed |
 | 📌 Insert | Attach image to the target chat message |
 | 🖼️ Gallery | View session images |
@@ -208,7 +223,12 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 - **Multi-Message Context**: Select multiple messages for richer scene context (ranges, specific indices, or last N)
 
 ## Drag and Drop Metadata
-Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model).
+Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model). Images downloaded from this extension include embedded metadata, enabling full round-trip: generate → download → drag back → settings auto-fill.
+
+## Prompt Wildcards
+Use `{option1|option2|option3}` syntax in prompts for random selection. Each image in a batch gets a fresh random pick. Double-brace placeholders like `{{char}}` are not affected.
+
+Example: `{red|blue|green} hair, {indoor|outdoor} scene` → each batch image gets different random combinations.
 
 ## Local Img2Img
 When using the Local (A1111) provider, you can upload a reference image to perform Image-to-Image generation. The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
