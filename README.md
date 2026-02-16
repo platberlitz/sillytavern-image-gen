@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets, prompt wildcards, PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets, prompt wildcards, contextual filters (lorebook-style keyword triggers), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -42,6 +42,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs)
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
 - 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
@@ -312,6 +313,30 @@ IP-Adapter Face allows you to use a reference image to copy **only the face** (n
 - `{{user}}` - User name
 - `{{charDesc}}` - Character description
 - `{{userDesc}}` - User persona
+
+---
+
+## Contextual Filters
+
+Lorebook-style keyword triggers that automatically inject positive/negative prompt additions when trigger words appear in the scene text. Useful for character-specific LoRAs, multi-character scenarios, and franchise RPG cards.
+
+### How It Works
+
+Each filter has:
+- **Keywords** (comma-separated) — scanned against the current scene/message text
+- **Match Mode** — `OR` (any keyword triggers) or `AND` (all keywords required)
+- **Positive/Negative Prompt** — appended to the generation prompts when triggered
+- **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
+
+### Example: Multi-Character LoRAs
+
+1. Create an OR filter: keyword `goku`, positive `1boy, goku, <lora:goku:0.8>`, priority 5
+2. Create an OR filter: keyword `vegeta`, positive `1boy, vegeta, <lora:vegeta:0.8>`, priority 5
+3. Create an AND filter: keywords `goku, vegeta`, positive `2boys, goku, vegeta, <lora:goku_vegeta:0.8>`, priority 10
+
+When a message mentions only "goku", only the goku filter fires. When both "goku" and "vegeta" appear, the AND filter fires and suppresses the individual OR filters — preventing conflicting LoRAs from stacking.
+
+Filters are included in settings export/import.
 
 ---
 

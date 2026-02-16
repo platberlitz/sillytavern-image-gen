@@ -130,6 +130,7 @@ let charSettings = safeParse("qig_char_settings", {});
 let connectionProfiles = safeParse("qig_profiles", {});
 let charRefImages = safeParse("qig_char_ref_images", {});
 let generationPresets = safeParse("qig_gen_presets", []);
+let contextualFilters = safeParse("qig_contextual_filters", []);
 let isGenerating = false;
 
 const PROVIDER_KEYS = {
@@ -512,6 +513,39 @@ function applyStyle(prompt, s) {
 function clearStyleCache() {
     styleCache.clear();
     log("Style cache cleared");
+}
+
+function applyContextualFilters(prompt, negative, sceneText) {
+    if (!contextualFilters.length || !sceneText) return { prompt, negative };
+    const scene = sceneText.toLowerCase();
+    const matched = [];
+    for (const f of contextualFilters) {
+        if (!f.enabled) continue;
+        const keywords = f.keywords.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
+        if (!keywords.length) continue;
+        const hit = f.matchMode === "AND"
+            ? keywords.every(kw => scene.includes(kw))
+            : keywords.some(kw => scene.includes(kw));
+        if (hit) matched.push({ ...f, _keywords: new Set(keywords) });
+    }
+    if (!matched.length) return { prompt, negative };
+    matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    // Suppress OR filters whose keywords are a subset of a higher-priority AND filter
+    const andFilters = matched.filter(f => f.matchMode === "AND");
+    const surviving = matched.filter(f => {
+        if (f.matchMode === "AND") return true;
+        return !andFilters.some(af =>
+            (af.priority || 0) >= (f.priority || 0) &&
+            [...f._keywords].every(kw => af._keywords.has(kw))
+        );
+    });
+    let p = prompt, n = negative;
+    for (const f of surviving) {
+        if (f.positive) p = p ? `${p}, ${f.positive}` : f.positive;
+        if (f.negative) n = n ? `${n}, ${f.negative}` : f.negative;
+    }
+    log(`Contextual filters: ${surviving.length} applied (${matched.length - surviving.length} suppressed)`);
+    return { prompt: p, negative: n };
 }
 
 
@@ -2405,6 +2439,124 @@ function clearTemplates() {
     }
 }
 
+// === Contextual Filters (lorebook-style prompt injection) ===
+function saveContextualFilters() {
+    localStorage.setItem("qig_contextual_filters", JSON.stringify(contextualFilters));
+}
+
+function showFilterDialog(filter) {
+    const isNew = !filter;
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0 };
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
+            <div style="padding:12px;">
+                <label style="font-size:11px;">Name</label>
+                <input id="qig-fd-name" type="text" value="${f.name}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
+                <label style="font-size:11px;">Keywords (comma-separated)</label>
+                <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${f.keywords}</textarea>
+                <label style="font-size:11px;">Match Mode</label>
+                <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
+                    <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
+                    <option value="AND" ${f.matchMode === "AND" ? "selected" : ""}>AND — all keywords required</option>
+                </select>
+                <label style="font-size:11px;">Positive Prompt</label>
+                <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${f.positive}</textarea>
+                <label style="font-size:11px;">Negative Prompt</label>
+                <textarea id="qig-fd-negative" style="width:100%;height:40px;resize:vertical;" placeholder="solo, 1boy">${f.negative}</textarea>
+                <label style="font-size:11px;">Priority (higher overrides lower)</label>
+                <input id="qig-fd-priority" type="number" value="${f.priority || 0}" style="width:80px;margin-bottom:12px;">
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="qig-fd-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-fd-save" class="menu_button">Save</button>
+                </div>
+            </div>`, (popup) => {
+            document.getElementById("qig-fd-name").focus();
+            const close = () => { popup.style.display = "none"; resolve(null); };
+            document.getElementById("qig-fd-cancel").onclick = close;
+            document.getElementById("qig-fd-save").onclick = () => {
+                const name = document.getElementById("qig-fd-name").value.trim();
+                const keywords = document.getElementById("qig-fd-keywords").value.trim();
+                if (!name || !keywords) { alert("Name and keywords are required."); return; }
+                popup.style.display = "none";
+                resolve({
+                    name, keywords,
+                    matchMode: document.getElementById("qig-fd-mode").value,
+                    positive: document.getElementById("qig-fd-positive").value.trim(),
+                    negative: document.getElementById("qig-fd-negative").value.trim(),
+                    priority: parseInt(document.getElementById("qig-fd-priority").value) || 0
+                });
+            };
+        });
+    });
+}
+
+// CONTEXTUAL_FILTERS_CRUD_PLACEHOLDER
+
+async function addContextualFilter() {
+    const result = await showFilterDialog(null);
+    if (!result) return;
+    result.id = crypto.randomUUID();
+    result.enabled = true;
+    contextualFilters.push(result);
+    saveContextualFilters();
+    renderContextualFilters();
+}
+
+async function editContextualFilter(id) {
+    const f = contextualFilters.find(x => x.id === id);
+    if (!f) return;
+    const result = await showFilterDialog(f);
+    if (!result) return;
+    Object.assign(f, result);
+    saveContextualFilters();
+    renderContextualFilters();
+}
+
+function deleteContextualFilter(id) {
+    const idx = contextualFilters.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    contextualFilters.splice(idx, 1);
+    saveContextualFilters();
+    renderContextualFilters();
+}
+
+function toggleContextualFilter(id) {
+    const f = contextualFilters.find(x => x.id === id);
+    if (!f) return;
+    f.enabled = !f.enabled;
+    saveContextualFilters();
+    renderContextualFilters();
+}
+
+function clearContextualFilters() {
+    if (!confirm("Clear all contextual filters?")) return;
+    contextualFilters = [];
+    localStorage.removeItem("qig_contextual_filters");
+    renderContextualFilters();
+}
+
+function renderContextualFilters() {
+    const container = document.getElementById("qig-contextual-filters");
+    if (!container) return;
+    if (!contextualFilters.length) { container.innerHTML = ""; return; }
+    const html = contextualFilters.map(f =>
+        `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
+        `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${f.id}')" title="Enable/disable">` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${f.id}')" title="${f.matchMode}: ${f.keywords}\nPriority: ${f.priority}">${f.name}</button>` +
+        `<span style="opacity:0.6;font-size:9px;">${f.matchMode} p${f.priority}</span>` +
+        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${f.id}')">×</button>` +
+        `</div>`
+    ).join("");
+    container.innerHTML = `<div style="max-height:150px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
+}
+
+window.addContextualFilter = addContextualFilter;
+window.editContextualFilter = editContextualFilter;
+window.deleteContextualFilter = deleteContextualFilter;
+window.toggleContextualFilter = toggleContextualFilter;
+window.clearContextualFilters = clearContextualFilters;
+
 // Character-specific settings
 function getCurrentRefImages(s) {
     if (s.provider === "proxy") return s.proxyRefImages || [];
@@ -2612,7 +2764,8 @@ function exportAllSettings() {
         promptTemplates,
         generationPresets,
         charSettings,
-        charRefImages
+        charRefImages,
+        contextualFilters
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -2643,9 +2796,11 @@ function importSettings() {
             if (data.generationPresets) { generationPresets = data.generationPresets; localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets)); }
             if (data.charSettings) { charSettings = data.charSettings; localStorage.setItem("qig_char_settings", JSON.stringify(charSettings)); }
             if (data.charRefImages) { charRefImages = data.charRefImages; localStorage.setItem("qig_char_ref_images", JSON.stringify(charRefImages)); }
+            if (data.contextualFilters) { contextualFilters = data.contextualFilters; localStorage.setItem("qig_contextual_filters", JSON.stringify(contextualFilters)); }
             renderTemplates();
             renderPresets();
             renderProfileSelect();
+            renderContextualFilters();
             toastr.success("Settings imported successfully");
         } catch (err) {
             console.error("[Quick Image Gen] Import failed:", err);
@@ -3113,7 +3268,20 @@ function createUI() {
                         <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${s.llmCustomInstruction || ""}</textarea>
                     </div>
                 </div>
-                
+
+                <hr style="margin:8px 0;opacity:0.2;">
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Contextual Filters</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small style="opacity:0.7;">Lorebook-style triggers — inject prompts when keywords appear in scene text</small>
+                        <div id="qig-contextual-filters" style="margin:4px 0;"></div>
+                        <button id="qig-add-filter-btn" class="menu_button" style="padding:4px 8px;">+ Add Filter</button>
+                    </div>
+                </div>
+
                 <label class="checkbox_label">
                     <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
                     <span>Auto-generate after AI response</span>
@@ -3174,9 +3342,11 @@ function createUI() {
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
+    document.getElementById("qig-add-filter-btn").onclick = addContextualFilter;
     renderTemplates();
     renderPresets();
     renderProfileSelect();
+    renderContextualFilters();
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -3608,7 +3778,13 @@ async function generateImage() {
     if (s.appendQuality && s.qualityTags) {
         prompt = `${s.qualityTags}, ${prompt}`;
     }
-    const negative = resolvePrompt(s.negativePrompt);
+    let negative = resolvePrompt(s.negativePrompt);
+
+    // Apply contextual filters based on scene text
+    const sceneForFilters = scenePrompt || basePrompt;
+    const filtered = applyContextualFilters(prompt, negative, sceneForFilters);
+    prompt = filtered.prompt;
+    negative = filtered.negative;
 
     lastPrompt = prompt;
     lastNegative = negative;
