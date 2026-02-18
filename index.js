@@ -3805,8 +3805,9 @@ function createUI() {
     };
     bindCheckbox("qig-auto-generate", "autoGenerate");
     bindCheckbox("qig-auto-insert", "autoInsert");
-    bindCheckbox("qig-disable-palette", "disablePaletteButton");
     document.getElementById("qig-disable-palette").onchange = (e) => {
+        getSettings().disablePaletteButton = e.target.checked;
+        saveSettingsDebounced();
         const btn = document.getElementById("qig-input-btn");
         if (e.target.checked) {
             if (btn) btn.style.display = "none";
@@ -3815,7 +3816,10 @@ function createUI() {
             else addInputButton();
         }
     };
-    bindCheckbox("qig-confirm-generate", "confirmBeforeGenerate");
+    document.getElementById("qig-confirm-generate").onchange = (e) => {
+        getSettings().confirmBeforeGenerate = e.target.checked;
+        saveSettingsDebounced();
+    };
     bindCheckbox("qig-use-st-style", "useSTStyle");
     // Inject mode bindings
     bindCheckbox("qig-inject-enabled", "injectEnabled");
@@ -3826,7 +3830,6 @@ function createUI() {
     };
     bind("qig-inject-prompt", "injectPrompt");
     bind("qig-inject-regex", "injectRegex");
-    bind("qig-inject-position", "injectPosition");
     document.getElementById("qig-inject-position").onchange = (e) => {
         getSettings().injectPosition = e.target.value;
         document.getElementById("qig-inject-depth-wrap").style.display = e.target.value === "atDepth" ? "block" : "none";
