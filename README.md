@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets, prompt wildcards, contextual filters (lorebook-style keyword triggers), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers), ST Style panel integration, inject mode (AI-driven `<pic>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -43,13 +43,15 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 - 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs)
+- 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
+- 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
 - 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
 ### Profiles & Settings
 - 💾 **Connection Profiles** - Save/load provider configurations (API keys, models, URLs)
 - 💾 **Prompt Templates** - Save/load/delete templates (prompt + negative + quality tags) — all shown in scrollable list
-- 💾 **Generation Presets** - Save/load complete generation settings (provider, style, dimensions, steps, prompt, etc.)
+- 💾 **Generation Presets** - Save/load complete generation settings (provider, style, dimensions, steps, prompt, contextual filters, inject mode config, etc.)
 - 👤 **Character Settings** - Save settings per character
 - 👤 **Per-Character Reference Images** - Reference images saved/loaded with character settings
 - 📤 **Export Settings** - Export all profiles, templates, presets, and character settings to JSON
@@ -121,6 +123,8 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Size** | Image dimensions (custom or NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
 | **Auto-insert** | Skip popup and insert images directly into chat |
+| **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
+| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts `<pic>` tags from AI response |
 
 ---
 
@@ -336,7 +340,48 @@ Each filter has:
 
 When a message mentions only "goku", only the goku filter fires. When both "goku" and "vegeta" appear, the AND filter fires and suppresses the individual OR filters — preventing conflicting LoRAs from stacking.
 
-Filters are included in settings export/import.
+Filters are included in settings export/import and can be saved inside generation presets.
+
+---
+
+## ST Style Integration
+
+When enabled (default: on), QIG reads SillyTavern's built-in Style panel settings from the SD extension:
+
+- **Common prompt prefix** — prepended to the positive prompt
+- **Common negative prompt** — appended to the negative prompt
+- **Character-specific positive/negative** — applied when the current character has overrides set in ST's Style panel
+
+This means you can set character-specific style prompts in ST's native UI and have them automatically apply to QIG generations. If the SD extension isn't installed or configured, this is silently skipped.
+
+---
+
+## Inject Mode (AI-Driven Generation)
+
+Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedcode01/st-image-auto-generation). Instead of using a separate LLM call to create image prompts, inject mode lets the RP AI itself describe scenes visually.
+
+### How it works
+
+1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<pic prompt="description">` tags for visual moments
+2. **Extraction**: When the AI responds, QIG scans for `<pic>` tags using a configurable regex
+3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters → provider)
+4. **Cleanup**: Tags are optionally removed from the displayed message
+
+### Settings
+
+| Setting | Description |
+|---------|-------------|
+| **Enable inject mode** | Master toggle |
+| **Inject prompt template** | The instruction injected into chat completion. Supports `{{char}}`, `{{user}}` |
+| **Extraction regex** | Regex with capture group 1 for the image prompt. Default: `<pic\s+prompt="([^"]+)"\s*/?>` |
+| **Injection position** | Where to inject: After Scenario, In User Message, or At Depth |
+| **Depth** | Depth from end of prompt array (when using At Depth) |
+| **Tag handling** | Replace tag with image, insert after message, or create new message |
+| **Auto-clean** | Remove `<pic>` tags from the displayed message |
+
+### Why use this?
+
+The RP AI naturally describes what's happening in the scene, so its `<pic>` prompts tend to be more contextually accurate than a separate LLM call analyzing the scene after the fact. This is especially useful for immersive RP where you want images to appear organically as the story unfolds.
 
 ---
 

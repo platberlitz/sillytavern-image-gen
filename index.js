@@ -117,6 +117,16 @@ const defaultSettings = {
     comfyWorkflow: "",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
+    // ST Style integration
+    useSTStyle: true,
+    // Inject Mode (wickedcode01-style)
+    injectEnabled: false,
+    injectPrompt: 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">\nUse this for important visual moments. The prompt should describe the scene in detail including character appearances, poses, expressions, clothing, and setting.',
+    injectRegex: '<pic\\s+prompt="([^"]+)"\\s*/?>',
+    injectPosition: "afterScenario",
+    injectDepth: 0,
+    injectInsertMode: "replace",
+    injectAutoClean: true,
 };
 
 let lastPrompt = "";
@@ -415,6 +425,43 @@ function expandWildcards(text) {
     });
 }
 
+let _stStyleLogged = false;
+function getSTStyleSettings() {
+    const result = { prefix: "", negative: "", charPositive: "", charNegative: "" };
+    try {
+        const sd = extension_settings?.sd || extension_settings?.["stable-diffusion"];
+        if (!sd) return result;
+        if (!_stStyleLogged) {
+            log("ST Style: Found SD extension settings, keys: " + Object.keys(sd).filter(k => typeof sd[k] === "string" && sd[k]).join(", "));
+            _stStyleLogged = true;
+        }
+        // Common prefix/negative from ST's style settings
+        if (sd.prompt_prefix) result.prefix = sd.prompt_prefix.trim();
+        if (sd.negative_prompt) result.negative = sd.negative_prompt.trim();
+        // Character-specific overrides
+        const ctx = getContext();
+        const charName = ctx?.name2;
+        if (charName && sd.character_prompts) {
+            const charPrompt = sd.character_prompts[charName];
+            if (typeof charPrompt === "string" && charPrompt) {
+                result.charPositive = charPrompt.trim();
+            } else if (charPrompt && typeof charPrompt === "object") {
+                if (charPrompt.positive) result.charPositive = charPrompt.positive.trim();
+                if (charPrompt.negative) result.charNegative = charPrompt.negative.trim();
+            }
+        }
+        if (charName && sd.character_negative_prompts) {
+            const charNeg = sd.character_negative_prompts[charName];
+            if (typeof charNeg === "string" && charNeg) {
+                result.charNegative = charNeg.trim();
+            }
+        }
+    } catch (e) {
+        log("ST Style: Error reading settings: " + e.message);
+    }
+    return result;
+}
+
 function parseMessageRange(rangeStr, chatLength) {
     if (!chatLength || chatLength === 0) return [];
     const str = String(rangeStr || "-1").trim().toLowerCase();
@@ -684,13 +731,23 @@ CRITICAL - THIS IS NOT A CONTINUATION OF CHAT:
 - DO NOT repeat, rephrase, or incorporate any chat text
 - This is a standalone generation task
 
+### OUTPUT FORMAT (MANDATORY) ###
+Output ONLY comma-separated Danbooru/Booru-style tags. No sentences. No descriptions. No paragraphs. No prose. No explanations.
+If you write a sentence instead of tags, you have FAILED the task.
+
+CORRECT example output:
+1girl, hatsune_miku, vocaloid, long_hair, twintails, blue_hair, blue_eyes, detached_sleeves, thighhighs, sitting, smile, looking_at_viewer, classroom, window, sunlight, masterpiece, best_quality
+
+WRONG (DO NOT do this):
+"A girl with long blue twintails sits in a classroom by the window, smiling at the viewer."
+
 ### IMAGE GENERATION TASK ###
 
 Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" : "scene: "}${basePrompt}
 
 Character info: ${appearanceContext}
 
-Required tags:
+Required tag categories:
 - Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized)
 - Physical traits (hair, eyes, body, skin)
 - Clothing and accessories
@@ -2680,6 +2737,15 @@ function savePreset() {
     const s = getSettings();
     const preset = { name };
     PRESET_KEYS.forEach(k => preset[k] = s[k]);
+    // Always include contextual filters snapshot in preset
+    if (contextualFilters.length > 0) {
+        preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
+    }
+    // Include ST Style toggle state
+    if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
+    // Include inject mode settings
+    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets));
     renderPresets();
@@ -2692,6 +2758,17 @@ function loadPreset(i) {
     if (!p) return;
     const s = getSettings();
     PRESET_KEYS.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    // Restore contextual filters if saved in preset
+    if (p.contextualFilters) {
+        contextualFilters = JSON.parse(JSON.stringify(p.contextualFilters));
+        saveContextualFilters();
+        renderContextualFilters();
+    }
+    // Restore ST Style toggle
+    if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
+    // Restore inject mode settings
+    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
     saveSettingsDebounced();
     refreshAllUI(s);
     showStatus(`📂 Loaded preset: ${p.name}`);
@@ -2732,7 +2809,10 @@ function refreshAllUI(s) {
         "qig-width": "width", "qig-height": "height", "qig-steps": "steps",
         "qig-cfg": "cfgScale", "qig-sampler": "sampler", "qig-seed": "seed",
         "qig-batch": "batchCount", "qig-provider": "provider", "qig-style": "style",
-        "qig-llm-style": "llmPromptStyle"
+        "qig-llm-style": "llmPromptStyle",
+        "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
+        "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
+        "qig-inject-insert-mode": "injectInsertMode"
     };
     Object.entries(fields).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -2740,7 +2820,9 @@ function refreshAllUI(s) {
     });
     const checks = {
         "qig-append-quality": "appendQuality", "qig-use-last": "useLastMessage",
-        "qig-use-llm": "useLLMPrompt", "qig-seq-seeds": "sequentialSeeds"
+        "qig-use-llm": "useLLMPrompt", "qig-seq-seeds": "sequentialSeeds",
+        "qig-use-st-style": "useSTStyle", "qig-inject-enabled": "injectEnabled",
+        "qig-inject-autoclean": "injectAutoClean"
     };
     Object.entries(checks).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -2751,6 +2833,11 @@ function refreshAllUI(s) {
     // Update seq seeds visibility
     const seqWrap = document.getElementById("qig-seq-seeds-wrap");
     if (seqWrap) seqWrap.style.display = (s.batchCount || 1) > 1 ? "" : "none";
+    // Update inject mode visibility
+    const injectOpts = document.getElementById("qig-inject-options");
+    if (injectOpts) injectOpts.style.display = s.injectEnabled ? "block" : "none";
+    const injectDepthWrap = document.getElementById("qig-inject-depth-wrap");
+    if (injectDepthWrap) injectDepthWrap.style.display = s.injectPosition === "atDepth" ? "block" : "none";
 }
 
 window.loadPreset = loadPreset;
@@ -3285,6 +3372,54 @@ function createUI() {
                 </div>
 
                 <label class="checkbox_label">
+                    <input id="qig-use-st-style" type="checkbox" ${s.useSTStyle !== false ? "checked" : ""}>
+                    <span>Use ST's Style panel settings (prefix/negative/char-specific)</span>
+                </label>
+
+                <hr style="margin:8px 0;opacity:0.2;">
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Inject Mode (AI-driven)</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small style="opacity:0.7;">Let the RP AI describe scenes with &lt;pic&gt; tags, then auto-generate images from them</small>
+                        <label class="checkbox_label" style="margin-top:6px;">
+                            <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
+                            <span>Enable inject mode</span>
+                        </label>
+                        <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
+                            <label>Inject prompt template</label>
+                            <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${s.injectPrompt || ""}</textarea>
+                            <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Injected into chat completion to instruct AI to use &lt;pic&gt; tags.</small>
+                            <label>Extraction regex</label>
+                            <input id="qig-inject-regex" type="text" value="${(s.injectRegex || '').replace(/"/g, '&quot;')}" style="width:100%;font-family:monospace;font-size:11px;">
+                            <small style="opacity:0.6;font-size:10px;">Capture group 1 = image prompt. Default extracts from &lt;pic prompt="..."&gt;</small>
+                            <label>Injection position</label>
+                            <select id="qig-inject-position">
+                                <option value="afterScenario" ${s.injectPosition === "afterScenario" ? "selected" : ""}>After Scenario</option>
+                                <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>In User Message</option>
+                                <option value="atDepth" ${s.injectPosition === "atDepth" ? "selected" : ""}>At Depth</option>
+                            </select>
+                            <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
+                                <label>Depth</label>
+                                <input id="qig-inject-depth" type="number" value="${s.injectDepth || 0}" min="0" max="100">
+                            </div>
+                            <label>Tag handling</label>
+                            <select id="qig-inject-insert-mode">
+                                <option value="replace" ${s.injectInsertMode === "replace" ? "selected" : ""}>Replace tag with image</option>
+                                <option value="inline" ${s.injectInsertMode === "inline" ? "selected" : ""}>Insert image after message</option>
+                                <option value="new" ${s.injectInsertMode === "new" ? "selected" : ""}>New message with image</option>
+                            </select>
+                            <label class="checkbox_label">
+                                <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
+                                <span>Remove &lt;pic&gt; tags from displayed message</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <label class="checkbox_label">
                     <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
                     <span>Auto-generate after AI response</span>
                 </label>
@@ -3681,6 +3816,25 @@ function createUI() {
         }
     };
     bindCheckbox("qig-confirm-generate", "confirmBeforeGenerate");
+    bindCheckbox("qig-use-st-style", "useSTStyle");
+    // Inject mode bindings
+    bindCheckbox("qig-inject-enabled", "injectEnabled");
+    document.getElementById("qig-inject-enabled").onchange = (e) => {
+        getSettings().injectEnabled = e.target.checked;
+        document.getElementById("qig-inject-options").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bind("qig-inject-prompt", "injectPrompt");
+    bind("qig-inject-regex", "injectRegex");
+    bind("qig-inject-position", "injectPosition");
+    document.getElementById("qig-inject-position").onchange = (e) => {
+        getSettings().injectPosition = e.target.value;
+        document.getElementById("qig-inject-depth-wrap").style.display = e.target.value === "atDepth" ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bind("qig-inject-depth", "injectDepth", true);
+    bind("qig-inject-insert-mode", "injectInsertMode");
+    bindCheckbox("qig-inject-autoclean", "injectAutoClean");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     document.getElementById("qig-aspect").onchange = (e) => {
@@ -3803,6 +3957,15 @@ async function generateImage() {
     }
     let negative = resolvePrompt(s.negativePrompt);
 
+    // Apply ST Style panel settings (prefix, char-specific, negative)
+    if (s.useSTStyle !== false) {
+        const stStyle = getSTStyleSettings();
+        if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+        if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+        if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+        if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+    }
+
     // Apply contextual filters based on scene text
     const sceneForFilters = scenePrompt || basePrompt;
     const filtered = applyContextualFilters(prompt, negative, sceneForFilters);
@@ -3876,6 +4039,170 @@ async function generateImage() {
 }
 
 
+// === Inject Mode (AI-driven image generation via <pic> tags) ===
+
+function onChatCompletionPromptReady(eventData) {
+    const s = getSettings();
+    if (!s.injectEnabled || !s.injectPrompt) return;
+
+    const promptText = resolvePrompt(s.injectPrompt);
+    const position = s.injectPosition || "afterScenario";
+    const depth = s.injectDepth || 0;
+
+    try {
+        // eventData is the prompt array (array of {role, content} objects)
+        const prompts = Array.isArray(eventData) ? eventData : eventData?.chat;
+        if (!prompts || !Array.isArray(prompts)) {
+            log("Inject: Could not find prompt array in event data");
+            return;
+        }
+
+        const injectMsg = { role: "system", content: promptText };
+
+        if (position === "afterScenario") {
+            // Insert after the first system message (scenario)
+            const firstSystemEnd = prompts.findIndex((m, i) => i > 0 && m.role !== "system");
+            if (firstSystemEnd > 0) {
+                prompts.splice(firstSystemEnd, 0, injectMsg);
+            } else {
+                prompts.push(injectMsg);
+            }
+        } else if (position === "inUser") {
+            // Append to the last user message
+            for (let i = prompts.length - 1; i >= 0; i--) {
+                if (prompts[i].role === "user") {
+                    prompts[i].content += "\n\n" + promptText;
+                    break;
+                }
+            }
+        } else if (position === "atDepth") {
+            // Insert at specific depth from the end
+            const insertIdx = Math.max(0, prompts.length - depth);
+            prompts.splice(insertIdx, 0, injectMsg);
+        }
+
+        log(`Inject: Injected prompt at position '${position}'${position === "atDepth" ? ` depth ${depth}` : ""}`);
+    } catch (e) {
+        log(`Inject: Error injecting prompt: ${e.message}`);
+    }
+}
+
+async function processInjectMessage(messageText, messageIndex) {
+    const s = getSettings();
+    if (!s.injectEnabled || !s.injectRegex) return;
+
+    let regex;
+    try {
+        regex = new RegExp(s.injectRegex, "gi");
+    } catch (e) {
+        log(`Inject: Invalid regex: ${e.message}`);
+        return;
+    }
+
+    const matches = [];
+    let match;
+    while ((match = regex.exec(messageText)) !== null) {
+        if (match[1]) matches.push(match[1]);
+    }
+
+    if (matches.length === 0) return;
+
+    log(`Inject: Found ${matches.length} <pic> tag(s) in message`);
+
+    // Clean tags from displayed message if enabled
+    if (s.injectAutoClean !== false) {
+        try {
+            const ctx = getContext();
+            const chat = ctx.chat;
+            const idx = messageIndex !== undefined ? messageIndex : chat.length - 1;
+            const msg = chat[idx];
+            if (msg) {
+                const cleanRegex = new RegExp(s.injectRegex, "gi");
+                msg.mes = msg.mes.replace(cleanRegex, "").trim();
+                // Update the displayed message
+                const mesEl = $(`.mes[mesid="${idx}"] .mes_text`);
+                if (mesEl.length) {
+                    mesEl.html(msg.mes);
+                }
+                await ctx.saveChat();
+                log("Inject: Cleaned <pic> tags from message");
+            }
+        } catch (e) {
+            log(`Inject: Error cleaning tags: ${e.message}`);
+        }
+    }
+
+    // Generate images for each extracted prompt
+    for (const extractedPrompt of matches) {
+        if (isGenerating) {
+            log("Inject: Waiting for current generation to finish...");
+            await new Promise(resolve => {
+                const check = setInterval(() => {
+                    if (!isGenerating) { clearInterval(check); resolve(); }
+                }, 500);
+            });
+        }
+
+        try {
+            isGenerating = true;
+            log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
+            showStatus("🖼️ Generating inject-mode image...");
+
+            let prompt = extractedPrompt;
+            let negative = resolvePrompt(s.negativePrompt);
+
+            // Apply style
+            prompt = applyStyle(prompt, s);
+
+            // Apply quality tags
+            if (s.appendQuality && s.qualityTags) {
+                prompt = `${s.qualityTags}, ${prompt}`;
+            }
+
+            // Apply ST Style
+            if (s.useSTStyle !== false) {
+                const stStyle = getSTStyleSettings();
+                if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+            }
+
+            // Apply contextual filters
+            const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
+            prompt = filtered.prompt;
+            negative = filtered.negative;
+
+            lastPrompt = prompt;
+            lastNegative = negative;
+
+            const expandedPrompt = expandWildcards(prompt);
+            const expandedNegative = expandWildcards(negative);
+            const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+
+            if (result) {
+                addToGallery(result);
+                const insertMode = s.injectInsertMode || "replace";
+                if (insertMode === "inline" || insertMode === "replace") {
+                    try { await insertImageIntoMessage(result); } catch (err) {
+                        log(`Inject: Auto-insert failed: ${err.message}`);
+                        displayImage(result);
+                    }
+                } else {
+                    displayImage(result);
+                }
+                toastr.success("Inject mode: Image generated");
+            }
+        } catch (e) {
+            log(`Inject: Generation error: ${e.message}`);
+            toastr.error("Inject generation failed: " + e.message);
+        } finally {
+            isGenerating = false;
+            showStatus(null);
+        }
+    }
+}
+
 
 jQuery(function () {
     // Non-blocking async initialization
@@ -3894,11 +4221,27 @@ jQuery(function () {
 
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
-                eventSource.on(event_types.MESSAGE_RECEIVED, () => {
-                    if (getSettings().autoGenerate && !isGenerating) {
+                eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
+                    const s = getSettings();
+                    // Auto-generate mode
+                    if (s.autoGenerate && !isGenerating) {
                         setTimeout(() => generateImage(), 500);
                     }
+                    // Inject mode: extract <pic> tags from AI response
+                    if (s.injectEnabled) {
+                        const ctx = getContext();
+                        const chat = ctx?.chat;
+                        const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
+                        const msg = chat?.[idx];
+                        if (msg?.mes) {
+                            setTimeout(() => processInjectMessage(msg.mes, idx), 300);
+                        }
+                    }
                 });
+                // Inject mode: inject prompt into chat completion
+                if (event_types.CHAT_COMPLETION_PROMPT_READY) {
+                    eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
+                }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
                     loadCharSettings();
                 });
