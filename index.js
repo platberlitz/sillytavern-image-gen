@@ -131,6 +131,8 @@ const defaultSettings = {
 
 let lastPrompt = "";
 let lastNegative = "";
+let originalPrompt = "";
+let originalNegative = "";
 function safeParse(key, fallback) {
     try { return JSON.parse(localStorage.getItem(key)) || fallback; }
     catch { return fallback; }
@@ -1964,6 +1966,20 @@ function displayImage(url) {
 
     const popup = createPopup("qig-popup", "Generated Image", `
         <img id="qig-result-img" src="">
+        <button id="qig-toggle-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
+            ✏️ Edit Prompt
+        </button>
+        <div class="qig-prompt-editor" style="display:none;">
+            <div style="padding: 8px 16px;">
+                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
+                <textarea id="qig-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
+                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
+                <textarea id="qig-preview-negative" style="width: 100%; height: 60px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
+                <div style="display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end;">
+                    <button id="qig-reset-prompt" class="menu_button" style="padding: 4px 10px; font-size: 11px;">Reset to Original</button>
+                </div>
+            </div>
+        </div>
         <div class="qig-popup-actions">
             <button id="qig-regenerate-btn">🔄 Regenerate</button>
             <button id="qig-insert-btn">📌 Insert</button>
@@ -1980,6 +1996,28 @@ function displayImage(url) {
         }
         initResizeHandle(popup);
 
+        // Initialize prompt editor
+        originalPrompt = lastPrompt;
+        originalNegative = lastNegative;
+        const promptTextarea = document.getElementById("qig-preview-prompt");
+        const negativeTextarea = document.getElementById("qig-preview-negative");
+        const toggleBtn = document.getElementById("qig-toggle-prompt-editor");
+        const resetBtn = document.getElementById("qig-reset-prompt");
+        const editorDiv = popup.querySelector(".qig-prompt-editor");
+        if (promptTextarea) promptTextarea.value = lastPrompt;
+        if (negativeTextarea) negativeTextarea.value = lastNegative;
+        toggleBtn.onclick = (e) => {
+            e.stopPropagation();
+            const isVisible = editorDiv.style.display !== "none";
+            editorDiv.style.display = isVisible ? "none" : "block";
+            toggleBtn.textContent = isVisible ? "✏️ Edit Prompt" : "▲ Hide Prompt";
+        };
+        resetBtn.onclick = (e) => {
+            e.stopPropagation();
+            promptTextarea.value = originalPrompt;
+            negativeTextarea.value = originalNegative;
+        };
+
         const img = document.getElementById("qig-result-img");
         img.src = "";
         img.src = url;
@@ -1990,6 +2028,16 @@ function displayImage(url) {
         };
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
+            if (promptTextarea && promptTextarea.value.trim()) {
+                lastPrompt = promptTextarea.value;
+            }
+            if (negativeTextarea) {
+                lastNegative = negativeTextarea.value;
+            }
+            if (!lastPrompt.trim()) {
+                toastr.error("Prompt cannot be empty");
+                return;
+            }
             popup.style.display = "none";
             regenerateImage();
         };
@@ -2028,6 +2076,20 @@ function displayBatchResults(results) {
             <button id="qig-batch-next">▶</button>
         </div>
         <div class="qig-batch-thumbs">${thumbsHtml}</div>
+        <button id="qig-batch-toggle-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
+            ✏️ Edit Prompt
+        </button>
+        <div class="qig-prompt-editor" style="display:none;">
+            <div style="padding: 8px 16px;">
+                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
+                <textarea id="qig-batch-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
+                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
+                <textarea id="qig-batch-preview-negative" style="width: 100%; height: 60px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
+                <div style="display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end;">
+                    <button id="qig-batch-reset-prompt" class="menu_button" style="padding: 4px 10px; font-size: 11px;">Reset to Original</button>
+                </div>
+            </div>
+        </div>
         <div class="qig-popup-actions">
             <button id="qig-batch-regenerate">🔄 Regenerate</button>
             <button id="qig-batch-insert">📌 Insert</button>
@@ -2044,6 +2106,28 @@ function displayBatchResults(results) {
             content.style.maxHeight = '';
         }
         initResizeHandle(popup);
+
+        // Initialize prompt editor
+        originalPrompt = lastPrompt;
+        originalNegative = lastNegative;
+        const batchPromptTextarea = document.getElementById("qig-batch-preview-prompt");
+        const batchNegativeTextarea = document.getElementById("qig-batch-preview-negative");
+        const batchToggleBtn = document.getElementById("qig-batch-toggle-prompt-editor");
+        const batchResetBtn = document.getElementById("qig-batch-reset-prompt");
+        const batchEditorDiv = popup.querySelector(".qig-prompt-editor");
+        if (batchPromptTextarea) batchPromptTextarea.value = lastPrompt;
+        if (batchNegativeTextarea) batchNegativeTextarea.value = lastNegative;
+        batchToggleBtn.onclick = (e) => {
+            e.stopPropagation();
+            const isVisible = batchEditorDiv.style.display !== "none";
+            batchEditorDiv.style.display = isVisible ? "none" : "block";
+            batchToggleBtn.textContent = isVisible ? "✏️ Edit Prompt" : "▲ Hide Prompt";
+        };
+        batchResetBtn.onclick = (e) => {
+            e.stopPropagation();
+            batchPromptTextarea.value = originalPrompt;
+            batchNegativeTextarea.value = originalNegative;
+        };
 
         const img = document.getElementById("qig-batch-img");
         img.src = results[0];
@@ -2110,6 +2194,16 @@ function displayBatchResults(results) {
         };
         document.getElementById("qig-batch-regenerate").onclick = (e) => {
             e.stopPropagation();
+            if (batchPromptTextarea && batchPromptTextarea.value.trim()) {
+                lastPrompt = batchPromptTextarea.value;
+            }
+            if (batchNegativeTextarea) {
+                lastNegative = batchNegativeTextarea.value;
+            }
+            if (!lastPrompt.trim()) {
+                toastr.error("Prompt cannot be empty");
+                return;
+            }
             popup.style.display = "none";
             regenerateImage();
         };

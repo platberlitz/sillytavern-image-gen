@@ -313,3 +313,20 @@
     line-height: 1.4;
     word-break: break-word;
 }
+
+/* Prompt editor in preview */
+.qig-prompt-editor textarea:focus {
+    outline: none;
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+#qig-toggle-prompt-editor:hover,
+#qig-batch-toggle-prompt-editor:hover {
+    background: var(--SmartThemeQuoteColor);
+}
+
+@media (max-width: 768px) {
+    .qig-prompt-editor textarea {
+        font-size: 11px;
+    }
+}
