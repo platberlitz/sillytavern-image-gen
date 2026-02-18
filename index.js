@@ -35,6 +35,8 @@ const defaultSettings = {
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
+    disablePaletteButton: false,
+    confirmBeforeGenerate: false,
     enableParagraphPicker: false,
     batchCount: 1,
     sequentialSeeds: false,
@@ -3290,7 +3292,15 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
-                
+                <label class="checkbox_label">
+                    <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
+                    <span>Hide palette button</span>
+                </label>
+                <label class="checkbox_label">
+                    <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
+                    <span>Confirm before generating</span>
+                </label>
+
                 <label>Size</label>
                 <div id="qig-size-custom" class="qig-row">
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
@@ -3660,6 +3670,17 @@ function createUI() {
     };
     bindCheckbox("qig-auto-generate", "autoGenerate");
     bindCheckbox("qig-auto-insert", "autoInsert");
+    bindCheckbox("qig-disable-palette", "disablePaletteButton");
+    document.getElementById("qig-disable-palette").onchange = (e) => {
+        const btn = document.getElementById("qig-input-btn");
+        if (e.target.checked) {
+            if (btn) btn.style.display = "none";
+        } else {
+            if (btn) btn.style.display = "";
+            else addInputButton();
+        }
+    };
+    bindCheckbox("qig-confirm-generate", "confirmBeforeGenerate");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     document.getElementById("qig-aspect").onchange = (e) => {
@@ -3704,6 +3725,7 @@ function createUI() {
 
 function addInputButton() {
     if (document.getElementById("qig-input-btn")) return;
+    if (getSettings().disablePaletteButton) return;
 
     const btn = document.createElement("div");
     btn.id = "qig-input-btn";
@@ -3721,6 +3743,7 @@ function addInputButton() {
 
 async function generateImage() {
     if (isGenerating) return;
+    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
     isGenerating = true;
     const s = getSettings();
     let basePrompt = resolvePrompt(s.prompt);
