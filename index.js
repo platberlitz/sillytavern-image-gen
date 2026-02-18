@@ -4122,12 +4122,10 @@ async function processInjectMessage(messageText, messageIndex) {
             if (msg) {
                 const cleanRegex = new RegExp(s.injectRegex, "gi");
                 msg.mes = msg.mes.replace(cleanRegex, "").trim();
-                // Update the displayed message
-                const mesEl = $(`.mes[mesid="${idx}"] .mes_text`);
-                if (mesEl.length) {
-                    mesEl.html(msg.mes);
-                }
                 await ctx.saveChat();
+                if (typeof ctx.reloadCurrentChat === 'function') {
+                    await ctx.reloadCurrentChat();
+                }
                 log("Inject: Cleaned <pic> tags from message");
             }
         } catch (e) {
@@ -4185,10 +4183,14 @@ async function processInjectMessage(messageText, messageIndex) {
 
             if (result) {
                 addToGallery(result);
-                const insertMode = s.injectInsertMode || "replace";
-                if (insertMode === "inline" || insertMode === "replace") {
-                    try { await insertImageIntoMessage(result); } catch (err) {
-                        log(`Inject: Auto-insert failed: ${err.message}`);
+                if (s.autoInsert) {
+                    const insertMode = s.injectInsertMode || "replace";
+                    if (insertMode === "inline" || insertMode === "replace") {
+                        try { await insertImageIntoMessage(result); } catch (err) {
+                            log(`Inject: Auto-insert failed: ${err.message}`);
+                            displayImage(result);
+                        }
+                    } else {
                         displayImage(result);
                     }
                 } else {
@@ -4226,11 +4228,8 @@ jQuery(function () {
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
                     const s = getSettings();
-                    // Auto-generate mode
-                    if (s.autoGenerate && !isGenerating) {
-                        setTimeout(() => generateImage(), 500);
-                    }
                     // Inject mode: extract <pic> tags from AI response
+                    // Checked first — if active, skip autoGenerate to prevent double generation
                     if (s.injectEnabled) {
                         const ctx = getContext();
                         const chat = ctx?.chat;
@@ -4239,6 +4238,11 @@ jQuery(function () {
                         if (msg?.mes) {
                             setTimeout(() => processInjectMessage(msg.mes, idx), 300);
                         }
+                        return;
+                    }
+                    // Auto-generate mode
+                    if (s.autoGenerate && !isGenerating) {
+                        setTimeout(() => generateImage(), 500);
                     }
                 });
                 // Inject mode: inject prompt into chat completion
