@@ -3630,7 +3630,7 @@ function createUI() {
                             <label>Injection position</label>
                             <select id="qig-inject-position">
                                 <option value="afterScenario" ${s.injectPosition === "afterScenario" ? "selected" : ""}>After Scenario</option>
-                                <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>In User Message</option>
+                                <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>Before User Message</option>
                                 <option value="atDepth" ${s.injectPosition === "atDepth" ? "selected" : ""}>At Depth</option>
                             </select>
                             <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
@@ -4536,10 +4536,10 @@ function onChatCompletionPromptReady(eventData) {
                 prompts.push(injectMsg);
             }
         } else if (position === "inUser") {
-            // Append to the last user message
+            // Insert as system message before the last user message
             for (let i = prompts.length - 1; i >= 0; i--) {
                 if (prompts[i].role === "user") {
-                    prompts[i].content += "\n\n" + promptText;
+                    prompts.splice(i, 0, injectMsg);
                     break;
                 }
             }
