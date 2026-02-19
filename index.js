@@ -128,14 +128,11 @@ const defaultSettings = {
     injectDepth: 0,
     injectInsertMode: "replace",
     injectAutoClean: true,
-    // LLM Override (separate AI for image prompts)
+    // LLM Override (separate AI for image prompts via Connection Manager)
     llmOverrideEnabled: false,
-    llmOverrideUrl: "",
-    llmOverrideKey: "",
-    llmOverrideModel: "",
-    llmOverrideTemp: 0.7,
+    llmOverrideProfileId: "",
+    llmOverridePreset: "",
     llmOverrideMaxTokens: 500,
-    llmOverrideSystemPrompt: "",
 };
 
 let lastPrompt = "";
@@ -628,7 +625,7 @@ ${conceptList}`;
     const s = getSettings();
     let response;
     try {
-        if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+        if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.");
         } else {
             const quietOptions = { skipWIAN: true, quietName: `FilterMatch_${Date.now()}`, quietToLoud: false };
@@ -653,35 +650,80 @@ const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?s
 
 async function callOverrideLLM(instruction, systemPrompt = "") {
     const s = getSettings();
-    const baseUrl = s.llmOverrideUrl.replace(/\/+$/, '');
-    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+    let CMRS = null;
+    try {
+        const ctx = getContext();
+        CMRS = ctx.ConnectionManagerRequestService;
+    } catch { /* pre-1.15.0 */ }
 
-    const messages = [];
-    const sys = systemPrompt || s.llmOverrideSystemPrompt;
-    if (sys) messages.push({ role: "system", content: sys });
-    messages.push({ role: "user", content: instruction });
-
-    const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${s.llmOverrideKey}`
-        },
-        body: JSON.stringify({
-            model: s.llmOverrideModel,
-            messages,
-            temperature: s.llmOverrideTemp || 0.7,
-            max_tokens: s.llmOverrideMaxTokens || 500
-        })
-    });
-
-    if (!response.ok) {
-        const errText = await response.text().catch(() => "");
-        throw new Error(`LLM Override ${response.status}: ${errText.substring(0, 200)}`);
+    if (!CMRS || !s.llmOverrideProfileId) {
+        // Fallback: use main chat AI via generateQuietPrompt
+        log("LLM Override: No Connection Manager or profile, falling back to main AI");
+        const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
+        try {
+            return await generateQuietPrompt(instruction, quietOptions);
+        } catch {
+            return await generateQuietPrompt(instruction);
+        }
     }
 
-    const data = await response.json();
-    return data.choices?.[0]?.message?.content || "";
+    const messages = [];
+    if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
+    messages.push({ role: "user", content: instruction });
+
+    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}'`);
+    const response = await CMRS.sendRequest(
+        s.llmOverrideProfileId,
+        messages,
+        s.llmOverrideMaxTokens || 500,
+        { extractData: true, includePreset: !!s.llmOverridePreset, stream: false }
+    );
+    return typeof response === "string" ? response : (response?.content || response?.message?.content || String(response));
+}
+
+function populateConnectionProfiles(selectId, selectedId) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = '<option value="">-- Use main chat AI --</option>';
+    try {
+        const ctx = getContext();
+        const CMRS = ctx.ConnectionManagerRequestService;
+        if (!CMRS) {
+            select.innerHTML += '<option value="" disabled>Requires SillyTavern 1.15.0+</option>';
+            return;
+        }
+        const profiles = CMRS.getSupportedProfiles();
+        for (const p of profiles) {
+            const opt = document.createElement("option");
+            opt.value = p.id;
+            opt.textContent = p.name || p.id;
+            if (p.id === selectedId) opt.selected = true;
+            select.appendChild(opt);
+        }
+    } catch (e) {
+        log(`Failed to load connection profiles: ${e.message}`);
+        select.innerHTML += '<option value="" disabled>Error loading profiles</option>';
+    }
+}
+
+async function populatePresetList(selectId, selectedPreset) {
+    const select = document.getElementById(selectId);
+    if (!select) return;
+    select.innerHTML = '<option value="">-- Default (from profile) --</option>';
+    try {
+        const ctx = getContext();
+        const result = await ctx.executeSlashCommandsWithOptions('/preset-list');
+        const presets = result?.pipe ? JSON.parse(result.pipe) : [];
+        for (const name of presets) {
+            const opt = document.createElement("option");
+            opt.value = name;
+            opt.textContent = name;
+            if (name === selectedPreset) opt.selected = true;
+            select.appendChild(opt);
+        }
+    } catch (e) {
+        log(`Failed to load presets: ${e.message}`);
+    }
 }
 
 async function generateLLMPrompt(s, basePrompt) {
@@ -875,7 +917,7 @@ Tags:`;
         // skipWIAN: true - skip World Info and Author's Note (can cause cache hits)
         // quietName: unique name per request to prevent prompt caching
         let llmPrompt;
-        if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+        if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
             llmPrompt = await callOverrideLLM(instructionWithEntropy);
         } else {
@@ -3687,24 +3729,12 @@ function createUI() {
                         <span>Use separate AI for image prompts</span>
                     </label>
                     <div id="qig-llm-override-options" style="display:${s.llmOverrideEnabled ? 'block' : 'none'};margin-top:6px;">
-                        <label style="font-size:11px;">API Base URL (OpenAI-compatible)</label>
-                        <input id="qig-llm-override-url" type="text" value="${s.llmOverrideUrl}" placeholder="https://openrouter.ai/api/v1" style="width:100%;">
-                        <label style="font-size:11px;">API Key</label>
-                        <input id="qig-llm-override-key" type="password" value="${s.llmOverrideKey}" placeholder="sk-..." style="width:100%;">
-                        <label style="font-size:11px;">Model</label>
-                        <input id="qig-llm-override-model" type="text" value="${s.llmOverrideModel}" placeholder="google/gemini-2.0-flash-001" style="width:100%;">
-                        <div style="display:flex;gap:8px;">
-                            <div style="flex:1;">
-                                <label style="font-size:11px;">Temperature</label>
-                                <input id="qig-llm-override-temp" type="number" value="${s.llmOverrideTemp || 0.7}" min="0" max="2" step="0.1" style="width:100%;">
-                            </div>
-                            <div style="flex:1;">
-                                <label style="font-size:11px;">Max Tokens</label>
-                                <input id="qig-llm-override-max" type="number" value="${s.llmOverrideMaxTokens || 500}" min="50" max="4096" style="width:100%;">
-                            </div>
-                        </div>
-                        <label style="font-size:11px;">System Prompt (optional)</label>
-                        <textarea id="qig-llm-override-sys" style="width:100%;height:40px;resize:vertical;" placeholder="You are an image prompt generator...">${s.llmOverrideSystemPrompt || ""}</textarea>
+                        <label style="font-size:11px;">Connection Profile</label>
+                        <select id="qig-llm-override-profile" style="width:100%;"></select>
+                        <label style="font-size:11px;margin-top:4px;">Completion Preset (optional)</label>
+                        <select id="qig-llm-override-preset-select" style="width:100%;"></select>
+                        <label style="font-size:11px;margin-top:4px;">Max Tokens</label>
+                        <input id="qig-llm-override-max" type="number" value="${s.llmOverrideMaxTokens || 500}" min="50" max="4096" style="width:100%;">
                     </div>
                 </div>
 
@@ -4129,14 +4159,21 @@ function createUI() {
     document.getElementById("qig-llm-override").onchange = (e) => {
         getSettings().llmOverrideEnabled = e.target.checked;
         document.getElementById("qig-llm-override-options").style.display = e.target.checked ? "block" : "none";
+        if (e.target.checked) {
+            populateConnectionProfiles("qig-llm-override-profile", getSettings().llmOverrideProfileId);
+            populatePresetList("qig-llm-override-preset-select", getSettings().llmOverridePreset);
+        }
         saveSettingsDebounced();
     };
-    bind("qig-llm-override-url", "llmOverrideUrl");
-    bind("qig-llm-override-key", "llmOverrideKey");
-    bind("qig-llm-override-model", "llmOverrideModel");
-    bind("qig-llm-override-temp", "llmOverrideTemp", true);
+    document.getElementById("qig-llm-override-profile").onchange = (e) => {
+        getSettings().llmOverrideProfileId = e.target.value;
+        saveSettingsDebounced();
+    };
+    document.getElementById("qig-llm-override-preset-select").onchange = (e) => {
+        getSettings().llmOverridePreset = e.target.value;
+        saveSettingsDebounced();
+    };
     bind("qig-llm-override-max", "llmOverrideMaxTokens", true);
-    bind("qig-llm-override-sys", "llmOverrideSystemPrompt");
     document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
@@ -4252,7 +4289,7 @@ async function generateImageInjectPalette() {
             const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate <pic> tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
 
             let llmResponse;
-            if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+            if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
                 log("Using LLM Override for inject palette");
                 llmResponse = await callOverrideLLM(fullInstruction);
             } else {
@@ -4731,6 +4768,13 @@ jQuery(function () {
             await loadSettings();
             createUI();
             addInputButton();
+
+            // Populate LLM override dropdowns if enabled
+            const initSettings = getSettings();
+            if (initSettings.llmOverrideEnabled) {
+                populateConnectionProfiles("qig-llm-override-profile", initSettings.llmOverrideProfileId);
+                populatePresetList("qig-llm-override-preset-select", initSettings.llmOverridePreset);
+            }
 
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
