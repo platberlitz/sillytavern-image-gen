@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers), ST Style panel integration, inject mode (AI-driven `<pic>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching), ST Style panel integration, inject mode (AI-driven `<pic>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -42,7 +42,8 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs)
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers
+- 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
@@ -124,6 +125,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Auto-generate** | Generate after each AI response |
 | **Auto-insert** | Skip popup and insert images directly into chat |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
+| **LLM Override** | Use a separate OpenAI-compatible API for image prompt generation (URL, key, model, temperature, max tokens, system prompt) |
 | **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts `<pic>` tags from AI response |
 
 ---
@@ -227,6 +229,33 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 - **Context Integration**: Uses chat history and character cards for better prompts
 - **Multi-Message Context**: Select multiple messages for richer scene context (ranges, specific indices, or last N)
 
+## LLM Override (Separate AI for Image Prompts)
+
+By default, image prompt generation uses SillyTavern's chat AI — the same model powering your RP. The LLM Override lets you route image-related LLM calls to a separate, cheaper/faster model via any OpenAI-compatible API endpoint.
+
+### Supported Providers
+
+Works with any service that exposes an OpenAI-compatible `/chat/completions` endpoint:
+- **OpenRouter** — URL: `https://openrouter.ai/api/v1`, model: `google/gemini-2.0-flash-001`
+- **Ollama (local)** — URL: `http://localhost:11434/v1`, model: `llama3`
+- **LMStudio** — URL: `http://localhost:1234/v1`
+- **Together AI, Groq, vLLM, text-generation-webui**, etc.
+
+### What It Affects
+
+When enabled, the override endpoint is used for:
+- **Prompt generation** (direct mode) — converting scenes to image prompts
+- **Inject palette fallback** — generating `<pic>` tags when none found in AI messages
+- **LLM concept filter matching** — evaluating concept filters against scenes
+
+### Setup
+
+1. Check **"Use separate AI for image prompts"** in the extension settings
+2. Enter your **API Base URL** (auto-appends `/chat/completions` if not present)
+3. Enter your **API Key**
+4. Enter the **Model** name
+5. Optionally adjust temperature, max tokens, and system prompt
+
 ## Drag and Drop Metadata
 Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model). Images downloaded from this extension include embedded metadata, enabling full round-trip: generate → download → drag back → settings auto-fill.
 
@@ -328,9 +357,24 @@ Lorebook-style keyword triggers that automatically inject positive/negative prom
 
 Each filter has:
 - **Keywords** (comma-separated) — scanned against the current scene/message text
-- **Match Mode** — `OR` (any keyword triggers) or `AND` (all keywords required)
+- **Match Mode** — `OR` (any keyword triggers), `AND` (all keywords required), or `LLM` (AI concept recognition)
 - **Positive/Negative Prompt** — appended to the generation prompts when triggered
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
+
+### LLM Concept Matching
+
+The `LLM` match mode replaces keyword matching with AI-based concept recognition. Instead of keywords, you write a **concept description** in plain language, and an LLM decides whether the current scene matches.
+
+This solves the problem where concept LoRAs have trigger words (like `<lora:cyberpunk_v2:0.8>`) that never appear naturally in AI messages. With LLM matching, the filter activates based on *meaning* rather than literal keywords.
+
+**Example:** Create an LLM filter with:
+- **Name**: Cyberpunk Aesthetic
+- **Description**: "Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes"
+- **Positive**: `<lora:cyberpunk_v2:0.8>, neon, cyberpunk`
+
+When the AI writes about a "neon-drenched megacity with holographic billboards," the LLM recognizes this as cyberpunk even though the word "cyberpunk" never appeared.
+
+All LLM-type filters are evaluated in a single API call (not one per filter) for efficiency. If an LLM Override endpoint is configured, concept matching uses that; otherwise it falls back to the chat AI.
 
 ### Example: Multi-Character LoRAs
 
