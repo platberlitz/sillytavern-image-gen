@@ -131,6 +131,7 @@ const defaultSettings = {
 
 let lastPrompt = "";
 let lastNegative = "";
+let lastPromptWasLLM = false;
 let originalPrompt = "";
 let originalNegative = "";
 function safeParse(key, fallback) {
@@ -1971,6 +1972,7 @@ function displayImage(url) {
         </button>
         <div class="qig-prompt-editor" style="display:none;">
             <div style="padding: 8px 16px;">
+                <span id="qig-prompt-source-label" style="font-size: 10px; opacity: 0.7; display: block; margin-bottom: 4px;"></span>
                 <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
                 <textarea id="qig-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
                 <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
@@ -2006,6 +2008,8 @@ function displayImage(url) {
         const editorDiv = popup.querySelector(".qig-prompt-editor");
         if (promptTextarea) promptTextarea.value = lastPrompt;
         if (negativeTextarea) negativeTextarea.value = lastNegative;
+        const sourceLabel = document.getElementById("qig-prompt-source-label");
+        if (sourceLabel) sourceLabel.textContent = lastPromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
         toggleBtn.onclick = (e) => {
             e.stopPropagation();
             const isVisible = editorDiv.style.display !== "none";
@@ -2034,6 +2038,7 @@ function displayImage(url) {
             if (negativeTextarea) {
                 lastNegative = negativeTextarea.value;
             }
+            lastPromptWasLLM = false;
             if (!lastPrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
@@ -2081,6 +2086,7 @@ function displayBatchResults(results) {
         </button>
         <div class="qig-prompt-editor" style="display:none;">
             <div style="padding: 8px 16px;">
+                <span id="qig-batch-prompt-source-label" style="font-size: 10px; opacity: 0.7; display: block; margin-bottom: 4px;"></span>
                 <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
                 <textarea id="qig-batch-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
                 <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
@@ -2117,6 +2123,8 @@ function displayBatchResults(results) {
         const batchEditorDiv = popup.querySelector(".qig-prompt-editor");
         if (batchPromptTextarea) batchPromptTextarea.value = lastPrompt;
         if (batchNegativeTextarea) batchNegativeTextarea.value = lastNegative;
+        const batchSourceLabel = document.getElementById("qig-batch-prompt-source-label");
+        if (batchSourceLabel) batchSourceLabel.textContent = lastPromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
         batchToggleBtn.onclick = (e) => {
             e.stopPropagation();
             const isVisible = batchEditorDiv.style.display !== "none";
@@ -2200,6 +2208,7 @@ function displayBatchResults(results) {
             if (batchNegativeTextarea) {
                 lastNegative = batchNegativeTextarea.value;
             }
+            lastPromptWasLLM = false;
             if (!lastPrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
@@ -4029,6 +4038,7 @@ async function generateImage() {
     }
 
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
+    lastPromptWasLLM = (s.useLLMPrompt && prompt !== (scenePrompt || basePrompt));
 
     // Show prompt editing dialog if enabled
     if (s.useLLMPrompt && s.llmEditPrompt && prompt !== basePrompt) {
@@ -4270,6 +4280,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
             lastPrompt = prompt;
             lastNegative = negative;
+            lastPromptWasLLM = false;
 
             const expandedPrompt = expandWildcards(prompt);
             const expandedNegative = expandWildcards(negative);
