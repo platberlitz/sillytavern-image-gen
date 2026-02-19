@@ -4282,26 +4282,45 @@ async function processInjectMessage(messageText, messageIndex) {
             lastNegative = negative;
             lastPromptWasLLM = false;
 
-            const expandedPrompt = expandWildcards(prompt);
-            const expandedNegative = expandWildcards(negative);
-            const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+            const batchCount = s.batchCount || 1;
+            const results = [];
+            const originalSeed = s.seed;
+            let baseSeed = originalSeed;
+            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+                baseSeed = Math.floor(Math.random() * 2147483647);
+            }
+            for (let i = 0; i < batchCount; i++) {
+                if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+                showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
+                const expandedPrompt = expandWildcards(prompt);
+                const expandedNegative = expandWildcards(negative);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                if (result) results.push(result);
+            }
+            s.seed = originalSeed;
 
-            if (result) {
-                addToGallery(result);
+            if (results.length > 0) {
                 if (s.autoInsert) {
                     const insertMode = s.injectInsertMode || "replace";
                     if (insertMode === "inline" || insertMode === "replace") {
-                        try { await insertImageIntoMessage(result); } catch (err) {
-                            log(`Inject: Auto-insert failed: ${err.message}`);
-                            displayImage(result);
+                        for (const r of results) {
+                            addToGallery(r);
+                            try { await insertImageIntoMessage(r); } catch (err) {
+                                log(`Inject: Auto-insert failed: ${err.message}`);
+                                displayImage(r);
+                            }
                         }
+                    } else if (results.length === 1) {
+                        displayImage(results[0]);
                     } else {
-                        displayImage(result);
+                        displayBatchResults(results);
                     }
+                } else if (results.length === 1) {
+                    displayImage(results[0]);
                 } else {
-                    displayImage(result);
+                    displayBatchResults(results);
                 }
-                toastr.success("Inject mode: Image generated");
+                toastr.success(`Inject mode: ${results.length} image(s) generated`);
             }
         } catch (e) {
             log(`Inject: Generation error: ${e.message}`);
