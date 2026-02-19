@@ -128,6 +128,14 @@ const defaultSettings = {
     injectDepth: 0,
     injectInsertMode: "replace",
     injectAutoClean: true,
+    // LLM Override (separate AI for image prompts)
+    llmOverrideEnabled: false,
+    llmOverrideUrl: "",
+    llmOverrideKey: "",
+    llmOverrideModel: "",
+    llmOverrideTemp: 0.7,
+    llmOverrideMaxTokens: 500,
+    llmOverrideSystemPrompt: "",
 };
 
 let lastPrompt = "";
@@ -574,6 +582,7 @@ function applyContextualFilters(prompt, negative, sceneText) {
     const matched = [];
     for (const f of contextualFilters) {
         if (!f.enabled) continue;
+        if (f.matchMode === "LLM") continue;
         const keywords = f.keywords.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
         if (!keywords.length) continue;
         const hit = f.matchMode === "AND"
@@ -601,8 +610,79 @@ function applyContextualFilters(prompt, negative, sceneText) {
     return { prompt: p, negative: n };
 }
 
+async function matchLLMFilters(sceneText) {
+    const llmFilters = contextualFilters.filter(f => f.enabled && f.matchMode === "LLM" && f.description);
+    if (!llmFilters.length || !sceneText) return [];
+
+    const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name}": ${f.description}`).join('\n');
+
+    const instruction = `Given the following scene, identify which concepts are present.
+Reply ONLY with the numbers of matching concepts, comma-separated. If none match, reply "none".
+
+Scene:
+${sceneText.substring(0, 2000)}
+
+Concepts:
+${conceptList}`;
+
+    const s = getSettings();
+    let response;
+    try {
+        if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+            response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.");
+        } else {
+            const quietOptions = { skipWIAN: true, quietName: `FilterMatch_${Date.now()}`, quietToLoud: false };
+            try {
+                response = await generateQuietPrompt(instruction, quietOptions);
+            } catch {
+                response = await generateQuietPrompt(instruction);
+            }
+        }
+    } catch (e) {
+        log(`LLM filter matching failed: ${e.message}`);
+        return [];
+    }
+
+    const nums = (response || "").match(/\d+/g)?.map(Number) || [];
+    const matched = llmFilters.filter((_, i) => nums.includes(i + 1));
+    log(`LLM filter matching: ${matched.length}/${llmFilters.length} concepts matched`);
+    return matched;
+}
 
 const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
+
+async function callOverrideLLM(instruction, systemPrompt = "") {
+    const s = getSettings();
+    const baseUrl = s.llmOverrideUrl.replace(/\/+$/, '');
+    const url = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+
+    const messages = [];
+    const sys = systemPrompt || s.llmOverrideSystemPrompt;
+    if (sys) messages.push({ role: "system", content: sys });
+    messages.push({ role: "user", content: instruction });
+
+    const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${s.llmOverrideKey}`
+        },
+        body: JSON.stringify({
+            model: s.llmOverrideModel,
+            messages,
+            temperature: s.llmOverrideTemp || 0.7,
+            max_tokens: s.llmOverrideMaxTokens || 500
+        })
+    });
+
+    if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(`LLM Override ${response.status}: ${errText.substring(0, 200)}`);
+    }
+
+    const data = await response.json();
+    return data.choices?.[0]?.message?.content || "";
+}
 
 async function generateLLMPrompt(s, basePrompt) {
     if (!s.useLLMPrompt) return basePrompt;
@@ -794,20 +874,22 @@ Tags:`;
         // Use generateQuietPrompt with options to bypass caching
         // skipWIAN: true - skip World Info and Author's Note (can cause cache hits)
         // quietName: unique name per request to prevent prompt caching
-        const quietOptions = {
-            skipWIAN: true,
-            quietName: `ImageGen_${timestamp}`,
-            quietToLoud: false
-        };
-
         let llmPrompt;
-        try {
-            // Try calling with options first (newer SillyTavern versions)
-            llmPrompt = await generateQuietPrompt(instructionWithEntropy, quietOptions);
-        } catch (e) {
-            // Fallback to simple call for older versions
-            log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
-            llmPrompt = await generateQuietPrompt(instructionWithEntropy);
+        if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+            log("Using LLM Override for prompt generation");
+            llmPrompt = await callOverrideLLM(instructionWithEntropy);
+        } else {
+            const quietOptions = {
+                skipWIAN: true,
+                quietName: `ImageGen_${timestamp}`,
+                quietToLoud: false
+            };
+            try {
+                llmPrompt = await generateQuietPrompt(instructionWithEntropy, quietOptions);
+            } catch (e) {
+                log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
+                llmPrompt = await generateQuietPrompt(instructionWithEntropy);
+            }
         }
 
         log(`LLM raw response: ${llmPrompt}`);
@@ -2609,19 +2691,27 @@ function saveContextualFilters() {
 
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0 };
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0, description: "" };
+    const isLLM = f.matchMode === "LLM";
     return new Promise((resolve) => {
         const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
             <div style="padding:12px;">
                 <label style="font-size:11px;">Name</label>
                 <input id="qig-fd-name" type="text" value="${f.name}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
-                <label style="font-size:11px;">Keywords (comma-separated)</label>
-                <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${f.keywords}</textarea>
                 <label style="font-size:11px;">Match Mode</label>
                 <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
                     <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
                     <option value="AND" ${f.matchMode === "AND" ? "selected" : ""}>AND — all keywords required</option>
+                    <option value="LLM" ${f.matchMode === "LLM" ? "selected" : ""}>LLM — AI concept recognition</option>
                 </select>
+                <div id="qig-fd-keywords-wrap" style="display:${isLLM ? 'none' : ''};">
+                    <label style="font-size:11px;">Keywords (comma-separated)</label>
+                    <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${f.keywords || ""}</textarea>
+                </div>
+                <div id="qig-fd-desc-wrap" style="display:${isLLM ? '' : 'none'};">
+                    <label style="font-size:11px;">Concept Description (what the LLM should look for)</label>
+                    <textarea id="qig-fd-description" style="width:100%;height:60px;resize:vertical;" placeholder="Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes">${f.description || ""}</textarea>
+                </div>
                 <label style="font-size:11px;">Positive Prompt</label>
                 <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${f.positive}</textarea>
                 <label style="font-size:11px;">Negative Prompt</label>
@@ -2634,16 +2724,27 @@ function showFilterDialog(filter) {
                 </div>
             </div>`, (popup) => {
             document.getElementById("qig-fd-name").focus();
+            document.getElementById("qig-fd-mode").onchange = (e) => {
+                const llm = e.target.value === "LLM";
+                document.getElementById("qig-fd-keywords-wrap").style.display = llm ? "none" : "";
+                document.getElementById("qig-fd-desc-wrap").style.display = llm ? "" : "none";
+            };
             const close = () => { popup.style.display = "none"; resolve(null); };
             document.getElementById("qig-fd-cancel").onclick = close;
             document.getElementById("qig-fd-save").onclick = () => {
                 const name = document.getElementById("qig-fd-name").value.trim();
+                const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
-                if (!name || !keywords) { alert("Name and keywords are required."); return; }
+                const description = document.getElementById("qig-fd-description").value.trim();
+                if (!name) { alert("Name is required."); return; }
+                if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
+                if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
                 popup.style.display = "none";
                 resolve({
-                    name, keywords,
-                    matchMode: document.getElementById("qig-fd-mode").value,
+                    name,
+                    keywords: mode === "LLM" ? "" : keywords,
+                    matchMode: mode,
+                    description: mode === "LLM" ? description : "",
                     positive: document.getElementById("qig-fd-positive").value.trim(),
                     negative: document.getElementById("qig-fd-negative").value.trim(),
                     priority: parseInt(document.getElementById("qig-fd-priority").value) || 0
@@ -2705,8 +2806,8 @@ function renderContextualFilters() {
     const html = contextualFilters.map(f =>
         `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${f.id}')" title="Enable/disable">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${f.id}')" title="${f.matchMode}: ${f.keywords}\nPriority: ${f.priority}">${f.name}</button>` +
-        `<span style="opacity:0.6;font-size:9px;">${f.matchMode} p${f.priority}</span>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${f.id}')" title="${f.matchMode}: ${f.matchMode === 'LLM' ? (f.description || '') : f.keywords}\nPriority: ${f.priority}">${f.name}</button>` +
+        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : f.matchMode} p${f.priority}</span>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${f.id}')">×</button>` +
         `</div>`
     ).join("");
@@ -3558,6 +3659,33 @@ function createUI() {
                     </select>
                 </div>
 
+                <div style="margin:6px 0;padding:8px;border:1px solid #555;border-radius:4px;">
+                    <label class="checkbox_label">
+                        <input id="qig-llm-override" type="checkbox" ${s.llmOverrideEnabled ? "checked" : ""}>
+                        <span>Use separate AI for image prompts</span>
+                    </label>
+                    <div id="qig-llm-override-options" style="display:${s.llmOverrideEnabled ? 'block' : 'none'};margin-top:6px;">
+                        <label style="font-size:11px;">API Base URL (OpenAI-compatible)</label>
+                        <input id="qig-llm-override-url" type="text" value="${s.llmOverrideUrl}" placeholder="https://openrouter.ai/api/v1" style="width:100%;">
+                        <label style="font-size:11px;">API Key</label>
+                        <input id="qig-llm-override-key" type="password" value="${s.llmOverrideKey}" placeholder="sk-..." style="width:100%;">
+                        <label style="font-size:11px;">Model</label>
+                        <input id="qig-llm-override-model" type="text" value="${s.llmOverrideModel}" placeholder="google/gemini-2.0-flash-001" style="width:100%;">
+                        <div style="display:flex;gap:8px;">
+                            <div style="flex:1;">
+                                <label style="font-size:11px;">Temperature</label>
+                                <input id="qig-llm-override-temp" type="number" value="${s.llmOverrideTemp || 0.7}" min="0" max="2" step="0.1" style="width:100%;">
+                            </div>
+                            <div style="flex:1;">
+                                <label style="font-size:11px;">Max Tokens</label>
+                                <input id="qig-llm-override-max" type="number" value="${s.llmOverrideMaxTokens || 500}" min="50" max="4096" style="width:100%;">
+                            </div>
+                        </div>
+                        <label style="font-size:11px;">System Prompt (optional)</label>
+                        <textarea id="qig-llm-override-sys" style="width:100%;height:40px;resize:vertical;" placeholder="You are an image prompt generator...">${s.llmOverrideSystemPrompt || ""}</textarea>
+                    </div>
+                </div>
+
                 <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
@@ -3975,6 +4103,18 @@ function createUI() {
         });
     });
     bind("qig-palette-mode", "paletteMode");
+    // LLM Override bindings
+    document.getElementById("qig-llm-override").onchange = (e) => {
+        getSettings().llmOverrideEnabled = e.target.checked;
+        document.getElementById("qig-llm-override-options").style.display = e.target.checked ? "block" : "none";
+        saveSettingsDebounced();
+    };
+    bind("qig-llm-override-url", "llmOverrideUrl");
+    bind("qig-llm-override-key", "llmOverrideKey");
+    bind("qig-llm-override-model", "llmOverrideModel");
+    bind("qig-llm-override-temp", "llmOverrideTemp", true);
+    bind("qig-llm-override-max", "llmOverrideMaxTokens", true);
+    bind("qig-llm-override-sys", "llmOverrideSystemPrompt");
     document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
@@ -4089,18 +4229,22 @@ async function generateImageInjectPalette() {
             const timestamp = Date.now();
             const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate <pic> tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
 
-            const quietOptions = {
-                skipWIAN: true,
-                quietName: `ImageGenInject_${timestamp}`,
-                quietToLoud: false
-            };
-
             let llmResponse;
-            try {
-                llmResponse = await generateQuietPrompt(fullInstruction, quietOptions);
-            } catch (e) {
-                log(`Palette inject: generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                llmResponse = await generateQuietPrompt(fullInstruction);
+            if (s.llmOverrideEnabled && s.llmOverrideUrl && s.llmOverrideModel) {
+                log("Using LLM Override for inject palette");
+                llmResponse = await callOverrideLLM(fullInstruction);
+            } else {
+                const quietOptions = {
+                    skipWIAN: true,
+                    quietName: `ImageGenInject_${timestamp}`,
+                    quietToLoud: false
+                };
+                try {
+                    llmResponse = await generateQuietPrompt(fullInstruction, quietOptions);
+                } catch (e) {
+                    log(`Palette inject: generateQuietPrompt with options failed: ${e.message}, using simple call`);
+                    llmResponse = await generateQuietPrompt(fullInstruction);
+                }
             }
 
             log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
@@ -4150,6 +4294,13 @@ async function generateImageInjectPalette() {
             const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
             prompt = filtered.prompt;
             negative = filtered.negative;
+
+            // Apply LLM-matched concept filters
+            const llmMatched = await matchLLMFilters(extractedPrompt);
+            for (const f of llmMatched) {
+                if (f.positive) prompt = `${prompt}, ${f.positive}`;
+                if (f.negative) negative = `${negative}, ${f.negative}`;
+            }
 
             lastPrompt = prompt;
             lastNegative = negative;
@@ -4281,6 +4432,13 @@ async function generateImage() {
     const filtered = applyContextualFilters(prompt, negative, sceneForFilters);
     prompt = filtered.prompt;
     negative = filtered.negative;
+
+    // Apply LLM-matched concept filters
+    const llmMatched = await matchLLMFilters(sceneForFilters);
+    for (const f of llmMatched) {
+        if (f.positive) prompt = `${prompt}, ${f.positive}`;
+        if (f.negative) negative = `${negative}, ${f.negative}`;
+    }
 
     lastPrompt = prompt;
     lastNegative = negative;
@@ -4480,6 +4638,13 @@ async function processInjectMessage(messageText, messageIndex) {
             const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
             prompt = filtered.prompt;
             negative = filtered.negative;
+
+            // Apply LLM-matched concept filters
+            const llmMatched = await matchLLMFilters(extractedPrompt);
+            for (const f of llmMatched) {
+                if (f.positive) prompt = `${prompt}, ${f.positive}`;
+                if (f.negative) negative = `${negative}, ${f.negative}`;
+            }
 
             lastPrompt = prompt;
             lastNegative = negative;
