@@ -2610,18 +2610,40 @@ async function regenerateImage() {
     }
     isGenerating = true;
     const s = getSettings();
+    const batchCount = s.batchCount || 1;
+    const originalSeed = s.seed;
     s.seed = -1;
-    showStatus("🔄 Regenerating...");
-    log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}...`);
+    log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
-        const result = await generateForProvider(lastPrompt, lastNegative, s);
-        hideStatus();
-        if (result) displayImage(result);
+        if (batchCount <= 1) {
+            showStatus("🔄 Regenerating...");
+            const result = await generateForProvider(lastPrompt, lastNegative, s);
+            hideStatus();
+            if (result) displayImage(result);
+        } else {
+            const results = [];
+            let baseSeed = Math.floor(Math.random() * 2147483647);
+            for (let i = 0; i < batchCount; i++) {
+                if (s.sequentialSeeds) s.seed = baseSeed + i;
+                showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
+                const expandedPrompt = expandWildcards(lastPrompt);
+                const expandedNegative = expandWildcards(lastNegative);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                if (result) results.push(result);
+            }
+            hideStatus();
+            if (results.length > 1) {
+                displayBatchResults(results);
+            } else if (results.length === 1) {
+                displayImage(results[0]);
+            }
+        }
     } catch (e) {
         showStatus(`❌ ${e.message}`);
         log(`Regenerate error: ${e.message}`);
         setTimeout(hideStatus, 3000);
     } finally {
+        s.seed = originalSeed;
         isGenerating = false;
     }
 }
