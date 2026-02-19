@@ -3480,12 +3480,39 @@ function createUI() {
                 </label>
 
                 <hr style="margin:8px 0;opacity:0.2;">
-                <div class="inline-drawer" style="margin:4px 0;">
-                    <div class="inline-drawer-toggle inline-drawer-header">
-                        <b style="font-size:12px;">Inject Mode (AI-driven)</b>
-                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                <style>
+                .qig-mode-tab.active { background: var(--SmartThemeQuoteColor, #4a6); color: #fff; opacity: 1; }
+                .qig-mode-tab:not(.active) { opacity: 0.6; }
+                </style>
+                <div style="margin:4px 0;">
+                    <div id="qig-mode-tabs" style="display:flex;gap:0;margin-bottom:8px;">
+                        <button class="qig-mode-tab menu_button" data-tab="direct"
+                            style="flex:1;border-radius:4px 0 0 4px;padding:4px 8px;font-size:12px;">
+                            Direct Mode</button>
+                        <button class="qig-mode-tab menu_button" data-tab="inject"
+                            style="flex:1;border-radius:0 4px 4px 0;padding:4px 8px;font-size:12px;">
+                            Inject Mode</button>
                     </div>
-                    <div class="inline-drawer-content">
+
+                    <!-- Direct tab -->
+                    <div id="qig-tab-direct" class="qig-tab-panel">
+                        <small style="opacity:0.7;">Generate images on demand or automatically after AI messages</small>
+                        <label class="checkbox_label" style="margin-top:6px;">
+                            <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
+                            <span>Auto-generate after AI response</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
+                            <span>Confirm before generating</span>
+                        </label>
+                        <label class="checkbox_label">
+                            <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
+                            <span>Hide palette button</span>
+                        </label>
+                    </div>
+
+                    <!-- Inject tab -->
+                    <div id="qig-tab-inject" class="qig-tab-panel" style="display:none;">
                         <small style="opacity:0.7;">Let the RP AI describe scenes with &lt;pic&gt; tags, then auto-generate images from them</small>
                         <label class="checkbox_label" style="margin-top:6px;">
                             <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
@@ -3523,20 +3550,8 @@ function createUI() {
                 </div>
 
                 <label class="checkbox_label">
-                    <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
-                    <span>Auto-generate after AI response</span>
-                </label>
-                <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
-                    <span>Hide palette button</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
-                    <span>Confirm before generating</span>
                 </label>
 
                 <label>Size</label>
@@ -3941,6 +3956,16 @@ function createUI() {
     bind("qig-inject-depth", "injectDepth", true);
     bind("qig-inject-insert-mode", "injectInsertMode");
     bindCheckbox("qig-inject-autoclean", "injectAutoClean");
+    // Mode tab switching
+    document.querySelectorAll(".qig-mode-tab").forEach(tab => {
+        tab.addEventListener("click", () => {
+            document.querySelectorAll(".qig-mode-tab").forEach(t => t.classList.remove("active"));
+            document.querySelectorAll(".qig-tab-panel").forEach(p => p.style.display = "none");
+            tab.classList.add("active");
+            document.getElementById("qig-tab-" + tab.dataset.tab).style.display = "block";
+        });
+    });
+    document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
     document.getElementById("qig-aspect").onchange = (e) => {
