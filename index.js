@@ -36,6 +36,7 @@ const defaultSettings = {
     autoGenerate: false,
     autoInsert: false,
     disablePaletteButton: false,
+    paletteMode: "direct",
     confirmBeforeGenerate: false,
     enableParagraphPicker: false,
     batchCount: 1,
@@ -3549,6 +3550,14 @@ function createUI() {
                     </div>
                 </div>
 
+                <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+                    <label style="font-size:12px;white-space:nowrap;">Palette button mode</label>
+                    <select id="qig-palette-mode" style="flex:1;">
+                        <option value="direct" ${s.paletteMode === "inject" ? "" : "selected"}>Direct (manual prompt)</option>
+                        <option value="inject" ${s.paletteMode === "inject" ? "selected" : ""}>Inject (extract/generate &lt;pic&gt; tags)</option>
+                    </select>
+                </div>
+
                 <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
@@ -3965,6 +3974,7 @@ function createUI() {
             document.getElementById("qig-tab-" + tab.dataset.tab).style.display = "block";
         });
     });
+    bind("qig-palette-mode", "paletteMode");
     document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
     bind("qig-width", "width", true);
     bind("qig-height", "height", true);
@@ -4017,12 +4027,180 @@ function addInputButton() {
     btn.className = "fa-solid fa-palette interactable";
     btn.title = "Generate Image";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
-    btn.onclick = generateImage;
+    btn.onclick = () => {
+        const mode = getSettings().paletteMode || "direct";
+        if (mode === "inject") generateImageInjectPalette();
+        else generateImage();
+    };
 
     // Add to left side area (away from send button)
     const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
     if (leftArea) {
         leftArea.appendChild(btn);
+    }
+}
+
+async function generateImageInjectPalette() {
+    if (isGenerating) return;
+    isGenerating = true;
+    const s = getSettings();
+
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    if (paletteBtn) {
+        paletteBtn.classList.remove("fa-palette");
+        paletteBtn.classList.add("fa-spinner", "fa-spin");
+    }
+
+    try {
+        // Build regex from settings (same as processInjectMessage)
+        const regexPattern = s.injectRegex || '<pic\\s+prompt="([^"]+)"\\s*/?>';
+        let regex;
+        try {
+            regex = new RegExp(regexPattern, "gi");
+        } catch (e) {
+            log(`Palette inject: Invalid regex: ${e.message}`);
+            toastr.error("Invalid inject regex: " + e.message);
+            return;
+        }
+
+        // Step 1: Scan last AI message for <pic> tags
+        let matches = [];
+        const ctx = getContext();
+        const chat = ctx.chat;
+        if (chat && chat.length > 0) {
+            for (let i = chat.length - 1; i >= 0; i--) {
+                if (!chat[i].is_user && chat[i].mes) {
+                    let match;
+                    while ((match = regex.exec(chat[i].mes)) !== null) {
+                        if (match[1]) matches.push(match[1]);
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Step 2: LLM fallback if no tags found
+        if (matches.length === 0) {
+            log("Palette inject: No <pic> tags found, calling LLM...");
+            showStatus("🔍 No <pic> tags found — asking LLM to generate them...");
+
+            const sceneContext = getMessages() || "the current scene";
+            const injectInstruction = resolvePrompt(s.injectPrompt || 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">');
+            const timestamp = Date.now();
+            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate <pic> tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
+
+            const quietOptions = {
+                skipWIAN: true,
+                quietName: `ImageGenInject_${timestamp}`,
+                quietToLoud: false
+            };
+
+            let llmResponse;
+            try {
+                llmResponse = await generateQuietPrompt(fullInstruction, quietOptions);
+            } catch (e) {
+                log(`Palette inject: generateQuietPrompt with options failed: ${e.message}, using simple call`);
+                llmResponse = await generateQuietPrompt(fullInstruction);
+            }
+
+            log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
+
+            if (llmResponse) {
+                regex.lastIndex = 0;
+                let match;
+                while ((match = regex.exec(llmResponse)) !== null) {
+                    if (match[1]) matches.push(match[1]);
+                }
+            }
+
+            if (matches.length === 0) {
+                toastr.warning("No <pic> tags found in AI message or LLM response");
+                log("Palette inject: No <pic> tags extracted after LLM fallback");
+                return;
+            }
+        }
+
+        log(`Palette inject: Found ${matches.length} <pic> tag(s), generating images...`);
+
+        // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
+        for (const extractedPrompt of matches) {
+            showStatus(`🖼️ Generating palette-inject image...`);
+
+            let prompt = extractedPrompt;
+            let negative = resolvePrompt(s.negativePrompt);
+
+            // Apply style
+            prompt = applyStyle(prompt, s);
+
+            // Apply quality tags
+            if (s.appendQuality && s.qualityTags) {
+                prompt = `${s.qualityTags}, ${prompt}`;
+            }
+
+            // Apply ST Style
+            if (s.useSTStyle !== false) {
+                const stStyle = getSTStyleSettings();
+                if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+            }
+
+            // Apply contextual filters
+            const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
+            prompt = filtered.prompt;
+            negative = filtered.negative;
+
+            lastPrompt = prompt;
+            lastNegative = negative;
+            lastPromptWasLLM = false;
+
+            const batchCount = s.batchCount || 1;
+            const results = [];
+            const originalSeed = s.seed;
+            let baseSeed = originalSeed;
+            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+                baseSeed = Math.floor(Math.random() * 2147483647);
+            }
+            for (let i = 0; i < batchCount; i++) {
+                if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+                showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
+                const expandedPrompt = expandWildcards(prompt);
+                const expandedNegative = expandWildcards(negative);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                if (result) results.push(result);
+            }
+            s.seed = originalSeed;
+
+            if (results.length > 0) {
+                if (s.autoInsert) {
+                    for (const r of results) {
+                        addToGallery(r);
+                        try { await insertImageIntoMessage(r); } catch (err) {
+                            log(`Palette inject: Auto-insert failed: ${err.message}`);
+                            displayImage(r);
+                        }
+                    }
+                } else if (results.length === 1) {
+                    displayImage(results[0]);
+                } else {
+                    displayBatchResults(results);
+                }
+                toastr.success(`Palette inject: ${results.length} image(s) generated`);
+            }
+        }
+    } catch (e) {
+        log(`Palette inject: Error: ${e.message}`);
+        toastr.error("Palette inject failed: " + e.message);
+    } finally {
+        isGenerating = false;
+        showStatus(null);
+        if (paletteBtn) {
+            paletteBtn.classList.remove("fa-spinner", "fa-spin");
+            paletteBtn.classList.add("fa-palette");
+        }
+        clearStyleCache();
+        log("Palette inject: Cleared caches after generation");
     }
 }
 
