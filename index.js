@@ -4668,24 +4668,18 @@ async function processInjectMessage(messageText, messageIndex) {
             s.seed = originalSeed;
 
             if (results.length > 0) {
-                if (s.autoInsert) {
-                    const insertMode = s.injectInsertMode || "replace";
-                    if (insertMode === "inline" || insertMode === "replace") {
-                        for (const r of results) {
-                            addToGallery(r);
-                            try { await insertImageIntoMessage(r); } catch (err) {
-                                log(`Inject: Auto-insert failed: ${err.message}`);
-                                displayImage(r);
-                            }
+                if (results.length === 1) {
+                    if (s.autoInsert) {
+                        addToGallery(results[0]);
+                        try { await insertImageIntoMessage(results[0]); } catch (err) {
+                            log(`Inject: Auto-insert failed: ${err.message}`);
+                            displayImage(results[0]);
                         }
-                    } else if (results.length === 1) {
-                        displayImage(results[0]);
                     } else {
-                        displayBatchResults(results);
+                        displayImage(results[0]);
                     }
-                } else if (results.length === 1) {
-                    displayImage(results[0]);
                 } else {
+                    // Always show batch picker for multiple images
                     displayBatchResults(results);
                 }
                 toastr.success(`Inject mode: ${results.length} image(s) generated`);
