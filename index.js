@@ -2087,8 +2087,8 @@ function savePromptHistory() {
     localStorage.setItem("qig_prompt_history", JSON.stringify(promptHistory));
 }
 
-function displayImage(url) {
-    addToGallery(url);
+function displayImage(url, skipGallery) {
+    if (!skipGallery) addToGallery(url);
 
     const popup = createPopup("qig-popup", "Generated Image", `
         <img id="qig-result-img" src="">
@@ -2380,14 +2380,26 @@ function showGallery() {
             }
         };
         const grid = document.getElementById("qig-gallery-grid");
-        grid.innerHTML = sessionGallery.length ? sessionGallery.map(item => {
+        grid.innerHTML = sessionGallery.length ? sessionGallery.map((item, index) => {
             const imgSrc = item.thumbnail || item.url;
             const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
-            return `<div style="position:relative;cursor:pointer;" onclick="event.stopPropagation();document.getElementById('qig-gallery-popup').style.display='none';">` +
+            return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
                 `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
                 (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${snippet}</div>` : '') +
                 `</div>`;
         }).join('') : '<p style="color:#888;">No images yet</p>';
+        grid.querySelectorAll("[data-gallery-index]").forEach(el => {
+            el.onclick = (e) => {
+                e.stopPropagation();
+                const item = sessionGallery[parseInt(el.dataset.galleryIndex)];
+                if (!item) return;
+                lastPrompt = item.prompt || "";
+                lastNegative = item.negative || "";
+                lastPromptWasLLM = false;
+                gallery.style.display = "none";
+                displayImage(item.url, true);
+            };
+        });
     });
 }
 
