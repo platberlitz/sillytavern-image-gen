@@ -141,8 +141,13 @@ let lastPromptWasLLM = false;
 let originalPrompt = "";
 let originalNegative = "";
 function safeParse(key, fallback) {
-    try { return JSON.parse(localStorage.getItem(key)) || fallback; }
-    catch { return fallback; }
+    try {
+        const val = JSON.parse(localStorage.getItem(key));
+        return val != null ? val : fallback;
+    } catch { return fallback; }
+}
+function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 let sessionGallery = safeParse("qig_gallery", []);
 let promptHistory = safeParse("qig_prompt_history", []);
@@ -964,7 +969,7 @@ Tags:`;
 
             // Force a minimal, literal instruction as fallback
             log("Attempting literal fallback instruction...");
-            cleaned = await generateLiteralFallback(instruction);
+            cleaned = await generateLiteralFallback(basePrompt);
         }
 
         return cleaned || basePrompt;
@@ -1239,12 +1244,12 @@ async function decompressDeflate(compressedData) {
             return result;
         }
 
-        console.log("No decompression method available, returning compressed data");
-        return compressedData;
+        console.log("No decompression method available, returning null");
+        return null;
 
     } catch (e) {
         console.error("Decompression failed:", e);
-        return compressedData;
+        return null;
     }
 }
 
@@ -1426,7 +1431,7 @@ async function genNanobanana(prompt, negative, s) {
     for (const candidate of data.candidates || []) {
         for (const part of candidate.content?.parts || []) {
             if (part.inlineData?.data) {
-                return `data:image/png;base64,${part.inlineData.data}`;
+                return `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`;
             }
         }
     }
@@ -1968,8 +1973,8 @@ function showPromptHistory() {
                     <span style="color:#e94560;font-size:12px;">#${promptHistory.length - i} - ${entry.time}</span>
                     <button onclick="navigator.clipboard.writeText(this.closest('div').querySelector('pre').textContent)" style="background:#333;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Copy</button>
                 </div>
-                <pre style="white-space:pre-wrap;word-break:break-word;color:#ddd;margin:0;font-size:13px;">${entry.prompt}</pre>
-                ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${entry.negative}</pre>` : ''}
+                <pre style="white-space:pre-wrap;word-break:break-word;color:#ddd;margin:0;font-size:13px;">${escapeHtml(entry.prompt)}</pre>
+                ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${escapeHtml(entry.negative)}</pre>` : ''}
             </div>
         `).join('');
         document.getElementById("qig-clear-history").onclick = () => {
@@ -2053,12 +2058,16 @@ function createThumbnail(url, maxSize = 150) {
         const img = new Image();
         img.crossOrigin = "anonymous";
         img.onload = () => {
-            const canvas = document.createElement("canvas");
-            const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
-            canvas.width = img.width * scale;
-            canvas.height = img.height * scale;
-            canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-            resolve(canvas.toDataURL("image/jpeg", 0.7));
+            try {
+                const canvas = document.createElement("canvas");
+                const scale = Math.min(maxSize / img.width, maxSize / img.height, 1);
+                canvas.width = img.width * scale;
+                canvas.height = img.height * scale;
+                canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+                resolve(canvas.toDataURL("image/jpeg", 0.7));
+            } catch {
+                resolve(null);
+            }
         };
         img.onerror = () => resolve(null);
         img.src = url;
@@ -2302,6 +2311,11 @@ function displayBatchResults(results) {
             if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
         };
         document.addEventListener("keydown", keyHandler);
+        const origOnClick = popup.onclick;
+        popup.onclick = (e) => {
+            document.removeEventListener("keydown", keyHandler);
+            if (origOnClick) origOnClick(e);
+        };
 
         document.getElementById("qig-batch-download").onclick = async (e) => {
             e.stopPropagation();
@@ -2412,13 +2426,14 @@ function showPromptEditDialog(prompt) {
                     <h3 style="margin:0;color:#e94560;">Edit Generated Prompt</h3>
                     <button id="qig-prompt-edit-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
                 </div>
-                <textarea id="qig-prompt-edit-text" style="width:100%;height:200px;resize:vertical;background:#0f1419;color:#fff;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;" placeholder="Edit the generated prompt...">${prompt}</textarea>
+                <textarea id="qig-prompt-edit-text" style="width:100%;height:200px;resize:vertical;background:#0f1419;color:#fff;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;" placeholder="Edit the generated prompt..."></textarea>
                 <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
                     <button id="qig-prompt-edit-cancel" class="menu_button">Cancel</button>
                     <button id="qig-prompt-edit-use" class="menu_button">Use Prompt</button>
                 </div>
             </div>`, (popup) => {
             const textarea = document.getElementById("qig-prompt-edit-text");
+            textarea.value = prompt;
             const closeBtn = document.getElementById("qig-prompt-edit-close");
             const cancelBtn = document.getElementById("qig-prompt-edit-cancel");
             const useBtn = document.getElementById("qig-prompt-edit-use");
@@ -2907,12 +2922,12 @@ function getCurrentRefImages(s) {
 
 function getCurrentCharId() {
     const ctx = getContext();
-    return ctx?.characterId || ctx?.characters?.[ctx?.characterId]?.avatar || null;
+    return ctx?.characterId ?? ctx?.characters?.[ctx?.characterId]?.avatar ?? null;
 }
 
 function saveCharSettings() {
     const charId = getCurrentCharId();
-    if (!charId) return;
+    if (charId == null) return;
     const s = getSettings();
     charSettings[charId] = {
         prompt: s.prompt,
@@ -2935,7 +2950,8 @@ function saveCharSettings() {
 
 function loadCharSettings() {
     const charId = getCurrentCharId();
-    if (!charId) return false;
+    if (charId == null) return false;
+    if (!document.getElementById("qig-prompt")) return false;
     const hasSettings = !!charSettings[charId];
     const hasRefs = !!(charRefImages[charId] && charRefImages[charId].length > 0);
     if (!hasSettings && !hasRefs) return false;
@@ -3278,6 +3294,7 @@ function buildOptions(items, selectedValue, labelFn) {
 }
 
 function createUI() {
+    clearCache();
     const s = getSettings();
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
     const providerOpts = buildOptions(Object.entries(PROVIDERS), s.provider, v => v.name);
@@ -3847,7 +3864,6 @@ function createUI() {
     bind("qig-together-key", "togetherKey");
     bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
-    bind("qig-local-type", "localType");
     bind("qig-local-model", "localModel");
     document.getElementById("qig-local-type").onchange = (e) => {
         getSettings().localType = e.target.value;
@@ -3910,7 +3926,7 @@ function createUI() {
     document.getElementById("qig-a1111-ipadapter-weight").oninput = (e) => {
         document.getElementById("qig-a1111-ipadapter-weight-val").textContent = e.target.value;
     };
-    bind("qig-a1111-ipadapter-pixel", "a1111IpAdapterPixelPerfect");
+    bindCheckbox("qig-a1111-ipadapter-pixel", "a1111IpAdapterPixelPerfect");
     bind("qig-a1111-ipadapter-resize", "a1111IpAdapterResizeMode");
     bind("qig-a1111-ipadapter-control", "a1111IpAdapterControlMode");
     bind("qig-a1111-ipadapter-start", "a1111IpAdapterStartStep", true);
@@ -4111,7 +4127,6 @@ function createUI() {
         document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced();
     };
-    bind("qig-llm-style", "llmPromptStyle");
     bind("qig-llm-custom", "llmCustomInstruction");
     bindCheckbox("qig-llm-edit", "llmEditPrompt");
     bindCheckbox("qig-llm-quality", "llmAddQuality");
@@ -4142,7 +4157,6 @@ function createUI() {
     };
     bindCheckbox("qig-use-st-style", "useSTStyle");
     // Inject mode bindings
-    bindCheckbox("qig-inject-enabled", "injectEnabled");
     document.getElementById("qig-inject-enabled").onchange = (e) => {
         getSettings().injectEnabled = e.target.checked;
         document.getElementById("qig-inject-options").style.display = e.target.checked ? "block" : "none";
@@ -4541,9 +4555,8 @@ async function generateImage() {
             const expandedPrompt = expandWildcards(prompt);
             const expandedNegative = expandWildcards(negative);
             const result = await generateForProvider(expandedPrompt, expandedNegative, s);
-            results.push(result);
+            if (result) results.push(result);
         }
-        s.seed = originalSeed;
         log(`Generated ${results.length} image(s) successfully`);
         if (s.autoInsert) {
             for (const r of results) {
@@ -4562,6 +4575,7 @@ async function generateImage() {
         log(`Error: ${e.message}`);
         toastr.error("Generation failed: " + e.message);
     } finally {
+        s.seed = originalSeed;
         isGenerating = false;
         showStatus(null);
         if (btn) {
@@ -4674,9 +4688,12 @@ async function processInjectMessage(messageText, messageIndex) {
     for (const extractedPrompt of matches) {
         if (isGenerating) {
             log("Inject: Waiting for current generation to finish...");
-            await new Promise(resolve => {
+            await new Promise((resolve, reject) => {
+                let elapsed = 0;
                 const check = setInterval(() => {
+                    elapsed += 500;
                     if (!isGenerating) { clearInterval(check); resolve(); }
+                    else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
                 }, 500);
             });
         }
