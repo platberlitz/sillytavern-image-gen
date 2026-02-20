@@ -712,8 +712,9 @@ async function populatePresetList(selectId, selectedPreset) {
     select.innerHTML = '<option value="">-- Default (from profile) --</option>';
     try {
         const ctx = getContext();
-        const result = await ctx.executeSlashCommandsWithOptions('/preset-list');
-        const presets = result?.pipe ? JSON.parse(result.pipe) : [];
+        const presetManager = ctx.getPresetManager?.();
+        if (!presetManager) return;
+        const presets = presetManager.getAllPresets?.() || [];
         for (const name of presets) {
             const opt = document.createElement("option");
             opt.value = name;
