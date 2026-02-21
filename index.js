@@ -4568,14 +4568,15 @@ async function generateImage() {
         if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
     }
 
-    // Apply contextual filters based on scene text
-    const sceneForFilters = scenePrompt || basePrompt;
-    const filtered = applyContextualFilters(prompt, negative, sceneForFilters);
+    // Apply contextual filters — match keywords against the built prompt
+    // (includes character identity from LLM generation and ST Style)
+    const filtered = applyContextualFilters(prompt, negative, prompt);
     prompt = filtered.prompt;
     negative = filtered.negative;
 
-    // Apply LLM-matched concept filters
-    const llmMatched = await matchLLMFilters(sceneForFilters);
+    // Apply LLM-matched concept filters — use raw scene text for natural language analysis
+    const llmSceneText = scenePrompt || basePrompt;
+    const llmMatched = await matchLLMFilters(llmSceneText);
     for (const f of llmMatched) {
         if (f.positive) prompt = `${prompt}, ${f.positive}`;
         if (f.negative) negative = `${negative}, ${f.negative}`;
