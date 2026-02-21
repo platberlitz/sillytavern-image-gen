@@ -2173,6 +2173,10 @@ function displayImage(url, skipGallery) {
         };
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
+            if (isGenerating) {
+                toastr.warning("Generation already in progress");
+                return;
+            }
             if (promptTextarea && promptTextarea.value.trim()) {
                 lastPrompt = promptTextarea.value;
             }
@@ -2350,6 +2354,10 @@ function displayBatchResults(results) {
         };
         document.getElementById("qig-batch-regenerate").onclick = (e) => {
             e.stopPropagation();
+            if (isGenerating) {
+                toastr.warning("Generation already in progress");
+                return;
+            }
             if (batchPromptTextarea && batchPromptTextarea.value.trim()) {
                 lastPrompt = batchPromptTextarea.value;
             }
@@ -2691,6 +2699,18 @@ async function regenerateImage() {
     const batchCount = s.batchCount || 1;
     const originalSeed = s.seed;
     s.seed = -1;
+
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    if (paletteBtn) {
+        paletteBtn.classList.remove("fa-palette");
+        paletteBtn.classList.add("fa-spinner", "fa-spin");
+    }
+    const btn = getOrCacheElement("qig-generate-btn");
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Generating...";
+    }
+
     log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
         if (batchCount <= 1) {
@@ -2723,6 +2743,15 @@ async function regenerateImage() {
     } finally {
         s.seed = originalSeed;
         isGenerating = false;
+        showStatus(null);
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "🎨 Generate";
+        }
+        if (paletteBtn) {
+            paletteBtn.classList.remove("fa-spinner", "fa-spin");
+            paletteBtn.classList.add("fa-palette");
+        }
     }
 }
 
