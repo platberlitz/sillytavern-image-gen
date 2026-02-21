@@ -2587,6 +2587,11 @@ function showPromptEditDialog(prompt) {
             cancelBtn.onclick = close;
             useBtn.onclick = use;
 
+            // Override createPopup's generic handlers so overlay/close resolve the Promise
+            popup.onclick = (e) => { if (e.target === popup) close(); };
+            const popupCloseBtn = popup.querySelector(".qig-close-btn");
+            if (popupCloseBtn) popupCloseBtn.onclick = close;
+
             textarea.onkeydown = (e) => {
                 if (e.key === "Enter" && e.ctrlKey) {
                     e.preventDefault();
@@ -3180,7 +3185,7 @@ function renderProfileSelect() {
 }
 
 // === Generation Presets ===
-const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "batchCount", "sequentialSeeds"];
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds"];
 
 function savePreset() {
     const name = prompt("Preset name:");
@@ -3261,6 +3266,8 @@ function refreshAllUI(s) {
         "qig-cfg": "cfgScale", "qig-sampler": "sampler", "qig-seed": "seed",
         "qig-batch": "batchCount", "qig-provider": "provider", "qig-style": "style",
         "qig-llm-style": "llmPromptStyle",
+        "qig-llm-prefill": "llmPrefill",
+        "qig-llm-instruction": "llmCustomInstruction",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
         "qig-inject-insert-mode": "injectInsertMode"
