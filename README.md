@@ -305,6 +305,7 @@ Use these placeholders in custom workflows:
 | **ADetailer Model** | Detection model (face_yolov8n, hand_yolov8n, person_yolov8n, mediapipe) |
 | **ADetailer Prompt** | Custom prompt for inpainting (empty = use main prompt) |
 | **ADetailer Negative** | Custom negative for inpainting (empty = use main negative) |
+| **Save to WebUI** | Save generated images to WebUI's output folder using its configured paths, naming, and per-model subfolders |
 | **IP-Adapter Face** | Use reference image for face features only (not pose/clothes) |
 | **IP-Adapter Model** | FaceID model (Portrait, Standard, Plus v2 - SD1.5 or SDXL) |
 | **IP-Adapter Weight** | How strongly to apply facial features (0-1.5, default 0.7) |
