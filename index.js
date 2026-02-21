@@ -125,8 +125,8 @@ const defaultSettings = {
     useSTStyle: true,
     // Inject Mode (wickedcode01-style)
     injectEnabled: false,
-    injectPrompt: 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">\nUse this for important visual moments. The prompt should describe the scene in detail including character appearances, poses, expressions, clothing, and setting.',
-    injectRegex: '<pic\\s+prompt="([^"]+)"\\s*/?>',
+    injectPrompt: 'When describing a scene visually, include an image tag using one of these formats:\n- Simple: <image>detailed visual description</image>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.',
+    injectRegex: '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\\S]*?)</image>',
     injectPosition: "afterScenario",
     injectDepth: 0,
     injectInsertMode: "replace",
@@ -421,6 +421,15 @@ async function loadSettings() {
         s.messageRange = String(saved.messageIndex);
     }
     delete s.messageIndex;
+    // Migrate old inject regex/prompt to include <image> tag support
+    const oldDefaultRegex = '<pic\\s+prompt="([^"]+)"\\s*/?>';
+    const oldDefaultPrompt = 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">\nUse this for important visual moments. The prompt should describe the scene in detail including character appearances, poses, expressions, clothing, and setting.';
+    if (saved && saved.injectRegex === oldDefaultRegex) {
+        s.injectRegex = defaultSettings.injectRegex;
+    }
+    if (saved && saved.injectPrompt === oldDefaultPrompt) {
+        s.injectPrompt = defaultSettings.injectPrompt;
+    }
 }
 
 function getSettings() {
@@ -2192,6 +2201,25 @@ async function insertImageIntoMessage(imageUrl) {
     await ctx.saveChat();
 }
 
+function persistImageUrl(url) {
+    if (url.startsWith('data:')) return Promise.resolve(url);
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+            try {
+                const canvas = document.createElement("canvas");
+                canvas.width = img.width;
+                canvas.height = img.height;
+                canvas.getContext("2d").drawImage(img, 0, 0);
+                resolve(canvas.toDataURL("image/jpeg", 0.9));
+            } catch { resolve(url); }
+        };
+        img.onerror = () => resolve(url);
+        img.src = url;
+    });
+}
+
 function createThumbnail(url, maxSize = 150) {
     return new Promise((resolve) => {
         const img = new Image();
@@ -2214,8 +2242,9 @@ function createThumbnail(url, maxSize = 150) {
 }
 
 async function addToGallery(url) {
-    const thumbnail = await createThumbnail(url);
-    sessionGallery.unshift({ url, thumbnail, prompt: lastPrompt, negative: lastNegative, provider: getSettings().provider, date: Date.now() });
+    const persistentUrl = await persistImageUrl(url);
+    const thumbnail = await createThumbnail(persistentUrl);
+    sessionGallery.unshift({ url: persistentUrl, thumbnail, prompt: lastPrompt, negative: lastNegative, provider: getSettings().provider, date: Date.now() });
     if (sessionGallery.length > 50) sessionGallery.pop();
     saveGallery();
 }
@@ -4499,7 +4528,8 @@ async function generateImageInjectPalette() {
                 if (!chat[i].is_user && chat[i].mes) {
                     let match;
                     while ((match = regex.exec(chat[i].mes)) !== null) {
-                        if (match[1]) matches.push(match[1]);
+                        const captured = match.slice(1).find(g => g !== undefined);
+                        if (captured) matches.push(captured.trim());
                     }
                     break;
                 }
@@ -4508,13 +4538,13 @@ async function generateImageInjectPalette() {
 
         // Step 2: LLM fallback if no tags found
         if (matches.length === 0) {
-            log("Palette inject: No <pic> tags found, calling LLM...");
-            showStatus("🔍 No <pic> tags found — asking LLM to generate them...");
+            log("Palette inject: No image tags found, calling LLM...");
+            showStatus("🔍 No image tags found — asking LLM to generate them...");
 
             const sceneContext = getMessages() || "the current scene";
-            const injectInstruction = resolvePrompt(s.injectPrompt || 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">');
+            const injectInstruction = resolvePrompt(s.injectPrompt || 'When describing a scene visually, include an image tag using <image>detailed visual description</image> or <pic prompt="detailed visual description">');
             const timestamp = Date.now();
-            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate <pic> tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
+            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate image tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
 
             let llmResponse;
             if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
@@ -4540,13 +4570,14 @@ async function generateImageInjectPalette() {
                 regex.lastIndex = 0;
                 let match;
                 while ((match = regex.exec(llmResponse)) !== null) {
-                    if (match[1]) matches.push(match[1]);
+                    const captured = match.slice(1).find(g => g !== undefined);
+                    if (captured) matches.push(captured.trim());
                 }
             }
 
             if (matches.length === 0) {
-                toastr.warning("No <pic> tags found in AI message or LLM response");
-                log("Palette inject: No <pic> tags extracted after LLM fallback");
+                toastr.warning("No image tags found in AI message or LLM response");
+                log("Palette inject: No image tags extracted after LLM fallback");
                 return;
             }
         }
@@ -4858,12 +4889,13 @@ async function processInjectMessage(messageText, messageIndex) {
     const matches = [];
     let match;
     while ((match = regex.exec(messageText)) !== null) {
-        if (match[1]) matches.push(match[1]);
+        const captured = match.slice(1).find(g => g !== undefined);
+        if (captured) matches.push(captured.trim());
     }
 
     if (matches.length === 0) return;
 
-    log(`Inject: Found ${matches.length} <pic> tag(s) in message`);
+    log(`Inject: Found ${matches.length} image tag(s) in message`);
 
     // Clean tags from displayed message if enabled
     if (s.injectAutoClean !== false) {
@@ -4879,7 +4911,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 if (typeof ctx.reloadCurrentChat === 'function') {
                     await ctx.reloadCurrentChat();
                 }
-                log("Inject: Cleaned <pic> tags from message");
+                log("Inject: Cleaned image tags from message");
             }
         } catch (e) {
             log(`Inject: Error cleaning tags: ${e.message}`);
