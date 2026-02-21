@@ -56,6 +56,8 @@ const defaultSettings = {
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-4-5-curated",
+    naiProxyUrl: "",
+    naiProxyKey: "",
     // ArliAI
     arliKey: "",
     arliModel: "arliai-realistic-v1",
@@ -162,7 +164,7 @@ let isGenerating = false;
 
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
-    novelai: ["naiKey", "naiModel"],
+    novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
     chutes: ["chutesKey", "chutesModel"],
@@ -1071,9 +1073,12 @@ async function genNovelAI(prompt, negative, s) {
 
     const payload = { input: prompt, model: s.naiModel, action: "generate", parameters: params };
 
-    const res = await fetch("https://image.novelai.net/ai/generate-image", {
+    const apiUrl = s.naiProxyUrl || "https://image.novelai.net/ai/generate-image";
+    const apiKey = s.naiProxyKey || s.naiKey;
+
+    const res = await fetch(apiUrl, {
         method: "POST",
-        headers: { "Authorization": `Bearer ${s.naiKey}`, "Content-Type": "application/json", "Accept": "*/*" },
+        headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json", "Accept": "*/*" },
         body: JSON.stringify(payload)
     });
     if (!res.ok) {
@@ -3249,7 +3254,7 @@ function refreshProviderInputs(provider) {
     const s = getSettings();
     const map = {
         pollinations: [["qig-pollinations-model", "pollinationsModel"]],
-        novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"]],
+        novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"], ["qig-nai-proxy-url", "naiProxyUrl"], ["qig-nai-proxy-key", "naiProxyKey"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
@@ -3383,6 +3388,10 @@ function createUI() {
                     <input id="qig-nai-key" type="password" value="${s.naiKey}">
                     <label>Model</label>
                     <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-4-5-curated">
+                    <label>Proxy URL <small>(optional — leave blank to use official API)</small></label>
+                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://linkapi.cc/...">
+                    <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
+                    <input id="qig-nai-proxy-key" type="password" value="${s.naiProxyKey}" placeholder="Leave blank to use API key above">
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">
@@ -3907,6 +3916,8 @@ function createUI() {
     bind("qig-pollinations-model", "pollinationsModel");
     bind("qig-nai-key", "naiKey");
     bind("qig-nai-model", "naiModel");
+    bind("qig-nai-proxy-url", "naiProxyUrl");
+    bind("qig-nai-proxy-key", "naiProxyKey");
     bind("qig-arli-key", "arliKey");
     bind("qig-arli-model", "arliModel");
     bind("qig-nanogpt-key", "nanogptKey");
