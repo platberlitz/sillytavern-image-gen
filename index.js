@@ -3407,7 +3407,7 @@ function createUI() {
                     <label>Model</label>
                     <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-4-5-curated">
                     <label>Proxy URL <small>(optional — leave blank to use official API)</small></label>
-                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://nai.yousebaby.com">
+                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://your-proxy-url">
                     <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
                     <input id="qig-nai-proxy-key" type="password" value="${s.naiProxyKey}" placeholder="Leave blank to use API key above">
                 </div>
