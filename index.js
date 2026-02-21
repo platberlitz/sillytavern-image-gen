@@ -1058,7 +1058,7 @@ async function genNovelAI(prompt, negative, s) {
         const v1Payload = {
             model: s.naiModel,
             messages: [{ role: "user", content: prompt }],
-            size: `${s.width}:${s.height}`,
+            size: s.width > s.height ? "1216:832" : s.width < s.height ? "832:1216" : "1024:1024",
             negative_prompt: negative,
             sampler: v1SamplerMap[sampler] || "Euler Ancestral",
             return_base64: true,
