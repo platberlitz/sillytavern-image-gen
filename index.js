@@ -71,6 +71,7 @@ const defaultSettings = {
     civitaiKey: "",
     civitaiModel: "urn:air:sd1:checkpoint:civitai:4201@130072",
     civitaiScheduler: "EulerA",
+    civitaiLoras: "",
     // Nanobanana (Gemini)
     nanobananaKey: "",
     nanobananaModel: "gemini-2.5-flash-image",
@@ -168,7 +169,7 @@ const PROVIDER_KEYS = {
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel"],
     chutes: ["chutesKey", "chutesModel"],
-    civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler"],
+    civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler", "civitaiLoras"],
     nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
     stability: ["stabilityKey"],
     replicate: ["replicateKey", "replicateModel"],
@@ -1481,30 +1482,51 @@ async function genChutes(prompt, negative, s) {
 }
 
 async function genCivitAI(prompt, negative, s) {
+    // Parse LoRAs into additionalNetworks map
+    let additionalNetworks;
+    if (s.civitaiLoras && s.civitaiLoras.trim()) {
+        additionalNetworks = {};
+        for (const entry of s.civitaiLoras.split(",")) {
+            const trimmed = entry.trim();
+            if (!trimmed) continue;
+            const lastColon = trimmed.lastIndexOf(":");
+            // URNs contain colons, so split on the last one for urn:weight
+            const hasWeight = lastColon > 0 && !isNaN(parseFloat(trimmed.slice(lastColon + 1)));
+            const urn = hasWeight ? trimmed.slice(0, lastColon).trim() : trimmed;
+            const strength = hasWeight ? parseFloat(trimmed.slice(lastColon + 1)) : 1.0;
+            additionalNetworks[urn] = { strength };
+        }
+        if (Object.keys(additionalNetworks).length > 0) {
+            log(`CivitAI: Using ${Object.keys(additionalNetworks).length} LoRA(s): ${Object.keys(additionalNetworks).map(u => u.split(":").pop()).join(", ")}`);
+        } else {
+            additionalNetworks = undefined;
+        }
+    }
+
+    const input = {
+        model: s.civitaiModel,
+        params: {
+            prompt: prompt,
+            negativePrompt: negative,
+            scheduler: s.civitaiScheduler || "EulerA",
+            steps: s.steps,
+            cfgScale: s.cfgScale,
+            width: s.width,
+            height: s.height,
+            seed: s.seed === -1 ? -1 : s.seed,
+            clipSkip: parseInt(s.a1111ClipSkip) || 2
+        },
+        batchSize: 1
+    };
+    if (additionalNetworks) input.additionalNetworks = additionalNetworks;
+
     const res = await fetch("https://civitai.com/api/v1/consumer/jobs", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.civitaiKey}`,
             "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-            $type: "textToImage",
-            input: {
-                model: s.civitaiModel,
-                params: {
-                    prompt: prompt,
-                    negativePrompt: negative,
-                    scheduler: s.civitaiScheduler || "EulerA",
-                    steps: s.steps,
-                    cfgScale: s.cfgScale,
-                    width: s.width,
-                    height: s.height,
-                    seed: s.seed === -1 ? -1 : s.seed,
-                    clipSkip: parseInt(s.a1111ClipSkip) || 2
-                },
-                batchSize: 1
-            }
-        })
+        body: JSON.stringify({ $type: "textToImage", input })
     });
     if (!res.ok) {
         const errText = await res.text();
@@ -3411,7 +3433,7 @@ function refreshProviderInputs(provider) {
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
-        civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"]],
+        civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
         local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"], ["qig-a1111-loras", "a1111Loras"], ["qig-a1111-hires", "a1111HiresFix"], ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"], ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"], ["qig-a1111-ad-negative", "a1111AdetailerNegative"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
@@ -3581,6 +3603,9 @@ function createUI() {
                         <option value="DPM++ SDE Karras" ${s.civitaiScheduler === "DPM++ SDE Karras" ? "selected" : ""}>DPM++ SDE Karras</option>
                         <option value="DDIM" ${s.civitaiScheduler === "DDIM" ? "selected" : ""}>DDIM</option>
                     </select>
+                    <label>LoRAs (URN:weight, comma-separated)</label>
+                    <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
+                    <input id="qig-civitai-loras" type="text" value="${s.civitaiLoras || ""}" placeholder="urn:air:sd1:lora:civitai:82098@87153:0.8, urn:air:sdxl:lora:civitai:12345@67890:1.0">
                 </div>
                 
                 <div id="qig-nanobanana-settings" class="qig-provider-section">
@@ -4080,6 +4105,7 @@ function createUI() {
     bind("qig-civitai-key", "civitaiKey");
     bind("qig-civitai-model", "civitaiModel");
     bind("qig-civitai-scheduler", "civitaiScheduler");
+    bind("qig-civitai-loras", "civitaiLoras");
     bind("qig-nanobanana-key", "nanobananaKey");
     bind("qig-nanobanana-model", "nanobananaModel");
     bind("qig-nanobanana-extra", "nanobananaExtraInstructions");

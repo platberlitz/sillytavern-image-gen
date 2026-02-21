@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching), ST Style panel integration, inject mode (AI-driven `<pic>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -17,7 +17,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🤖 **ArliAI** - Affordable API
 - ⚡ **NanoGPT** - Fast Flux models
 - 🪂 **Chutes** - Decentralized AI (FLUX models)
-- 🏛️ **CivitAI** - Community models with URN format, schedulers
+- 🏛️ **CivitAI** - Community models with URN format, schedulers, multiple LoRAs
 - 🧠 **Nanobanana (Gemini)** - Google's Gemini image generation with reference images
 - 🎨 **Stability AI** - Official SDXL API
 - 🚀 **Replicate** - Run AI models in the cloud (SDXL, etc.)
@@ -45,7 +45,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
-- 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
+- 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
 - 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
 - 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
@@ -59,7 +59,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 📥 **Import Settings** - Import settings from a previously exported file
 
 ### Gallery & Session
-- 🖼️ **Persistent Gallery** - View all generated images with thumbnails and prompt snippets (persists across sessions via localStorage)
+- 🖼️ **Persistent Gallery** - View all generated images with thumbnails and prompt snippets (persists across sessions via localStorage, including ComfyUI images)
 - 📝 **Persistent Prompt History** - Review full prompts from all generations (persists across sessions, up to 50)
 - 🔄 **Quick Regenerate** - Same prompt, new seed
 - 📌 **Insert to Chat** - Attach generated image to a chat message (persists on reload)
@@ -69,7 +69,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 
 ### Advanced Features
 - 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
-- 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy, Local/A1111)
+- 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy, Local/A1111, CivitAI)
 - 👤 **Face Fix** - ADetailer with custom prompt/negative (Proxy, Local/A1111)
 - 🔍 **Hires Fix** - Upscale generation with configurable upscaler, scale, and denoise (A1111)
 - 📊 **Generation Progress** - Live progress percentage, step count, and ETA (A1111/ComfyUI)
@@ -105,7 +105,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 | Setting | Description |
 |---------|-------------|
-| **Provider** | Image generation backend (9 options) |
+| **Provider** | Image generation backend (13 options) |
 | **Connection Profile** | Save/load provider settings |
 | **Style** | Visual style preset (40+ options) |
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
@@ -126,7 +126,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Auto-insert** | Skip popup and insert images directly into chat |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
 | **LLM Override** | Use a separate OpenAI-compatible API for image prompt generation (URL, key, model, temperature, max tokens, system prompt) |
-| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts `<pic>` tags from AI response |
+| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts `<image>` or `<pic>` tags from AI response |
 
 ---
 
@@ -160,6 +160,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 ### CivitAI
 - **Model Format**: URN format (`urn:air:sd1:checkpoint:civitai:4201@130072`)
+- **LoRAs**: Multiple LoRAs in URN format with weights (`urn:air:sd1:lora:civitai:82098@87153:0.8`)
 - **Schedulers**: EulerA, Euler, DPM++ 2M Karras, DPM++ SDE Karras, DDIM
 - **Features**: Job polling, community models, CLIP skip
 
@@ -167,9 +168,6 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 - **Models**: Gemini 2.5 Flash Image, Gemini 2.0 Flash Exp
 - **Features**: Reference images (up to 15), extra instructions for Pro features
 - **Format**: Multimodal input with inlineData support
-
-### Reverse Proxy
-- **Reference Images**: Upload up to 15 reference images
 
 ### Stability AI
 - **Models**: SDXL 1.0
@@ -196,8 +194,7 @@ Save and load provider configurations per-provider:
 - **ArliAI**: API key, model
 - **NanoGPT**: API key, model
 - **Chutes**: API key, model
-- **CivitAI**: API key, model URN, scheduler
-- **CivitAI**: API key, model URN, scheduler
+- **CivitAI**: API key, model URN, scheduler, LoRAs
 - **Nanobanana**: API key, model, extra instructions, reference images
 - **Stability AI**: API key
 - **Replicate**: API key, model
@@ -224,8 +221,6 @@ The extension can use SillyTavern's LLM to convert chat messages into optimized 
 - **Prefill**: Guide LLM output format by specifying text to start the response with
 - **Character Awareness**: Includes character descriptions and appearance details
 - **Skin Tone Detection**: Automatically reinforces detected skin tones
-- **Character Awareness**: Includes character descriptions and appearance details
-- **Skin Tone Detection**: Automatically reinforces detected skin tones
 - **Context Integration**: Uses chat history and character cards for better prompts
 - **Multi-Message Context**: Select multiple messages for richer scene context (ranges, specific indices, or last N)
 
@@ -245,7 +240,7 @@ Works with any service that exposes an OpenAI-compatible `/chat/completions` end
 
 When enabled, the override endpoint is used for:
 - **Prompt generation** (direct mode) — converting scenes to image prompts
-- **Inject palette fallback** — generating `<pic>` tags when none found in AI messages
+- **Inject palette fallback** — generating image tags when none found in AI messages
 - **LLM concept filter matching** — evaluating concept filters against scenes
 
 ### Setup
@@ -407,8 +402,8 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 
 ### How it works
 
-1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<pic prompt="description">` tags for visual moments
-2. **Extraction**: When the AI responds, QIG scans for `<pic>` tags using a configurable regex
+1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<image>description</image>` or `<pic prompt="description">` tags for visual moments
+2. **Extraction**: When the AI responds, QIG scans for image tags using a configurable regex
 3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters → provider)
 4. **Cleanup**: Tags are optionally removed from the displayed message
 
@@ -418,15 +413,15 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 |---------|-------------|
 | **Enable inject mode** | Master toggle |
 | **Inject prompt template** | The instruction injected into chat completion. Supports `{{char}}`, `{{user}}` |
-| **Extraction regex** | Regex with capture group 1 for the image prompt. Default: `<pic\s+prompt="([^"]+)"\s*/?>` |
+| **Extraction regex** | Regex with capture groups for the image prompt. Default matches both `<pic prompt="...">` and `<image>...</image>` |
 | **Injection position** | Where to inject: After Scenario, In User Message, or At Depth |
 | **Depth** | Depth from end of prompt array (when using At Depth) |
 | **Tag handling** | Replace tag with image, insert after message, or create new message |
-| **Auto-clean** | Remove `<pic>` tags from the displayed message |
+| **Auto-clean** | Remove image tags from the displayed message |
 
 ### Why use this?
 
-The RP AI naturally describes what's happening in the scene, so its `<pic>` prompts tend to be more contextually accurate than a separate LLM call analyzing the scene after the fact. This is especially useful for immersive RP where you want images to appear organically as the story unfolds.
+The RP AI naturally describes what's happening in the scene, so its image tag prompts tend to be more contextually accurate than a separate LLM call analyzing the scene after the fact. This is especially useful for immersive RP where you want images to appear organically as the story unfolds.
 
 ---
 
