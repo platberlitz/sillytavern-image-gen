@@ -4411,7 +4411,7 @@ async function generateImageInjectPalette() {
         for (const extractedPrompt of matches) {
             showStatus(`🖼️ Generating palette-inject image...`);
 
-            let prompt = extractedPrompt;
+            let prompt = await generateLLMPrompt(s, extractedPrompt);
             let negative = resolvePrompt(s.negativePrompt);
 
             // Apply style
@@ -4445,7 +4445,7 @@ async function generateImageInjectPalette() {
 
             lastPrompt = prompt;
             lastNegative = negative;
-            lastPromptWasLLM = false;
+            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
 
             const batchCount = s.batchCount || 1;
             const results = [];
@@ -4759,7 +4759,7 @@ async function processInjectMessage(messageText, messageIndex) {
             log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
             showStatus("🖼️ Generating inject-mode image...");
 
-            let prompt = extractedPrompt;
+            let prompt = await generateLLMPrompt(s, extractedPrompt);
             let negative = resolvePrompt(s.negativePrompt);
 
             // Apply style
@@ -4793,7 +4793,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
             lastPrompt = prompt;
             lastNegative = negative;
-            lastPromptWasLLM = false;
+            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
 
             const batchCount = s.batchCount || 1;
             const results = [];
