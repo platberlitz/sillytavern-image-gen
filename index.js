@@ -2306,6 +2306,8 @@ function displayBatchResults(results) {
                 document.removeEventListener("keydown", keyHandler);
                 return;
             }
+            const tag = document.activeElement?.tagName;
+            if (tag === "INPUT" || tag === "TEXTAREA") return;
             if (e.key === "ArrowLeft") showImage((currentIndex - 1 + results.length) % results.length);
             if (e.key === "ArrowRight") showImage((currentIndex + 1) % results.length);
             if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
