@@ -656,6 +656,23 @@ ${conceptList}`;
 
 const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
 
+function extractLLMResponse(response) {
+    if (typeof response === "string") return response;
+    if (response && typeof response === "object") {
+        // CMRS extractData format: { content, reasoning }
+        if (typeof response.content === "string") return response.content;
+        // OpenAI raw format fallback
+        const choiceContent = response.choices?.[0]?.message?.content ?? response.choices?.[0]?.text;
+        if (typeof choiceContent === "string") return choiceContent;
+        // Generic message format
+        if (typeof response.message?.content === "string") return response.message.content;
+        // Try text property
+        if (typeof response.text === "string") return response.text;
+    }
+    log(`LLM Override: Unexpected response format: ${JSON.stringify(response).substring(0, 200)}`);
+    return "";
+}
+
 function findSecretKeyForId(secretId) {
     if (!secret_state) return null;
     for (const [key, secrets] of Object.entries(secret_state)) {
@@ -720,7 +737,7 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             s.llmOverrideMaxTokens || 500,
             { extractData: true, includePreset: !!s.llmOverridePreset, stream: false }
         );
-        return typeof response === "string" ? response : (response?.content || response?.message?.content || String(response));
+        return extractLLMResponse(response);
     } catch (e) {
         log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
         log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
