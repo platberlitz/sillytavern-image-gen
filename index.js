@@ -4596,10 +4596,10 @@ async function generateImage() {
         btn.textContent = "Generating...";
     }
 
+    const originalSeed = s.seed;
     try {
         const results = [];
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
-        const originalSeed = s.seed;
         let baseSeed = originalSeed;
         if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
             baseSeed = Math.floor(Math.random() * 2147483647);
