@@ -1045,6 +1045,45 @@ async function genNovelAI(prompt, negative, s) {
         : (samplerMap[s.sampler] || "k_euler_ancestral");
     const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
 
+    // OpenAI-compatible proxy (e.g. linkapi.cc/v1 → yousebaby → NAI)
+    if (s.naiProxyUrl && s.naiProxyUrl.includes("/v1")) {
+        const v1SamplerMap = {
+            "k_euler_ancestral": "Euler Ancestral", "k_euler": "Euler",
+            "k_dpmpp_2m": "DPM++ 2M", "k_dpmpp_sde": "DPM++ SDE",
+            "k_dpmpp_2m_sde": "DPM++ 2M SDE", "ddim": "DDIM", "ddim_v3": "DDIM"
+        };
+        const v1Url = s.naiProxyUrl.includes("/chat/completions")
+            ? s.naiProxyUrl
+            : s.naiProxyUrl.replace(/\/$/, "") + "/chat/completions";
+        const v1Payload = {
+            model: s.naiModel,
+            messages: [{ role: "user", content: prompt }],
+            size: `${s.width}:${s.height}`,
+            negative_prompt: negative,
+            sampler: v1SamplerMap[sampler] || "Euler Ancestral",
+            return_base64: true,
+            stream: false
+        };
+        log(`NAI v1 proxy request to ${v1Url}: ${JSON.stringify(v1Payload).substring(0, 200)}...`);
+        const res = await fetch(v1Url, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${s.naiProxyKey || s.naiKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify(v1Payload)
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            throw new Error(`NovelAI proxy error: ${res.status} ${errText}`);
+        }
+        const json = await res.json();
+        const content = json.choices?.[0]?.message?.content;
+        if (!content) throw new Error(`NovelAI proxy returned no image: ${JSON.stringify(json).substring(0, 300)}`);
+        if (content.startsWith("data:")) return content;
+        if (content.startsWith("http")) return content;
+        const mdMatch = content.match(/!\[.*?\]\((.*?)\)/);
+        if (mdMatch) return mdMatch[1];
+        throw new Error(`NovelAI proxy returned unexpected content: ${content.substring(0, 200)}`);
+    }
+
     const params = {
         width: s.width,
         height: s.height,
