@@ -9,7 +9,7 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt;
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret;
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -656,6 +656,16 @@ ${conceptList}`;
 
 const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
 
+function findSecretKeyForId(secretId) {
+    if (!secret_state) return null;
+    for (const [key, secrets] of Object.entries(secret_state)) {
+        if (Array.isArray(secrets) && secrets.some(s => s.id === secretId)) {
+            return key;
+        }
+    }
+    return null;
+}
+
 async function callOverrideLLM(instruction, systemPrompt = "") {
     const s = getSettings();
     let CMRS = null;
@@ -680,6 +690,29 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
     messages.push({ role: "user", content: instruction });
 
     log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${s.llmOverridePreset || 'none'})`);
+
+    // Rotate to the profile's secret if it has one
+    let previousSecretId = null;
+    let secretKey = null;
+    try {
+        const profile = CMRS.getProfile(s.llmOverrideProfileId);
+        const profileSecretId = profile?.['secret-id'];
+        if (profileSecretId && rotateSecret && secret_state) {
+            secretKey = findSecretKeyForId(profileSecretId);
+            if (secretKey) {
+                previousSecretId = secret_state[secretKey]?.find(sec => sec.active)?.id;
+                if (previousSecretId !== profileSecretId) {
+                    log(`LLM Override: Rotating secret for '${secretKey}' to profile's key`);
+                    await rotateSecret(secretKey, profileSecretId);
+                } else {
+                    previousSecretId = null; // already correct, no restore needed
+                }
+            }
+        }
+    } catch (e) {
+        log(`LLM Override: Could not rotate secret: ${e.message}`);
+    }
+
     try {
         const response = await CMRS.sendRequest(
             s.llmOverrideProfileId,
@@ -696,6 +729,16 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             return await generateQuietPrompt(instruction, quietOptions);
         } catch {
             return await generateQuietPrompt(instruction);
+        }
+    } finally {
+        // Restore original secret
+        if (previousSecretId && secretKey && rotateSecret) {
+            try {
+                log(`LLM Override: Restoring original secret for '${secretKey}'`);
+                await rotateSecret(secretKey, previousSecretId);
+            } catch (e) {
+                log(`LLM Override: Could not restore secret: ${e.message}`);
+            }
         }
     }
 }
@@ -4929,6 +4972,14 @@ jQuery(function () {
             getContext = extensionsModule.getContext;
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
             generateQuietPrompt = scriptModule.generateQuietPrompt;
+
+            try {
+                const secretsModule = await import("../../../../scripts/secrets.js");
+                secret_state = secretsModule.secret_state;
+                rotateSecret = secretsModule.rotateSecret;
+            } catch (e) {
+                console.warn("[ImageGen] Could not import secrets module:", e.message);
+            }
 
             await loadSettings();
             createUI();
