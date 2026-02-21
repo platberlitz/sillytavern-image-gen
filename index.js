@@ -677,14 +677,25 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: instruction });
 
-    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}'`);
-    const response = await CMRS.sendRequest(
-        s.llmOverrideProfileId,
-        messages,
-        s.llmOverrideMaxTokens || 500,
-        { extractData: true, includePreset: !!s.llmOverridePreset, stream: false }
-    );
-    return typeof response === "string" ? response : (response?.content || response?.message?.content || String(response));
+    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${s.llmOverridePreset || 'none'})`);
+    try {
+        const response = await CMRS.sendRequest(
+            s.llmOverrideProfileId,
+            messages,
+            s.llmOverrideMaxTokens || 500,
+            { extractData: true, includePreset: !!s.llmOverridePreset, stream: false }
+        );
+        return typeof response === "string" ? response : (response?.content || response?.message?.content || String(response));
+    } catch (e) {
+        log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
+        log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
+        const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
+        try {
+            return await generateQuietPrompt(instruction, quietOptions);
+        } catch {
+            return await generateQuietPrompt(instruction);
+        }
+    }
 }
 
 function populateConnectionProfiles(selectId, selectedId) {
