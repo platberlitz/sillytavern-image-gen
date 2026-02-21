@@ -3482,6 +3482,7 @@ function createUI() {
                              <button id="qig-a1111-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
                          <label>LoRAs (name:weight, comma-separated)</label>
+                         <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                          <input id="qig-a1111-loras" type="text" value="${s.a1111Loras || ""}" placeholder="my_lora:0.8, detail_lora:0.6">
                          <div class="qig-row" style="margin-top:8px;">
                             <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"></div>
@@ -3598,6 +3599,7 @@ function createUI() {
                     <label>Model</label>
                     <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="PixAI model ID">
                     <label>LoRAs (id:weight, comma-separated)</label>
+                    <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                     <input id="qig-proxy-loras" type="text" value="${s.proxyLoras || ""}" placeholder="123456:0.8, 789012:0.6">
                     <div class="qig-row">
                         <div><label>Steps</label><input id="qig-proxy-steps" type="number" value="${s.proxySteps || 25}" min="8" max="50"></div>
@@ -3625,16 +3627,25 @@ function createUI() {
                     <button id="qig-proxy-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
                 </div>
                 
-                <hr>
-                <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;">💾 Save Template</button></label>
-                <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
-                <div id="qig-templates" style="margin:4px 0;"></div>
-                <div style="display:flex;gap:4px;margin:4px 0;">
-                    <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;">💾 Save Preset</button>
-                    <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
-                    <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
+                <hr style="margin:8px 0;opacity:0.2;">
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Prompt & Templates</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small style="opacity:0.7;">Base prompt used for direct generation, or as scene context when LLM prompt is enabled</small>
+                        <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;">💾 Save Template</button></label>
+                        <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
+                        <div id="qig-templates" style="margin:4px 0;"></div>
+                        <div style="display:flex;gap:4px;margin:4px 0;">
+                            <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;">💾 Save Preset</button>
+                            <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
+                            <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
+                        </div>
+                        <div id="qig-presets" style="margin:4px 0;"></div>
+                    </div>
                 </div>
-                <div id="qig-presets" style="margin:4px 0;"></div>
                 <label>Negative Prompt</label>
                 <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
                 
@@ -3742,10 +3753,6 @@ function createUI() {
                             <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
                             <span>Confirm before generating</span>
                         </label>
-                        <label class="checkbox_label">
-                            <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
-                            <span>Hide palette button</span>
-                        </label>
                     </div>
 
                     <!-- Inject tab -->
@@ -3786,6 +3793,10 @@ function createUI() {
                     </div>
                 </div>
 
+                <label class="checkbox_label" style="margin-top:4px;">
+                    <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
+                    <span>Hide palette button</span>
+                </label>
                 <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
                     <label style="font-size:12px;white-space:nowrap;">Palette button mode</label>
                     <select id="qig-palette-mode" style="flex:1;">
