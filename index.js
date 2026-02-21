@@ -114,6 +114,7 @@ const defaultSettings = {
     a1111IpAdapterControlMode: "Balanced",
     a1111IpAdapterStartStep: 0,
     a1111IpAdapterEndStep: 1,
+    a1111SaveToWebUI: true,
     // ComfyUI specific
     comfyWorkflow: "",
     comfyClipSkip: 1,
@@ -1664,6 +1665,11 @@ async function genLocal(prompt, negative, s) {
                 ad_negative_prompt: s.a1111AdetailerNegative || ""
             }]
         };
+    }
+
+    // Save to WebUI output folder
+    if (s.a1111SaveToWebUI) {
+        payload.save_images = true;
     }
 
     if (isImg2Img && !s.a1111IpAdapter) {
@@ -3487,6 +3493,10 @@ function createUI() {
                              <input id="qig-a1111-ad-negative" type="text" value="${s.a1111AdetailerNegative || ""}" placeholder="Leave empty to use main negative">
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
+                             <input id="qig-a1111-save-webui" type="checkbox" ${s.a1111SaveToWebUI ? "checked" : ""}>
+                             <span>Save images to WebUI output folder</span>
+                         </label>
+                         <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-ipadapter" type="checkbox" ${s.a1111IpAdapter ? "checked" : ""}>
                              <span>IP-Adapter Face (face-only reference)</span>
                          </label>
@@ -3916,6 +3926,9 @@ function createUI() {
         saveSettingsDebounced();
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
     };
+
+    // Save to WebUI binding
+    bindCheckbox("qig-a1111-save-webui", "a1111SaveToWebUI");
 
     // IP-Adapter bindings
     bind("qig-a1111-ipadapter-mode", "a1111IpAdapterMode");
