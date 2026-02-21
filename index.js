@@ -1073,8 +1073,13 @@ async function genNovelAI(prompt, negative, s) {
 
     const payload = { input: prompt, model: s.naiModel, action: "generate", parameters: params };
 
-    const apiUrl = s.naiProxyUrl || "https://image.novelai.net/ai/generate-image";
+    const isProxy = !!s.naiProxyUrl;
+    const apiUrl = isProxy
+        ? s.naiProxyUrl.replace(/\/$/, "") + (s.naiProxyUrl.includes("/generate") ? "" : "/generate")
+        : "https://image.novelai.net/ai/generate-image";
     const apiKey = s.naiProxyKey || s.naiKey;
+
+    if (isProxy) params.return_base64 = true;
 
     const res = await fetch(apiUrl, {
         method: "POST",
@@ -1085,6 +1090,19 @@ async function genNovelAI(prompt, negative, s) {
         const errText = await res.text().catch(() => "");
         throw new Error(`NovelAI error: ${res.status} ${errText}`);
     }
+
+    // Proxy returns JSON with a URL or base64 data URI
+    if (isProxy) {
+        const json = await res.json();
+        if (json.status !== "success" || !json.url) {
+            throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
+        }
+        if (json.url.startsWith("data:")) return json.url;
+        // Relative URL — prepend proxy base
+        const baseUrl = s.naiProxyUrl.replace(/\/generate\/?$/, "").replace(/\/$/, "");
+        return baseUrl + json.url;
+    }
+
     const arrayBuffer = await res.arrayBuffer();
     const bytes = new Uint8Array(arrayBuffer);
 
@@ -3389,7 +3407,7 @@ function createUI() {
                     <label>Model</label>
                     <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-4-5-curated">
                     <label>Proxy URL <small>(optional — leave blank to use official API)</small></label>
-                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://your-proxy-url/ai/generate-image">
+                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://nai.yousebaby.com">
                     <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
                     <input id="qig-nai-proxy-key" type="password" value="${s.naiProxyKey}" placeholder="Leave blank to use API key above">
                 </div>
