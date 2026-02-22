@@ -1955,11 +1955,15 @@ async function genProxy(prompt, negative, s) {
             payload.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
             log(`Gemini image model detected, adding responseModalities`);
         }
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 120000);
         const res = await fetch(chatUrl, {
             method: "POST",
             headers,
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: controller.signal
         });
+        clearTimeout(timeoutId);
         if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
         const data = await res.json();
         log(`Response keys: ${JSON.stringify(Object.keys(data))}`);
@@ -2032,9 +2036,13 @@ async function genProxy(prompt, negative, s) {
 
         // Log full response structure for debugging
         log(`Full message structure: ${JSON.stringify(data.choices?.[0]?.message || {}).substring(0, 500)}`);
-        throw new Error("No image in response");
+        throw new Error(msgContent === null
+            ? "Model returned empty response - image generation may not be supported via this proxy"
+            : "No image in response");
     }
 
+    const controller2 = new AbortController();
+    const timeoutId2 = setTimeout(() => controller2.abort(), 120000);
     const res = await fetch(s.proxyUrl, {
         method: "POST",
         headers,
@@ -2053,8 +2061,10 @@ async function genProxy(prompt, negative, s) {
             loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
             facefix: s.proxyFacefix || undefined,
             reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
-        })
+        }),
+        signal: controller2.signal
     });
+    clearTimeout(timeoutId2);
     if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
     const data = await res.json();
     if (data.data?.[0]?.url) return data.data[0].url;
