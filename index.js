@@ -1935,10 +1935,9 @@ async function genProxy(prompt, negative, s) {
         }
         content.push({ type: "text", text: `Generate an image: ${prompt}${negPrompt}${extraInstr}` });
 
-        const res = await fetch(chatUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify({
+        // Detect Gemini image models and add responseModalities so proxies can forward it
+        const isGeminiImage = /gemini.*image|gemini.*preview/i.test(s.proxyModel);
+        const payload = {
                 model: s.proxyModel,
                 messages: [{ role: "user", content }],
                 max_tokens: 4096,
@@ -1950,7 +1949,16 @@ async function genProxy(prompt, negative, s) {
                 negative_prompt: negative,
                 loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
                 facefix: s.proxyFacefix || undefined
-            })
+        };
+        if (isGeminiImage) {
+            payload.response_modalities = ["TEXT", "IMAGE"];
+            payload.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
+            log(`Gemini image model detected, adding responseModalities`);
+        }
+        const res = await fetch(chatUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload)
         });
         if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
         const data = await res.json();
