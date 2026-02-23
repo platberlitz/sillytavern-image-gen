@@ -285,12 +285,42 @@ function log(msg) {
     console.log("[QIG]", msg);
 }
 
+// CORS-aware fetch: tries direct, falls back to ST's /proxy/ endpoint
+let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled
+async function corsFetch(url, opts = {}) {
+    if (_corsProxyState !== 2) {
+        try {
+            const res = await fetch(url, opts);
+            if (_corsProxyState === 0) _corsProxyState = 1;
+            return res;
+        } catch (e) {
+            if (e.name === 'AbortError') throw e;
+            if (!(e instanceof TypeError)) throw e;
+            // TypeError = CORS or network failure, try proxy
+        }
+    }
+    if (_corsProxyState === -1) {
+        throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
+    }
+    const proxyUrl = `/proxy/${url}`;
+    const res = await fetch(proxyUrl, opts);
+    if (res.status === 404) {
+        const text = await res.text();
+        if (text.includes('CORS proxy is disabled')) {
+            _corsProxyState = -1;
+            throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
+        }
+    }
+    _corsProxyState = 2;
+    return res;
+}
+
 // A1111 Model API helpers
 let a1111ModelsCache = [];
 async function fetchA1111Models(url) {
     try {
         const baseUrl = url.replace(/\/$/, "");
-        const res = await fetch(`${baseUrl}/sdapi/v1/sd-models`);
+        const res = await corsFetch(`${baseUrl}/sdapi/v1/sd-models`);
         if (!res.ok) throw new Error(`Failed to fetch models: ${res.status}`);
         const models = await res.json();
         a1111ModelsCache = models.map(m => ({ title: m.title, name: m.model_name }));
@@ -316,7 +346,7 @@ async function fetchControlNetModels(url) {
         // If url points to sd-proxy, it likely doesn't have /controlnet/model_list natively.
         // Try standard first, if 404, try proxy path?
 
-        let res = await fetch(fetchUrl);
+        let res = await corsFetch(fetchUrl);
         if (res.status === 404) {
             res = await fetch(`${url}/api/proxy/controlnet/model_list`, {
                 headers: { 'x-local-url': getSettings().localUrl } // This might be circular if url=localUrl.
@@ -354,7 +384,7 @@ async function switchA1111Model(url, modelTitle) {
     try {
         const baseUrl = url.replace(/\/$/, "");
         log(`A1111: Switching to model: ${modelTitle}`);
-        const res = await fetch(`${baseUrl}/sdapi/v1/options`, {
+        const res = await corsFetch(`${baseUrl}/sdapi/v1/options`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ sd_model_checkpoint: modelTitle })
@@ -371,7 +401,7 @@ async function switchA1111Model(url, modelTitle) {
 async function getCurrentA1111Model(url) {
     try {
         const baseUrl = url.replace(/\/$/, "");
-        const res = await fetch(`${baseUrl}/sdapi/v1/options`);
+        const res = await corsFetch(`${baseUrl}/sdapi/v1/options`);
         if (!res.ok) return null;
         const opts = await res.json();
         return opts.sd_model_checkpoint || null;
@@ -382,7 +412,7 @@ async function getCurrentA1111Model(url) {
 
 async function fetchA1111Upscalers(url) {
     try {
-        const res = await fetch(`${url.replace(/\/$/, "")}/sdapi/v1/upscalers`);
+        const res = await corsFetch(`${url.replace(/\/$/, "")}/sdapi/v1/upscalers`);
         if (!res.ok) throw new Error(`${res.status}`);
         return (await res.json()).map(u => u.name);
     } catch (e) {
@@ -1716,7 +1746,7 @@ async function genLocal(prompt, negative, s, signal) {
 
                 log(`ComfyUI: Using custom workflow with ${Object.keys(customWorkflow).length} nodes`);
 
-                const res = await fetch(`${baseUrl}/prompt`, {
+                const res = await corsFetch(`${baseUrl}/prompt`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ prompt: customWorkflow }),
@@ -1731,7 +1761,7 @@ async function genLocal(prompt, negative, s, signal) {
                     await new Promise(r => setTimeout(r, 1000));
                     let hist;
                     try {
-                        const histRes = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+                        const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
                         if (!histRes.ok) continue;
                         hist = await histRes.json();
                     } catch { continue; }
@@ -1826,7 +1856,7 @@ async function genLocal(prompt, negative, s, signal) {
 
         log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}`);
 
-        const res = await fetch(`${baseUrl}/prompt`, {
+        const res = await corsFetch(`${baseUrl}/prompt`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ prompt: workflowNodes }),
@@ -1842,7 +1872,7 @@ async function genLocal(prompt, negative, s, signal) {
             showStatus(`Generating... (waiting ${i + 1}s)`);
             let hist;
             try {
-                const histRes = await fetch(`${baseUrl}/history/${promptId}`, { signal });
+                const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
                 if (!histRes.ok) continue;
                 hist = await histRes.json();
             } catch { continue; }
@@ -1977,7 +2007,7 @@ async function genLocal(prompt, negative, s, signal) {
     let progressInterval = null;
     progressInterval = setInterval(async () => {
         try {
-            const pr = await fetch(`${baseUrl}/sdapi/v1/progress`);
+            const pr = await corsFetch(`${baseUrl}/sdapi/v1/progress`);
             if (pr.ok) {
                 const p = await pr.json();
                 if (p.progress > 0 && p.progress < 1) {
@@ -1992,7 +2022,7 @@ async function genLocal(prompt, negative, s, signal) {
     }, 500);
 
     try {
-        const res = await fetch(`${baseUrl}${endpoint}`, {
+        const res = await corsFetch(`${baseUrl}${endpoint}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
