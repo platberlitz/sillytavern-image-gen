@@ -151,7 +151,7 @@ function safeParse(key, fallback) {
     } catch { return fallback; }
 }
 function escapeHtml(str) {
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 let sessionGallery = safeParse("qig_gallery", []);
 let promptHistory = safeParse("qig_prompt_history", []);
@@ -162,6 +162,8 @@ let charRefImages = safeParse("qig_char_ref_images", {});
 let generationPresets = safeParse("qig_gen_presets", []);
 let contextualFilters = safeParse("qig_contextual_filters", []);
 let isGenerating = false;
+const blobUrls = new Set();
+let batchKeyHandler = null;
 
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
@@ -439,6 +441,7 @@ function getSettings() {
 
 function resolvePrompt(template) {
     const ctx = getContext();
+    if (!ctx) return template;
     return template
         .replace(/\{\{char\}\}/gi, ctx.name2 || "character")
         .replace(/\{\{user\}\}/gi, ctx.name1 || "user");
@@ -540,6 +543,7 @@ function parseMessageRange(rangeStr, chatLength) {
 
 function getMessages() {
     const ctx = getContext();
+    if (!ctx) return "";
     const chat = ctx.chat;
     if (!chat || chat.length === 0) return "";
     const s = getSettings();
@@ -1228,7 +1232,7 @@ async function genNovelAI(prompt, negative, s) {
         // Verify PNG signature
         if (pngData[0] === 0x89 && pngData[1] === 0x50 && pngData[2] === 0x4E && pngData[3] === 0x47) {
             log(`Extracted valid PNG from ZIP: ${pngData.length} bytes`);
-            return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
+            { const u = URL.createObjectURL(new Blob([pngData], { type: "image/png" })); blobUrls.add(u); return u; }
         } else {
             log(`Invalid PNG signature after extraction: ${pngData[0]} ${pngData[1]} ${pngData[2]} ${pngData[3]}`);
             throw new Error("Extracted data is not a valid PNG file.");
@@ -1247,7 +1251,7 @@ async function genNovelAI(prompt, negative, s) {
     const pngEnd = findPngEnd(bytes, pngStart);
     log(`Extracted PNG: ${pngStart} to ${pngEnd} (${pngEnd - pngStart} bytes)`);
     const pngData = bytes.slice(pngStart, pngEnd);
-    return URL.createObjectURL(new Blob([pngData], { type: "image/png" }));
+    { const u = URL.createObjectURL(new Blob([pngData], { type: "image/png" })); blobUrls.add(u); return u; }
 }
 
 function findPngStart(bytes) {
@@ -1470,7 +1474,7 @@ async function genChutes(prompt, negative, s) {
     const contentType = res.headers.get("content-type") || "";
     if (contentType.includes("image/")) {
         const blob = await res.blob();
-        return URL.createObjectURL(blob);
+        const u = URL.createObjectURL(blob); blobUrls.add(u); return u;
     }
     const data = await res.json();
     if (data.images?.[0]) {
@@ -2536,6 +2540,8 @@ function displayBatchResults(results) {
             if (e.key === "ArrowRight") showImage((currentIndex + 1) % results.length);
             if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
         };
+        if (batchKeyHandler) document.removeEventListener("keydown", batchKeyHandler);
+        batchKeyHandler = keyHandler;
         document.addEventListener("keydown", keyHandler);
         const origOnClick = popup.onclick;
         popup.onclick = (e) => {
@@ -2619,6 +2625,7 @@ function showGallery() {
         document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
         document.getElementById("qig-gallery-clear").onclick = () => {
             if (confirm("Clear entire gallery?")) {
+                blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls.clear();
                 sessionGallery = [];
                 localStorage.removeItem("qig_gallery");
                 document.getElementById("qig-gallery-grid").innerHTML = '<p style="color:#888;">No images yet</p>';
@@ -3045,7 +3052,7 @@ function showFilterDialog(filter) {
         const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
             <div style="padding:12px;">
                 <label style="font-size:11px;">Name</label>
-                <input id="qig-fd-name" type="text" value="${f.name}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
+                <input id="qig-fd-name" type="text" value="${escapeHtml(f.name)}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
                 <label style="font-size:11px;">Match Mode</label>
                 <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
                     <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
@@ -3054,16 +3061,16 @@ function showFilterDialog(filter) {
                 </select>
                 <div id="qig-fd-keywords-wrap" style="display:${isLLM ? 'none' : ''};">
                     <label style="font-size:11px;">Keywords (comma-separated)</label>
-                    <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${f.keywords || ""}</textarea>
+                    <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${escapeHtml(f.keywords || "")}</textarea>
                 </div>
                 <div id="qig-fd-desc-wrap" style="display:${isLLM ? '' : 'none'};">
                     <label style="font-size:11px;">Concept Description (what the LLM should look for)</label>
-                    <textarea id="qig-fd-description" style="width:100%;height:60px;resize:vertical;" placeholder="Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes">${f.description || ""}</textarea>
+                    <textarea id="qig-fd-description" style="width:100%;height:60px;resize:vertical;" placeholder="Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes">${escapeHtml(f.description || "")}</textarea>
                 </div>
                 <label style="font-size:11px;">Positive Prompt</label>
-                <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${f.positive}</textarea>
+                <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${escapeHtml(f.positive)}</textarea>
                 <label style="font-size:11px;">Negative Prompt</label>
-                <textarea id="qig-fd-negative" style="width:100%;height:40px;resize:vertical;" placeholder="solo, 1boy">${f.negative}</textarea>
+                <textarea id="qig-fd-negative" style="width:100%;height:40px;resize:vertical;" placeholder="solo, 1boy">${escapeHtml(f.negative)}</textarea>
                 <label style="font-size:11px;">Priority (higher overrides lower)</label>
                 <input id="qig-fd-priority" type="number" value="${f.priority || 0}" style="width:80px;margin-bottom:12px;">
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -3151,13 +3158,19 @@ function renderContextualFilters() {
     const container = document.getElementById("qig-contextual-filters");
     if (!container) return;
     if (!contextualFilters.length) { container.innerHTML = ""; return; }
-    const html = contextualFilters.map(f =>
-        `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
-        `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${f.id}')" title="Enable/disable">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${f.id}')" title="${f.matchMode}: ${f.matchMode === 'LLM' ? (f.description || '') : f.keywords}\nPriority: ${f.priority}">${f.name}</button>` +
-        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : f.matchMode} p${f.priority}</span>` +
-        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${f.id}')">×</button>` +
-        `</div>`
+    const html = contextualFilters.map(f => {
+        const eName = escapeHtml(f.name);
+        const eDesc = escapeHtml(f.description || '');
+        const eKeywords = escapeHtml(f.keywords || '');
+        const eId = escapeHtml(f.id);
+        const eMode = escapeHtml(f.matchMode);
+        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
+        `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${f.matchMode === 'LLM' ? eDesc : eKeywords}\nPriority: ${f.priority}">${eName}</button>` +
+        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}</span>` +
+        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${eId}')">×</button>` +
+        `</div>`;
+    }
     ).join("");
     container.innerHTML = `<div style="max-height:150px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
         `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
@@ -3178,7 +3191,7 @@ function getCurrentRefImages(s) {
 
 function getCurrentCharId() {
     const ctx = getContext();
-    return ctx?.characterId ?? ctx?.characters?.[ctx?.characterId]?.avatar ?? null;
+    return ctx?.characterId ?? null;
 }
 
 function saveCharSettings() {
@@ -5202,9 +5215,11 @@ function embedPNGMetadata(arrayBuffer, text) {
     let iendPos = src.length;
     let offset = 8;
     while (offset < src.length) {
+        if (offset + 12 > src.length) break;
         const len = (src[offset] << 24 | src[offset+1] << 16 | src[offset+2] << 8 | src[offset+3]) >>> 0;
         const type = String.fromCharCode(src[offset+4], src[offset+5], src[offset+6], src[offset+7]);
         if (type === 'IEND') { iendPos = offset; break; }
+        if (len === 0 && type === '\0\0\0\0' || offset + len + 12 > src.length) break;
         offset += len + 12;
     }
 
