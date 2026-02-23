@@ -4998,6 +4998,11 @@ async function generateImage() {
     isGenerating = true;
     currentAbortController = new AbortController();
     const s = getSettings();
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    const btn = getOrCacheElement("qig-generate-btn");
+    const originalSeed = s.seed;
+
+    try {
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
 
@@ -5009,10 +5014,7 @@ async function generateImage() {
             if (s.enableParagraphPicker) {
                 const filtered = await showParagraphPicker(messages);
                 if (filtered === null) {
-                    currentAbortController = null;
-                    isGenerating = false;
-                    hideStatus();
-                    return;
+                    return; // finally block handles cleanup
                 }
                 scenePrompt = filtered;
                 basePrompt = filtered;
@@ -5024,7 +5026,6 @@ async function generateImage() {
     const batchCount = s.batchCount || 1;
     showStatus(`🎨 Generating ${batchCount} image(s)...`);
 
-    const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
         paletteBtn.classList.remove("fa-palette");
         paletteBtn.classList.add("fa-spinner", "fa-spin");
@@ -5041,16 +5042,7 @@ async function generateImage() {
         if (editedPrompt !== null) {
             prompt = editedPrompt;
         } else {
-            // User cancelled
-            currentAbortController = null;
-            isGenerating = false;
-            hideStatus();
-            if (paletteBtn) {
-                paletteBtn.classList.remove("fa-spinner", "fa-spin");
-                paletteBtn.classList.add("fa-palette");
-                paletteBtn.title = "Generate Image";
-            }
-            return;
+            return; // finally block handles cleanup
         }
     }
 
@@ -5094,14 +5086,11 @@ async function generateImage() {
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
 
-    const btn = getOrCacheElement("qig-generate-btn");
     if (btn) {
         btn.disabled = true;
         btn.textContent = "Generating...";
     }
 
-    const originalSeed = s.seed;
-    try {
         const results = [];
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
         let baseSeed = originalSeed;
