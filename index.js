@@ -165,6 +165,14 @@ let contextualFilters = safeParse("qig_contextual_filters", []);
 let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
+const _processedInjectIndices = new Set();
+let currentAbortController = null;
+
+function checkAborted() {
+    if (currentAbortController?.signal?.aborted) {
+        throw new DOMException("Generation cancelled by user", "AbortError");
+    }
+}
 
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
@@ -1093,7 +1101,8 @@ async function generateLiteralFallback(originalInstruction) {
         return originalInstruction;
     }
 }
-async function genPollinations(prompt, negative, s) {
+async function genPollinations(prompt, negative, s, signal) {
+    if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
     const seed = s.seed === -1 ? Date.now() : s.seed;
     let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
     if (negative) url += `&negative=${encodeURIComponent(negative)}`;
@@ -1102,7 +1111,7 @@ async function genPollinations(prompt, negative, s) {
     return url;
 }
 
-async function genNovelAI(prompt, negative, s) {
+async function genNovelAI(prompt, negative, s, signal) {
     const isV4 = s.naiModel.includes("-4");
     // Map SillyTavern sampler names to NovelAI API format
     const samplerMap = {
@@ -1143,7 +1152,8 @@ async function genNovelAI(prompt, negative, s) {
         const res = await fetch(v1Url, {
             method: "POST",
             headers: { "Authorization": `Bearer ${s.naiProxyKey || s.naiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify(v1Payload)
+            body: JSON.stringify(v1Payload),
+            signal
         });
         if (!res.ok) {
             const errText = await res.text().catch(() => "");
@@ -1198,7 +1208,8 @@ async function genNovelAI(prompt, negative, s) {
     const res = await fetch(apiUrl, {
         method: "POST",
         headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json", "Accept": "*/*" },
-        body: JSON.stringify(payload)
+        body: JSON.stringify(payload),
+        signal
     });
     if (!res.ok) {
         const errText = await res.text().catch(() => "");
@@ -1406,7 +1417,7 @@ async function decompressDeflate(compressedData) {
     }
 }
 
-async function genArliAI(prompt, negative, s) {
+async function genArliAI(prompt, negative, s, signal) {
     const res = await fetch("https://api.arliai.com/v1/txt2img", {
         method: "POST",
         headers: {
@@ -1423,7 +1434,8 @@ async function genArliAI(prompt, negative, s) {
             cfg_scale: s.cfgScale,
             sampler_name: s.sampler,
             seed: s.seed === -1 ? -1 : s.seed
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`ArliAI error: ${res.status}`);
     const data = await res.json();
@@ -1431,7 +1443,7 @@ async function genArliAI(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genNanoGPT(prompt, negative, s) {
+async function genNanoGPT(prompt, negative, s, signal) {
     const res = await fetch("https://nano-gpt.com/v1/images/generations", {
         method: "POST",
         headers: {
@@ -1444,7 +1456,8 @@ async function genNanoGPT(prompt, negative, s) {
             negative_prompt: negative,
             size: `${s.width}x${s.height}`,
             n: 1
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`NanoGPT error: ${res.status}`);
     const data = await res.json();
@@ -1453,7 +1466,7 @@ async function genNanoGPT(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genChutes(prompt, negative, s) {
+async function genChutes(prompt, negative, s, signal) {
     const res = await fetch("https://image.chutes.ai/generate", {
         method: "POST",
         headers: {
@@ -1469,7 +1482,8 @@ async function genChutes(prompt, negative, s) {
             num_inference_steps: s.steps,
             guidance_scale: s.cfgScale,
             seed: s.seed === -1 ? undefined : s.seed
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Chutes error: ${res.status}`);
     const contentType = res.headers.get("content-type") || "";
@@ -1490,7 +1504,7 @@ async function genChutes(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genCivitAI(prompt, negative, s) {
+async function genCivitAI(prompt, negative, s, signal) {
     // Parse LoRAs into additionalNetworks map
     let additionalNetworks;
     if (s.civitaiLoras && s.civitaiLoras.trim()) {
@@ -1535,7 +1549,8 @@ async function genCivitAI(prompt, negative, s) {
             "Authorization": `Bearer ${s.civitaiKey}`,
             "Content-Type": "application/json"
         },
-        body: JSON.stringify({ $type: "textToImage", input })
+        body: JSON.stringify({ $type: "textToImage", input }),
+        signal
     });
     if (!res.ok) {
         const errText = await res.text();
@@ -1549,9 +1564,11 @@ async function genCivitAI(prompt, negative, s) {
 
     let lastError = null;
     for (let i = 0; i < 60; i++) {
+        if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
         const statusRes = await fetch(`https://civitai.com/api/v1/consumer/jobs?token=${jobToken}`, {
-            headers: { "Authorization": `Bearer ${s.civitaiKey}` }
+            headers: { "Authorization": `Bearer ${s.civitaiKey}` },
+            signal
         });
         if (!statusRes.ok) {
             lastError = `Status error: ${statusRes.status}`;
@@ -1570,7 +1587,7 @@ async function genCivitAI(prompt, negative, s) {
     throw new Error(`CivitAI job timeout. Last error: ${lastError || 'Still processing'}`);
 }
 
-async function genNanobanana(prompt, negative, s) {
+async function genNanobanana(prompt, negative, s, signal) {
     // Build parts array with reference images and prompt
     const parts = [];
     if (s.nanobananaRefImages?.length) {
@@ -1597,7 +1614,8 @@ async function genNanobanana(prompt, negative, s) {
             generationConfig: {
                 responseModalities: ["TEXT", "IMAGE"]
             }
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Nanobanana error: ${res.status}`);
     const data = await res.json();
@@ -1612,7 +1630,7 @@ async function genNanobanana(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genLocal(prompt, negative, s) {
+async function genLocal(prompt, negative, s, signal) {
     const baseUrl = s.localUrl.replace(/\/$/, "");
 
     if (s.localType === "comfyui") {
@@ -1684,17 +1702,19 @@ async function genLocal(prompt, negative, s) {
                 const res = await fetch(`${baseUrl}/prompt`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt: customWorkflow })
+                    body: JSON.stringify({ prompt: customWorkflow }),
+                    signal
                 });
                 if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
                 const data = await res.json();
 
                 const promptId = data.prompt_id;
                 for (let i = 0; i < 120; i++) {
+                    if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
                     await new Promise(r => setTimeout(r, 1000));
                     let hist;
                     try {
-                        const histRes = await fetch(`${baseUrl}/history/${promptId}`);
+                        const histRes = await fetch(`${baseUrl}/history/${promptId}`, { signal });
                         if (!histRes.ok) continue;
                         hist = await histRes.json();
                     } catch { continue; }
@@ -1792,18 +1812,20 @@ async function genLocal(prompt, negative, s) {
         const res = await fetch(`${baseUrl}/prompt`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: workflowNodes })
+            body: JSON.stringify({ prompt: workflowNodes }),
+            signal
         });
         if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
         const data = await res.json();
         // Poll for result - find any SaveImage output
         const promptId = data.prompt_id;
         for (let i = 0; i < 120; i++) {
+            if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
             await new Promise(r => setTimeout(r, 1000));
             showStatus(`Generating... (waiting ${i + 1}s)`);
             let hist;
             try {
-                const histRes = await fetch(`${baseUrl}/history/${promptId}`);
+                const histRes = await fetch(`${baseUrl}/history/${promptId}`, { signal });
                 if (!histRes.ok) continue;
                 hist = await histRes.json();
             } catch { continue; }
@@ -1956,7 +1978,8 @@ async function genLocal(prompt, negative, s) {
         const res = await fetch(`${baseUrl}${endpoint}`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal
         });
         if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
         const data = await res.json();
@@ -1967,7 +1990,7 @@ async function genLocal(prompt, negative, s) {
     }
 }
 
-async function genProxy(prompt, negative, s) {
+async function genProxy(prompt, negative, s, signal) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
@@ -2010,6 +2033,7 @@ async function genProxy(prompt, negative, s) {
         }
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 120000);
+        if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
         const res = await fetch(chatUrl, {
             method: "POST",
             headers,
@@ -2096,6 +2120,7 @@ async function genProxy(prompt, negative, s) {
 
     const controller2 = new AbortController();
     const timeoutId2 = setTimeout(() => controller2.abort(), 120000);
+    if (signal) signal.addEventListener("abort", () => controller2.abort(), { once: true });
     const res = await fetch(s.proxyUrl, {
         method: "POST",
         headers,
@@ -2800,7 +2825,7 @@ function showParagraphPicker(messageText) {
     });
 }
 
-async function genStability(prompt, negative, s) {
+async function genStability(prompt, negative, s, signal) {
     if (!s.stabilityKey) throw new Error("Stability AI API key required");
     const res = await fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
         method: "POST",
@@ -2819,7 +2844,8 @@ async function genStability(prompt, negative, s) {
             height: s.height,
             seed: s.seed === -1 ? 0 : s.seed,
             samples: 1
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Stability error: ${res.status}`);
     const data = await res.json();
@@ -2827,7 +2853,7 @@ async function genStability(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genReplicate(prompt, negative, s) {
+async function genReplicate(prompt, negative, s, signal) {
     if (!s.replicateKey) throw new Error("Replicate API key required");
     // Default to SDXL if no model specified
     const version = s.replicateModel || "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b";
@@ -2860,16 +2886,19 @@ async function genReplicate(prompt, negative, s) {
                     "heun": "K_HEUN"
                 })[s.sampler] || "K_EULER"
             }
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Replicate error: ${res.status}`);
     const pred = await res.json();
 
     // Poll for result
     for (let i = 0; i < 60; i++) {
+        if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         await new Promise(r => setTimeout(r, 2000));
         const statusRes = await fetch(`https://api.replicate.com/v1/predictions/${pred.id}`, {
-            headers: { "Authorization": `Token ${s.replicateKey}` }
+            headers: { "Authorization": `Token ${s.replicateKey}` },
+            signal
         });
         if (!statusRes.ok) throw new Error(`Replicate polling error: ${statusRes.status}`);
         const status = await statusRes.json();
@@ -2879,7 +2908,7 @@ async function genReplicate(prompt, negative, s) {
     throw new Error("Replicate timeout");
 }
 
-async function genFal(prompt, negative, s) {
+async function genFal(prompt, negative, s, signal) {
     if (!s.falKey) throw new Error("Fal.ai API key required");
     // Default to Flux Schnell
     const model = s.falModel || "fal-ai/flux/schnell";
@@ -2900,7 +2929,8 @@ async function genFal(prompt, negative, s) {
             seed: s.seed === -1 ? undefined : s.seed,
             num_images: 1,
             enable_safety_checker: false
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Fal.ai error: ${res.status}`);
     const data = await res.json();
@@ -2908,7 +2938,7 @@ async function genFal(prompt, negative, s) {
     throw new Error("No image in response");
 }
 
-async function genTogether(prompt, negative, s) {
+async function genTogether(prompt, negative, s, signal) {
     if (!s.togetherKey) throw new Error("Together AI API key required");
     const model = s.togetherModel || "stabilityai/stable-diffusion-xl-base-1.0";
 
@@ -2927,7 +2957,8 @@ async function genTogether(prompt, negative, s) {
             steps: Math.min(s.steps, 50),
             seed: s.seed === -1 ? undefined : s.seed,
             n: 1
-        })
+        }),
+        signal
     });
     if (!res.ok) throw new Error(`Together AI error: ${res.status}`);
     const data = await res.json();
@@ -2953,10 +2984,10 @@ const providerGenerators = {
     proxy: genProxy
 };
 
-async function generateForProvider(prompt, negative, settings) {
+async function generateForProvider(prompt, negative, settings, signal) {
     const generator = providerGenerators[settings.provider];
     if (!generator) throw new Error(`Unknown provider: ${settings.provider}`);
-    return await generator(prompt, negative, settings);
+    return await generator(prompt, negative, settings, signal);
 }
 
 async function regenerateImage() {
@@ -2966,6 +2997,7 @@ async function regenerateImage() {
         return;
     }
     isGenerating = true;
+    currentAbortController = new AbortController();
     const s = getSettings();
     const batchCount = s.batchCount || 1;
     const originalSeed = s.seed;
@@ -2975,6 +3007,7 @@ async function regenerateImage() {
     if (paletteBtn) {
         paletteBtn.classList.remove("fa-palette");
         paletteBtn.classList.add("fa-spinner", "fa-spin");
+        paletteBtn.title = "Cancel Generation";
     }
     const btn = getOrCacheElement("qig-generate-btn");
     if (btn) {
@@ -2986,18 +3019,19 @@ async function regenerateImage() {
     try {
         if (batchCount <= 1) {
             showStatus("🔄 Regenerating...");
-            const result = await generateForProvider(lastPrompt, lastNegative, s);
+            const result = await generateForProvider(lastPrompt, lastNegative, s, currentAbortController?.signal);
             hideStatus();
             if (result) displayImage(result);
         } else {
             const results = [];
             let baseSeed = Math.floor(Math.random() * 2147483647);
             for (let i = 0; i < batchCount; i++) {
+                checkAborted();
                 if (s.sequentialSeeds) s.seed = baseSeed + i;
                 showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(lastPrompt);
                 const expandedNegative = expandWildcards(lastNegative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                 if (result) results.push(result);
             }
             hideStatus();
@@ -3008,11 +3042,17 @@ async function regenerateImage() {
             }
         }
     } catch (e) {
-        showStatus(`❌ ${e.message}`);
-        log(`Regenerate error: ${e.message}`);
-        setTimeout(hideStatus, 3000);
+        if (e.name === "AbortError") {
+            log("Regeneration cancelled by user");
+            toastr.info("Generation cancelled");
+        } else {
+            showStatus(`❌ ${e.message}`);
+            log(`Regenerate error: ${e.message}`);
+            setTimeout(hideStatus, 3000);
+        }
     } finally {
         s.seed = originalSeed;
+        currentAbortController = null;
         isGenerating = false;
         showStatus(null);
         if (btn) {
@@ -3022,6 +3062,7 @@ async function regenerateImage() {
         if (paletteBtn) {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
+            paletteBtn.title = "Generate Image";
         }
     }
 }
@@ -4637,6 +4678,12 @@ function addInputButton() {
     btn.title = "Generate Image";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
+        if (isGenerating && currentAbortController) {
+            log("User cancelled generation via palette button");
+            currentAbortController.abort();
+            toastr.warning("Cancelling generation...");
+            return;
+        }
         const mode = getSettings().paletteMode || "direct";
         if (mode === "inject") generateImageInjectPalette();
         else generateImage();
@@ -4652,12 +4699,14 @@ function addInputButton() {
 async function generateImageInjectPalette() {
     if (isGenerating) return;
     isGenerating = true;
+    currentAbortController = new AbortController();
     const s = getSettings();
 
     const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
         paletteBtn.classList.remove("fa-palette");
         paletteBtn.classList.add("fa-spinner", "fa-spin");
+        paletteBtn.title = "Cancel Generation";
     }
 
     try {
@@ -4739,6 +4788,7 @@ async function generateImageInjectPalette() {
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
         for (const extractedPrompt of matches) {
+            checkAborted();
             showStatus(`🖼️ Generating palette-inject image...`);
 
             let prompt = await generateLLMPrompt(s, extractedPrompt);
@@ -4785,11 +4835,12 @@ async function generateImageInjectPalette() {
                 baseSeed = Math.floor(Math.random() * 2147483647);
             }
             for (let i = 0; i < batchCount; i++) {
+                checkAborted();
                 if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
                 showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                 if (result) results.push(result);
             }
             s.seed = originalSeed;
@@ -4812,14 +4863,21 @@ async function generateImageInjectPalette() {
             }
         }
     } catch (e) {
-        log(`Palette inject: Error: ${e.message}`);
-        toastr.error("Palette inject failed: " + e.message);
+        if (e.name === "AbortError") {
+            log("Palette inject: Generation cancelled by user");
+            toastr.info("Generation cancelled");
+        } else {
+            log(`Palette inject: Error: ${e.message}`);
+            toastr.error("Palette inject failed: " + e.message);
+        }
     } finally {
+        currentAbortController = null;
         isGenerating = false;
         showStatus(null);
         if (paletteBtn) {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
+            paletteBtn.title = "Generate Image";
         }
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
@@ -4830,6 +4888,7 @@ async function generateImage() {
     if (isGenerating) return;
     if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
     isGenerating = true;
+    currentAbortController = new AbortController();
     const s = getSettings();
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
@@ -4842,6 +4901,7 @@ async function generateImage() {
             if (s.enableParagraphPicker) {
                 const filtered = await showParagraphPicker(messages);
                 if (filtered === null) {
+                    currentAbortController = null;
                     isGenerating = false;
                     hideStatus();
                     return;
@@ -4860,6 +4920,7 @@ async function generateImage() {
     if (paletteBtn) {
         paletteBtn.classList.remove("fa-palette");
         paletteBtn.classList.add("fa-spinner", "fa-spin");
+        paletteBtn.title = "Cancel Generation";
     }
 
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
@@ -4872,11 +4933,13 @@ async function generateImage() {
             prompt = editedPrompt;
         } else {
             // User cancelled
+            currentAbortController = null;
             isGenerating = false;
             hideStatus();
             if (paletteBtn) {
                 paletteBtn.classList.remove("fa-spinner", "fa-spin");
                 paletteBtn.classList.add("fa-palette");
+                paletteBtn.title = "Generate Image";
             }
             return;
         }
@@ -4936,11 +4999,12 @@ async function generateImage() {
             baseSeed = Math.floor(Math.random() * 2147483647);
         }
         for (let i = 0; i < batchCount; i++) {
+            checkAborted();
             if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
             const expandedPrompt = expandWildcards(prompt);
             const expandedNegative = expandWildcards(negative);
-            const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+            const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
             if (result) results.push(result);
         }
         log(`Generated ${results.length} image(s) successfully`);
@@ -4958,10 +5022,16 @@ async function generateImage() {
             displayBatchResults(results);
         }
     } catch (e) {
-        log(`Error: ${e.message}`);
-        toastr.error("Generation failed: " + e.message);
+        if (e.name === "AbortError") {
+            log("Generation cancelled by user");
+            toastr.info("Generation cancelled");
+        } else {
+            log(`Error: ${e.message}`);
+            toastr.error("Generation failed: " + e.message);
+        }
     } finally {
         s.seed = originalSeed;
+        currentAbortController = null;
         isGenerating = false;
         showStatus(null);
         if (btn) {
@@ -4971,6 +5041,7 @@ async function generateImage() {
         if (paletteBtn) {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
+            paletteBtn.title = "Generate Image";
         }
         // Clear caches after each generation to prevent reusing stale prompts
         clearStyleCache();
@@ -4982,6 +5053,7 @@ async function generateImage() {
 // === Inject Mode (AI-driven image generation via <pic> tags) ===
 
 function onChatCompletionPromptReady(eventData) {
+    if (isGenerating) return; // Don't inject into our own internal LLM calls
     const s = getSettings();
     if (!s.injectEnabled || !s.injectPrompt) return;
 
@@ -5074,6 +5146,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
     // Generate images for each extracted prompt
     for (const extractedPrompt of matches) {
+        checkAborted();
         if (isGenerating) {
             log("Inject: Waiting for current generation to finish...");
             await new Promise((resolve, reject) => {
@@ -5088,6 +5161,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
         try {
             isGenerating = true;
+            currentAbortController = new AbortController();
             log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
             showStatus("🖼️ Generating inject-mode image...");
 
@@ -5135,11 +5209,12 @@ async function processInjectMessage(messageText, messageIndex) {
                 baseSeed = Math.floor(Math.random() * 2147483647);
             }
             for (let i = 0; i < batchCount; i++) {
+                checkAborted();
                 if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
                 showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                 if (result) results.push(result);
             }
             s.seed = originalSeed;
@@ -5162,13 +5237,23 @@ async function processInjectMessage(messageText, messageIndex) {
                 toastr.success(`Inject mode: ${results.length} image(s) generated`);
             }
         } catch (e) {
-            log(`Inject: Generation error: ${e.message}`);
-            toastr.error("Inject generation failed: " + e.message);
+            if (e.name === "AbortError") {
+                log("Inject: Generation cancelled by user");
+                toastr.info("Generation cancelled");
+                break; // Exit the entire match loop on cancel
+            } else {
+                log(`Inject: Generation error: ${e.message}`);
+                toastr.error("Inject generation failed: " + e.message);
+            }
         } finally {
+            currentAbortController = null;
             isGenerating = false;
             showStatus(null);
         }
     }
+
+    // Expire this index after a delay so future messages at the same index can be processed
+    setTimeout(() => _processedInjectIndices.delete(messageIndex), 5000);
 }
 
 
@@ -5212,8 +5297,10 @@ jQuery(function () {
                         const ctx = getContext();
                         const chat = ctx?.chat;
                         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
+                        if (idx < 0 || _processedInjectIndices.has(idx)) return;
                         const msg = chat?.[idx];
                         if (msg?.mes) {
+                            _processedInjectIndices.add(idx);
                             setTimeout(() => processInjectMessage(msg.mes, idx), 300);
                         }
                         return;
@@ -5228,6 +5315,7 @@ jQuery(function () {
                     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
                 }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
+                    _processedInjectIndices.clear();
                     loadCharSettings();
                 });
             }
