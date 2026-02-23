@@ -167,6 +167,7 @@ const blobUrls = new Set();
 let batchKeyHandler = null;
 const _processedInjectIndices = new Set();
 let currentAbortController = null;
+let _autoGenTimeout = null;
 
 function checkAborted() {
     if (currentAbortController?.signal?.aborted) {
@@ -668,11 +669,14 @@ ${conceptList}`;
             const quietOptions = { skipWIAN: true, quietName: `FilterMatch_${Date.now()}`, quietToLoud: false };
             try {
                 response = await generateQuietPrompt(instruction, quietOptions);
-            } catch {
+            } catch (e) {
+                if (e.name === "AbortError") throw e;
                 response = await generateQuietPrompt(instruction);
             }
         }
+        checkAborted();
     } catch (e) {
+        if (e.name === "AbortError") throw e; // Let cancellation propagate
         log(`LLM filter matching failed: ${e.message}`);
         return [];
     }
@@ -726,7 +730,8 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
         const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
         try {
             return await generateQuietPrompt(instruction, quietOptions);
-        } catch {
+        } catch (e) {
+            if (e.name === "AbortError") throw e;
             return await generateQuietPrompt(instruction);
         }
     }
@@ -768,12 +773,14 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
         );
         return extractLLMResponse(response);
     } catch (e) {
+        if (e.name === "AbortError") throw e;
         log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
         log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
         const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
         try {
             return await generateQuietPrompt(instruction, quietOptions);
-        } catch {
+        } catch (e2) {
+            if (e2.name === "AbortError") throw e2;
             return await generateQuietPrompt(instruction);
         }
     } finally {
@@ -835,12 +842,13 @@ async function populatePresetList(selectId, selectedPreset) {
     }
 }
 
-async function generateLLMPrompt(s, basePrompt) {
+async function generateLLMPrompt(s, basePrompt, signal) {
     if (!s.useLLMPrompt) return basePrompt;
 
     // Clear any cached styles before generating new prompt
     clearStyleCache();
 
+    checkAborted(); // Bail early if already cancelled
     log("Generating prompt via SillyTavern LLM...");
     showStatus("🤖 Creating image prompt...");
 
@@ -1038,11 +1046,13 @@ Tags:`;
             try {
                 llmPrompt = await generateQuietPrompt(instructionWithEntropy, quietOptions);
             } catch (e) {
+                if (e.name === "AbortError") throw e;
                 log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
                 llmPrompt = await generateQuietPrompt(instructionWithEntropy);
             }
         }
 
+        checkAborted(); // Check immediately after LLM call returns
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
 
@@ -1077,6 +1087,7 @@ Tags:`;
 
         return cleaned || basePrompt;
     } catch (e) {
+        if (e.name === "AbortError") throw e;
         log(`LLM prompt failed: ${e.message}`);
         return basePrompt;
     }
@@ -3069,6 +3080,7 @@ async function regenerateImage() {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
             paletteBtn.title = "Generate Image";
+            paletteBtn.style.opacity = "0.7";
         }
     }
 }
@@ -4764,8 +4776,16 @@ function addInputButton() {
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
         if (isGenerating && currentAbortController) {
+            if (currentAbortController.signal.aborted) {
+                log("Cancel already requested, ignoring duplicate click");
+                return;
+            }
             log("User cancelled generation via palette button");
             currentAbortController.abort();
+            // Also cancel any pending autoGenerate timeout
+            if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
+            btn.title = "Cancelling...";
+            btn.style.opacity = "0.4";
             toastr.warning("Cancelling generation...");
             return;
         }
@@ -4963,6 +4983,7 @@ async function generateImageInjectPalette() {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
             paletteBtn.title = "Generate Image";
+            paletteBtn.style.opacity = "0.7";
         }
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
@@ -4972,6 +4993,8 @@ async function generateImageInjectPalette() {
 async function generateImage() {
     if (isGenerating) return;
     if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+    // Cancel any pending autoGenerate timeout to prevent overlapping triggers
+    if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
     isGenerating = true;
     currentAbortController = new AbortController();
     const s = getSettings();
@@ -5008,7 +5031,8 @@ async function generateImage() {
         paletteBtn.title = "Cancel Generation";
     }
 
-    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt);
+    let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt, currentAbortController?.signal);
+    checkAborted();
     lastPromptWasLLM = (s.useLLMPrompt && prompt !== (scenePrompt || basePrompt));
 
     // Show prompt editing dialog if enabled
@@ -5055,6 +5079,7 @@ async function generateImage() {
     // Apply LLM-matched concept filters — use raw scene text for natural language analysis
     const llmSceneText = scenePrompt || basePrompt;
     const llmMatched = await matchLLMFilters(llmSceneText);
+    checkAborted();
     for (const f of llmMatched) {
         if (f.positive) prompt = `${prompt}, ${f.positive}`;
         if (f.negative) negative = `${negative}, ${f.negative}`;
@@ -5127,6 +5152,7 @@ async function generateImage() {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
             paletteBtn.title = "Generate Image";
+            paletteBtn.style.opacity = "0.7";
         }
         // Clear caches after each generation to prevent reusing stale prompts
         clearStyleCache();
@@ -5390,9 +5416,13 @@ jQuery(function () {
                         }
                         return;
                     }
-                    // Auto-generate mode
+                    // Auto-generate mode (debounced — only one pending timeout at a time)
                     if (s.autoGenerate && !isGenerating) {
-                        setTimeout(() => generateImage(), 500);
+                        if (_autoGenTimeout) clearTimeout(_autoGenTimeout);
+                        _autoGenTimeout = setTimeout(() => {
+                            _autoGenTimeout = null;
+                            if (!isGenerating) generateImage();
+                        }, 500);
                     }
                 });
                 // Inject mode: inject prompt into chat completion
