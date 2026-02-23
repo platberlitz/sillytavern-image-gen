@@ -122,6 +122,7 @@ const defaultSettings = {
     comfyWorkflow: "",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
+    comfyLoras: "",
     // ST Style integration
     useSTStyle: true,
     // Inject Mode (wickedcode01-style)
@@ -177,7 +178,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1743,6 +1744,42 @@ async function genLocal(prompt, negative, s) {
         // Add CLIP SetLastLayer if clip_skip > 1
         if (clipSkip > 1) {
             workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
+        }
+
+        // LoRA injection for ComfyUI default workflow
+        if (s.comfyLoras && s.comfyLoras.trim()) {
+            let loraNodeStart = 20;
+            let lastModelRef = ["4", 0];
+            let lastClipRef = ["4", 1];
+            const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
+            loras.forEach((l, i) => {
+                const [name, w] = l.split(":");
+                const trimmedName = name.trim();
+                if (!trimmedName) return;
+                const nodeId = String(loraNodeStart + i);
+                workflowNodes[nodeId] = {
+                    class_type: "LoraLoader",
+                    inputs: {
+                        lora_name: trimmedName,
+                        strength_model: parseFloat(w) || 0.8,
+                        strength_clip: parseFloat(w) || 0.8,
+                        model: lastModelRef,
+                        clip: lastClipRef
+                    }
+                };
+                lastModelRef = [nodeId, 0];
+                lastClipRef = [nodeId, 1];
+            });
+            // Rewire KSampler model input
+            workflowNodes["3"].inputs.model = lastModelRef;
+            // Rewire CLIP inputs
+            if (clipSkip > 1) {
+                workflowNodes["10"].inputs.clip = lastClipRef;
+            } else {
+                workflowNodes["6"].inputs.clip = lastClipRef;
+                workflowNodes["7"].inputs.clip = lastClipRef;
+            }
+            log(`ComfyUI: Injected ${loras.length} LoRA(s)`);
         }
 
         log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}`);
@@ -3478,7 +3515,7 @@ function refreshProviderInputs(provider) {
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
-        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"], ["qig-a1111-loras", "a1111Loras"], ["qig-a1111-hires", "a1111HiresFix"], ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"], ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"], ["qig-a1111-ad-negative", "a1111AdetailerNegative"]],
+        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"], ["qig-a1111-loras", "a1111Loras"], ["qig-a1111-hires", "a1111HiresFix"], ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"], ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"], ["qig-a1111-ad-negative", "a1111AdetailerNegative"], ["qig-comfy-loras", "comfyLoras"]],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
@@ -3717,6 +3754,9 @@ function createUI() {
                             <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${s.comfyDenoise || 1.0}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${s.comfyClipSkip || 1}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
+                         <label>LoRAs (filename:weight, comma-separated)</label>
+                         <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
+                         <input id="qig-comfy-loras" type="text" value="${s.comfyLoras || ""}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
                          <label>Custom Workflow JSON (optional)</label>
                          <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${s.comfyWorkflow || ""}</textarea>
                          <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
@@ -4208,6 +4248,7 @@ function createUI() {
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-workflow", "comfyWorkflow");
+    bind("qig-comfy-loras", "comfyLoras");
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
