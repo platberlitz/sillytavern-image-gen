@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -42,7 +42,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** — filters can be global or limited to a specific character
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
@@ -356,6 +356,17 @@ Each filter has:
 - **Match Mode** — `OR` (any keyword triggers), `AND` (all keywords required), or `LLM` (AI concept recognition)
 - **Positive/Negative Prompt** — appended to the generation prompts when triggered
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
+- **Scope** — `Global` (applies in all chats) or `Character` (applies only when chatting with a specific character)
+
+### Character-Specific Filters
+
+Filters can be scoped to a specific character. When creating or editing a filter, the **Scope** dropdown lets you choose:
+- **Global (all characters)** — the filter applies everywhere (default, backward-compatible)
+- **This Character** — the filter only activates when chatting with the current character
+
+The filter list groups filters by scope with colored badges: blue **G** for global, green **C** for character-specific. A **⧉** duplicate button lets you quickly copy a filter between scopes (e.g., promote a character filter to global or create a character-specific copy of a global filter). Filters for other characters are hidden but counted.
+
+When clearing filters with a character active, you can choose to clear all filters, only global filters, or only the current character's filters.
 
 ### LLM Concept Matching
 

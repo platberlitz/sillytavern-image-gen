@@ -604,11 +604,17 @@ function clearStyleCache() {
     log("Style cache cleared");
 }
 
+function getActiveFilters() {
+    const charId = getCurrentCharId();
+    return contextualFilters.filter(f => !f.charId || String(f.charId) === String(charId));
+}
+
 function applyContextualFilters(prompt, negative, sceneText) {
-    if (!contextualFilters.length || !sceneText) return { prompt, negative };
+    const activeFilters = getActiveFilters();
+    if (!activeFilters.length || !sceneText) return { prompt, negative };
     const scene = sceneText.toLowerCase();
     const matched = [];
-    for (const f of contextualFilters) {
+    for (const f of activeFilters) {
         if (!f.enabled) continue;
         if (f.matchMode === "LLM") continue;
         const keywords = f.keywords.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
@@ -639,7 +645,7 @@ function applyContextualFilters(prompt, negative, sceneText) {
 }
 
 async function matchLLMFilters(sceneText) {
-    const llmFilters = contextualFilters.filter(f => f.enabled && f.matchMode === "LLM" && f.description);
+    const llmFilters = getActiveFilters().filter(f => f.enabled && f.matchMode === "LLM" && f.description);
     if (!llmFilters.length || !sceneText) return [];
 
     const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name}": ${f.description}`).join('\n');
@@ -3132,13 +3138,22 @@ function saveContextualFilters() {
 
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0, description: "" };
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0, description: "", charId: null };
     const isLLM = f.matchMode === "LLM";
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    const editingDifferentChar = f.charId && (!currentCharId || String(f.charId) !== String(currentCharId));
     return new Promise((resolve) => {
         const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
             <div style="padding:12px;">
                 <label style="font-size:11px;">Name</label>
                 <input id="qig-fd-name" type="text" value="${escapeHtml(f.name)}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
+                <label style="font-size:11px;">Scope</label>
+                <select id="qig-fd-scope" style="width:100%;margin-bottom:8px;">
+                    <option value="" ${!f.charId ? "selected" : ""}>Global (all characters)</option>
+                    ${currentCharId != null ? `<option value="${escapeHtml(String(currentCharId))}" ${f.charId && String(f.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
+                    ${editingDifferentChar ? `<option value="${escapeHtml(String(f.charId))}" selected disabled>Other Character (${escapeHtml(String(f.charId))})</option>` : ""}
+                </select>
                 <label style="font-size:11px;">Match Mode</label>
                 <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
                     <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
@@ -3181,6 +3196,7 @@ function showFilterDialog(filter) {
                 if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
                 if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
                 popup.style.display = "none";
+                const scopeVal = document.getElementById("qig-fd-scope").value;
                 resolve({
                     name,
                     keywords: mode === "LLM" ? "" : keywords,
@@ -3188,7 +3204,8 @@ function showFilterDialog(filter) {
                     description: mode === "LLM" ? description : "",
                     positive: document.getElementById("qig-fd-positive").value.trim(),
                     negative: document.getElementById("qig-fd-negative").value.trim(),
-                    priority: parseInt(document.getElementById("qig-fd-priority").value) || 0
+                    priority: parseInt(document.getElementById("qig-fd-priority").value) || 0,
+                    charId: scopeVal || null
                 });
             };
         });
@@ -3234,9 +3251,43 @@ function toggleContextualFilter(id) {
 }
 
 function clearContextualFilters() {
-    if (!confirm("Clear all contextual filters?")) return;
-    contextualFilters = [];
-    localStorage.removeItem("qig_contextual_filters");
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    if (currentCharId != null) {
+        const choice = prompt(
+            `Clear filters — type a number:\n1) All filters\n2) Global filters only\n3) ${charName || "This character"}'s filters only\n\nCancel to abort.`
+        );
+        if (!choice) return;
+        const n = parseInt(choice);
+        if (n === 1) {
+            contextualFilters = [];
+        } else if (n === 2) {
+            contextualFilters = contextualFilters.filter(f => !!f.charId);
+        } else if (n === 3) {
+            contextualFilters = contextualFilters.filter(f => !f.charId || String(f.charId) !== String(currentCharId));
+        } else {
+            return;
+        }
+    } else {
+        if (!confirm("Clear all contextual filters?")) return;
+        contextualFilters = [];
+    }
+    saveContextualFilters();
+    renderContextualFilters();
+}
+
+function duplicateContextualFilter(id) {
+    const f = contextualFilters.find(x => x.id === id);
+    if (!f) return;
+    const charId = getCurrentCharId();
+    const newCharId = f.charId ? null : (charId != null ? String(charId) : null);
+    if (!f.charId && newCharId == null) return;
+    contextualFilters.push({
+        ...JSON.parse(JSON.stringify(f)),
+        id: crypto.randomUUID(),
+        charId: newCharId
+    });
+    saveContextualFilters();
     renderContextualFilters();
 }
 
@@ -3244,21 +3295,46 @@ function renderContextualFilters() {
     const container = document.getElementById("qig-contextual-filters");
     if (!container) return;
     if (!contextualFilters.length) { container.innerHTML = ""; return; }
-    const html = contextualFilters.map(f => {
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    const globalFilters = contextualFilters.filter(f => !f.charId);
+    const charFilters = currentCharId != null ? contextualFilters.filter(f => f.charId && String(f.charId) === String(currentCharId)) : [];
+    const otherCount = contextualFilters.filter(f => f.charId && (!currentCharId || String(f.charId) !== String(currentCharId))).length;
+
+    const renderRow = (f) => {
         const eName = escapeHtml(f.name);
         const eDesc = escapeHtml(f.description || '');
         const eKeywords = escapeHtml(f.keywords || '');
         const eId = escapeHtml(f.id);
         const eMode = escapeHtml(f.matchMode);
+        const isGlobal = !f.charId;
+        const badge = isGlobal
+            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global filter">G</span>`
+            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Character filter">C</span>`;
         return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
+        badge +
         `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${f.matchMode === 'LLM' ? eDesc : eKeywords}\nPriority: ${f.priority}">${eName}</button>` +
         `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}</span>` +
+        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${eId}')">×</button>` +
         `</div>`;
+    };
+
+    let html = "";
+    if (globalFilters.length) {
+        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Filters (${globalFilters.length})</div>`;
+        html += globalFilters.map(renderRow).join("");
     }
-    ).join("");
-    container.innerHTML = `<div style="max-height:150px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
+    if (charFilters.length) {
+        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Filters (${charFilters.length})</div>`;
+        html += charFilters.map(renderRow).join("");
+    }
+    if (otherCount > 0) {
+        html += `<div style="font-size:9px;opacity:0.5;margin:4px 0 2px;font-style:italic;">${otherCount} filter(s) for other characters (hidden)</div>`;
+    }
+
+    container.innerHTML = `<div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
         `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
 }
 
@@ -3267,6 +3343,7 @@ window.editContextualFilter = editContextualFilter;
 window.deleteContextualFilter = deleteContextualFilter;
 window.toggleContextualFilter = toggleContextualFilter;
 window.clearContextualFilters = clearContextualFilters;
+window.duplicateContextualFilter = duplicateContextualFilter;
 
 // Character-specific settings
 function getCurrentRefImages(s) {
@@ -3278,6 +3355,13 @@ function getCurrentRefImages(s) {
 function getCurrentCharId() {
     const ctx = getContext();
     return ctx?.characterId ?? null;
+}
+
+function getCurrentCharName() {
+    const ctx = getContext();
+    if (ctx?.characterId == null) return null;
+    const char = ctx.characters?.[ctx.characterId];
+    return char?.name || char?.avatar || null;
 }
 
 function saveCharSettings() {
@@ -3328,6 +3412,7 @@ function loadCharSettings() {
         }
         saveSettingsDebounced();
     }
+    renderContextualFilters();
     return true;
 }
 
@@ -5317,6 +5402,7 @@ jQuery(function () {
                 eventSource.on(event_types.CHAT_CHANGED, () => {
                     _processedInjectIndices.clear();
                     loadCharSettings();
+                    renderContextualFilters();
                 });
             }
         } catch (err) {
