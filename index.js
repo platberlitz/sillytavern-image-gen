@@ -1289,6 +1289,8 @@ async function extractPngFromZip(zipBytes) {
         const cdOffset = view.getUint32(eocdOffset + 16, true);
         const cdEntries = view.getUint16(eocdOffset + 10, true);
 
+        if (cdOffset >= zipBytes.length || cdOffset < 0) return searchForPngInBytes(zipBytes);
+
         // Parse central directory entries
         let offset = cdOffset;
         for (let i = 0; i < cdEntries; i++) {
@@ -1307,6 +1309,8 @@ async function extractPngFromZip(zipBytes) {
 
             if (filename.toLowerCase().endsWith('.png')) {
                 console.log(`Found PNG file: ${filename}, compression: ${compressionMethod}`);
+
+                if (localHeaderOffset + 30 >= zipBytes.length) break;
 
                 // Get local file header
                 const localFilenameLength = view.getUint16(localHeaderOffset + 26, true);
@@ -2302,7 +2306,14 @@ function saveGallery() {
 }
 
 function savePromptHistory() {
-    localStorage.setItem("qig_prompt_history", JSON.stringify(promptHistory));
+    try {
+        localStorage.setItem("qig_prompt_history", JSON.stringify(promptHistory));
+    } catch {
+        while (promptHistory.length > 10) {
+            promptHistory.pop();
+            try { localStorage.setItem("qig_prompt_history", JSON.stringify(promptHistory)); return; } catch {}
+        }
+    }
 }
 
 function displayImage(url, skipGallery) {
@@ -2509,7 +2520,8 @@ function displayBatchResults(results) {
         popup.querySelectorAll('.qig-batch-thumb').forEach(thumb => {
             thumb.onclick = (e) => {
                 e.stopPropagation();
-                showImage(parseInt(thumb.dataset.index));
+                const idx = parseInt(thumb.dataset.index);
+                if (!isNaN(idx)) showImage(idx);
             };
         });
 
@@ -3491,6 +3503,7 @@ function renderRefImages() {
 
 window.removeRefImage = function (idx) {
     const s = getSettings();
+    if (!s.proxyRefImages) s.proxyRefImages = [];
     s.proxyRefImages.splice(idx, 1);
     saveSettingsDebounced();
     renderRefImages();
@@ -3507,6 +3520,7 @@ function renderNanobananaRefImages() {
 
 window.removeNanobananaRefImage = function (idx) {
     const s = getSettings();
+    if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
     s.nanobananaRefImages.splice(idx, 1);
     saveSettingsDebounced();
     renderNanobananaRefImages();
@@ -4484,6 +4498,7 @@ function createUI() {
         const s = getSettings();
         const base = Math.min(s.width, s.height) || 512;
         const [w, h] = v.split(":").map(Number);
+        if (isNaN(w) || isNaN(h) || h === 0) return;
         if (w > h) { s.width = Math.round(base * w / h); s.height = base; }
         else { s.width = base; s.height = Math.round(base * h / w); }
         document.getElementById("qig-width").value = s.width;
@@ -4492,6 +4507,7 @@ function createUI() {
     };
     document.getElementById("qig-nai-resolution").onchange = (e) => {
         const [w, h] = e.target.value.split("x").map(Number);
+        if (isNaN(w) || isNaN(h)) return;
         const s = getSettings();
         s.width = w;
         s.height = h;
@@ -4946,6 +4962,7 @@ async function processInjectMessage(messageText, messageIndex) {
         try {
             const ctx = getContext();
             const chat = ctx.chat;
+            if (!chat || chat.length === 0) return;
             const idx = messageIndex !== undefined ? messageIndex : chat.length - 1;
             const msg = chat[idx];
             if (msg) {
@@ -5237,7 +5254,9 @@ async function readInfoFromPNG(file) {
             let offset = 8; // Skip PNG signature
 
             while (offset < view.byteLength) {
+                if (offset + 12 > view.byteLength) break;
                 const length = view.getUint32(offset);
+                if (length === 0 || offset + length + 12 > view.byteLength) break;
                 const type = String.fromCharCode(
                     view.getUint8(offset + 4),
                     view.getUint8(offset + 5),
