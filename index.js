@@ -2341,11 +2341,11 @@ function displayImage(url, skipGallery) {
             </div>
         </div>
         <div class="qig-popup-actions">
-            <button id="qig-regenerate-btn">🔄 Regenerate</button>
-            <button id="qig-insert-btn">📌 Insert</button>
-            <button id="qig-gallery-btn">🖼️ Gallery</button>
-            <button id="qig-download-btn">💾 Download</button>
-            <button id="qig-close-popup">Close</button>
+            <button id="qig-regenerate-btn" title="Generate a new image with the same settings">🔄 Regenerate</button>
+            <button id="qig-insert-btn" title="Insert this image into the chat">📌 Insert</button>
+            <button id="qig-gallery-btn" title="Save to gallery">🖼️ Gallery</button>
+            <button id="qig-download-btn" title="Download image with metadata">💾 Download</button>
+            <button id="qig-close-popup" title="Close without inserting">Close</button>
         </div>`, (popup) => {
         // Reset any previous inline resize styles
         const content = popup.querySelector('.qig-popup-content');
@@ -2459,13 +2459,13 @@ function displayBatchResults(results) {
             </div>
         </div>
         <div class="qig-popup-actions">
-            <button id="qig-batch-regenerate">🔄 Regenerate</button>
-            <button id="qig-batch-insert">📌 Insert</button>
-            <button id="qig-batch-insert-all">📌 Insert All</button>
-            <button id="qig-batch-gallery">🖼️ Gallery</button>
-            <button id="qig-batch-download">💾 Download</button>
-            <button id="qig-batch-save-all">💾 Save All</button>
-            <button id="qig-batch-close">Close</button>
+            <button id="qig-batch-regenerate" title="Regenerate all images in this batch">🔄 Regenerate</button>
+            <button id="qig-batch-insert" title="Insert selected image into chat">📌 Insert</button>
+            <button id="qig-batch-insert-all" title="Insert all images into chat">📌 Insert All</button>
+            <button id="qig-batch-gallery" title="Save all to gallery">🖼️ Gallery</button>
+            <button id="qig-batch-download" title="Download selected image">💾 Download</button>
+            <button id="qig-batch-save-all" title="Download all images">💾 Save All</button>
+            <button id="qig-batch-close" title="Close without inserting">Close</button>
         </div>`, (popup) => {
         const content = popup.querySelector('.qig-popup-content');
         if (content) {
@@ -3581,22 +3581,24 @@ function createUI() {
                 <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
             </div>
             <div class="inline-drawer-content">
-                <button id="qig-generate-btn" class="menu_button">🎨 Generate</button>
-                <button id="qig-logs-btn" class="menu_button">📋 Logs</button>
-                <button id="qig-save-char-btn" class="menu_button">💾 Save for Char</button>
-                <button id="qig-gallery-settings-btn" class="menu_button">🖼️ Gallery</button>
-                <button id="qig-prompt-history-btn" class="menu_button">📝 Prompts</button>
+                <button id="qig-generate-btn" class="menu_button" title="Generate an image using current settings">🎨 Generate</button>
+                <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors">📋 Logs</button>
+                <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character">💾 Save for Char</button>
+                <button id="qig-gallery-settings-btn" class="menu_button" title="Browse images generated this session">🖼️ Gallery</button>
+                <button id="qig-prompt-history-btn" class="menu_button" title="View and reuse past prompts">📝 Prompts</button>
 
                 <label>Provider</label>
                 <select id="qig-provider">${providerOpts}</select>
+                <small style="opacity:0.6;font-size:10px;">Image generation service — cloud API or local server</small>
                 
                 <div style="display:flex;gap:4px;align-items:center;margin:4px 0;">
                     <div id="qig-profile-select" style="flex:1;"></div>
-                    <button id="qig-profile-save" class="menu_button" style="padding:2px 6px;">💾 Save Profile</button>
+                    <button id="qig-profile-save" class="menu_button" style="padding:2px 6px;" title="Save current provider, API key, and model as a reusable profile">💾 Save Profile</button>
                 </div>
                 
                 <label>Style</label>
                 <select id="qig-style">${styleOpts}</select>
+                <small style="opacity:0.6;font-size:10px;">Visual style preset applied to the prompt</small>
                 
                 <div id="qig-pollinations-settings" class="qig-provider-section">
                     <label>Model</label>
@@ -3640,6 +3642,7 @@ function createUI() {
                     <input id="qig-civitai-key" type="password" value="${s.civitaiKey}">
                     <label>Model URN</label>
                     <input id="qig-civitai-model" type="text" value="${s.civitaiModel}" placeholder="urn:air:sd1:checkpoint:civitai:4201@130072">
+                    <small style="opacity:0.6;font-size:10px;">Find this on the model page → API tab → copy the URN</small>
                     <label>Scheduler</label>
                     <select id="qig-civitai-scheduler">
                         <option value="EulerA" ${s.civitaiScheduler === "EulerA" ? "selected" : ""}>Euler A</option>
@@ -3680,6 +3683,7 @@ function createUI() {
                     <input id="qig-replicate-key" type="password" value="${s.replicateKey}">
                     <label>Model Version</label>
                     <input id="qig-replicate-model" type="text" value="${s.replicateModel}" placeholder="stability-ai/sdxl:...">
+                    <small style="opacity:0.6;font-size:10px;">owner/model:version format from the Replicate model page</small>
                 </div>
 
                 <div id="qig-fal-settings" class="qig-provider-section">
@@ -3687,6 +3691,7 @@ function createUI() {
                     <input id="qig-fal-key" type="password" value="${s.falKey}">
                     <label>Model Endpoint</label>
                     <input id="qig-fal-model" type="text" value="${s.falModel}" placeholder="fal-ai/flux/schnell">
+                    <small style="opacity:0.6;font-size:10px;">Model path from the Fal.ai dashboard (e.g., fal-ai/flux/schnell)</small>
                 </div>
 
                 <div id="qig-together-settings" class="qig-provider-section">
@@ -3709,8 +3714,8 @@ function createUI() {
                          <input id="qig-local-model" type="text" value="${s.localModel}" placeholder="model.safetensors">
                          <div class="form-hint">Must match exactly with your ComfyUI checkpoints folder</div>
                          <div class="qig-row">
-                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${s.comfyDenoise || 1.0}" min="0" max="1" step="0.05"></div>
-                            <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${s.comfyClipSkip || 1}" min="1" max="12" step="1"></div>
+                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${s.comfyDenoise || 1.0}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
+                            <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${s.comfyClipSkip || 1}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
                          <label>Custom Workflow JSON (optional)</label>
                          <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${s.comfyWorkflow || ""}</textarea>
@@ -3728,11 +3733,11 @@ function createUI() {
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                          <input id="qig-a1111-loras" type="text" value="${s.a1111Loras || ""}" placeholder="my_lora:0.8, detail_lora:0.6">
                          <div class="qig-row" style="margin-top:8px;">
-                            <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"></div>
+                            <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-hires" type="checkbox" ${s.a1111HiresFix ? "checked" : ""}>
-                             <span>Hires Fix (Upscale)</span>
+                             <span>Hires Fix (generate at low res, then upscale for detail)</span>
                          </label>
                          <div id="qig-a1111-hires-opts" style="display:${s.a1111HiresFix ? 'block' : 'none'}">
                              <label>Upscaler</label>
@@ -3748,7 +3753,7 @@ function createUI() {
                          </div>
                          <label class="checkbox_label">
                              <input id="qig-a1111-adetailer" type="checkbox" ${s.a1111Adetailer ? "checked" : ""}>
-                             <span>Enable ADetailer (Face Fix)</span>
+                             <span>ADetailer (auto-detect and fix faces/hands)</span>
                          </label>
                          <div id="qig-a1111-adetailer-opts" style="display:${s.a1111Adetailer ? 'block' : 'none'}">
                              <label>ADetailer Model</label>
@@ -3771,7 +3776,7 @@ function createUI() {
                          </label>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-ipadapter" type="checkbox" ${s.a1111IpAdapter ? "checked" : ""}>
-                             <span>IP-Adapter Face (face-only reference)</span>
+                             <span>IP-Adapter (use a reference image to guide style/composition)</span>
                          </label>
                          <div id="qig-a1111-ipadapter-opts" style="display:${s.a1111IpAdapter ? 'block' : 'none'}">
                              <label>IP-Adapter Model</label>
@@ -3878,21 +3883,24 @@ function createUI() {
                     </div>
                     <div class="inline-drawer-content">
                         <small style="opacity:0.7;">Base prompt used for direct generation, or as scene context when LLM prompt is enabled</small>
-                        <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;">💾 Save Template</button></label>
+                        <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;" title="Save the current prompt text as a reusable template">💾 Save Template</button></label>
                         <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
                         <div id="qig-templates" style="margin:4px 0;"></div>
                         <div style="display:flex;gap:4px;margin:4px 0;">
-                            <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;">💾 Save Preset</button>
+                            <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;" title="Save all generation settings (prompt, negative, size, steps, etc.) as a preset">💾 Save Preset</button>
                             <button id="qig-export-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Export</button>
                             <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
+                        <small style="opacity:0.6;font-size:10px;">Profiles save provider config · Templates save prompt text · Presets save all settings</small>
                     </div>
                 </div>
                 <label>Negative Prompt</label>
+                <small style="opacity:0.6;font-size:10px;">Things to avoid in the image (e.g., "bad hands, blurry, watermark")</small>
                 <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
                 
                 <label>Quality Tags</label>
+                <small style="opacity:0.6;font-size:10px;">Tags prepended to every prompt to improve output quality</small>
                 <textarea id="qig-quality" rows="1">${s.qualityTags}</textarea>
                 <label class="checkbox_label">
                     <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
@@ -3902,6 +3910,7 @@ function createUI() {
                     <input id="qig-use-last" type="checkbox" ${s.useLastMessage ? "checked" : ""}>
                     <span>Use chat message as prompt</span>
                 </label>
+                <small style="opacity:0.6;font-size:10px;">Feeds the selected chat message to the image generator as scene context</small>
                 <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
                     <label>Message selection</label>
                     <input id="qig-msg-range" type="text" value="${s.messageRange}" placeholder="-1"
@@ -3918,6 +3927,7 @@ function createUI() {
                     <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                     <span>Use LLM to create image prompt</span>
                 </label>
+                <small style="opacity:0.6;font-size:10px;">Sends the scene to your AI to write an optimized image prompt</small>
                 <div id="qig-llm-options" style="display:${s.useLLMPrompt ? "block" : "none"};margin-left:16px;">
                     <label>Prompt Style</label>
                     <select id="qig-llm-style">
@@ -3925,6 +3935,7 @@ function createUI() {
                         <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
                         <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
                     </select>
+                    <small style="opacity:0.6;font-size:10px;">How the AI formats the image prompt</small>
                     <label class="checkbox_label">
                         <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
                         <span>Edit LLM prompt before generation</span>
@@ -3933,17 +3944,21 @@ function createUI() {
                         <input id="qig-llm-quality" type="checkbox" ${s.llmAddQuality ? "checked" : ""}>
                         <span>Add enhanced quality tags</span>
                     </label>
+                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends detail/quality boosters to the AI-generated prompt</small>
                     <label class="checkbox_label">
                         <input id="qig-llm-lighting" type="checkbox" ${s.llmAddLighting ? "checked" : ""}>
                         <span>Add lighting tags</span>
                     </label>
+                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends cinematic lighting descriptors</small>
                     <label class="checkbox_label">
                         <input id="qig-llm-artist" type="checkbox" ${s.llmAddArtist ? "checked" : ""}>
                         <span>Add random artist tags</span>
                     </label>
+                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends a random artist name for stylistic influence</small>
                     <div style="margin-top:8px;">
                         <label>Prefill (start LLM response with):</label>
-                        <input id="qig-llm-prefill" type="text" value="${s.llmPrefill || ''}" 
+                        <small style="opacity:0.6;font-size:10px;">Pre-fills the start of the AI's response to guide its output format</small>
+                        <input id="qig-llm-prefill" type="text" value="${s.llmPrefill || ''}"
                                placeholder="e.g., Image prompt:" style="width:100%;">
                     </div>
                     <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
@@ -3967,7 +3982,7 @@ function createUI() {
 
                 <label class="checkbox_label">
                     <input id="qig-use-st-style" type="checkbox" ${s.useSTStyle !== false ? "checked" : ""}>
-                    <span>Use ST's Style panel settings (prefix/negative/char-specific)</span>
+                    <span>Use SillyTavern's Style panel (applies its prefix, negative prompt, and character-specific settings)</span>
                 </label>
 
                 <hr style="margin:8px 0;opacity:0.2;">
@@ -3978,10 +3993,12 @@ function createUI() {
                 <div style="margin:4px 0;">
                     <div id="qig-mode-tabs" style="display:flex;gap:0;margin-bottom:8px;">
                         <button class="qig-mode-tab menu_button" data-tab="direct"
-                            style="flex:1;border-radius:4px 0 0 4px;padding:4px 8px;font-size:12px;">
+                            style="flex:1;border-radius:4px 0 0 4px;padding:4px 8px;font-size:12px;"
+                            title="Generate images on demand or auto-trigger after AI messages">
                             Direct Mode</button>
                         <button class="qig-mode-tab menu_button" data-tab="inject"
-                            style="flex:1;border-radius:0 4px 4px 0;padding:4px 8px;font-size:12px;">
+                            style="flex:1;border-radius:0 4px 4px 0;padding:4px 8px;font-size:12px;"
+                            title="AI writes image descriptions in its responses, images auto-generate from them">
                             Inject Mode</button>
                     </div>
 
@@ -4047,12 +4064,14 @@ function createUI() {
                         <option value="inject" ${s.paletteMode === "inject" ? "selected" : ""}>Inject (extract/generate &lt;pic&gt; tags)</option>
                     </select>
                 </div>
+                <small style="opacity:0.6;font-size:10px;">Direct = opens prompt editor · Inject = generates from AI's &lt;pic&gt; tags</small>
 
                 <div style="margin:6px 0;padding:8px;border:1px solid #555;border-radius:4px;">
                     <label class="checkbox_label">
                         <input id="qig-llm-override" type="checkbox" ${s.llmOverrideEnabled ? "checked" : ""}>
                         <span>Use separate AI for image prompts</span>
                     </label>
+                    <small style="opacity:0.6;font-size:10px;">Route image prompt generation to a different AI model than your main chat</small>
                     <div id="qig-llm-override-options" style="display:${s.llmOverrideEnabled ? 'block' : 'none'};margin-top:6px;">
                         <label style="font-size:11px;">Connection Profile</label>
                         <select id="qig-llm-override-profile" style="width:100%;"></select>
@@ -4069,6 +4088,7 @@ function createUI() {
                 </label>
 
                 <label>Size</label>
+                <small style="opacity:0.6;font-size:10px;">Output resolution in pixels — larger = slower and more VRAM</small>
                 <div id="qig-size-custom" class="qig-row">
                     <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
                     <span>×</span>
@@ -4087,21 +4107,32 @@ function createUI() {
                 </select>
                 
                 <label>Batch Count</label>
+                <small style="opacity:0.6;font-size:10px;">Number of images to generate per click (1-10)</small>
                 <input id="qig-batch" type="number" value="${s.batchCount}" min="1" max="10">
                 <label class="checkbox_label" id="qig-seq-seeds-wrap" style="display:${(s.batchCount || 1) > 1 ? '' : 'none'}">
                     <input id="qig-seq-seeds" type="checkbox" ${s.sequentialSeeds ? "checked" : ""}>
                     <span>Sequential seeds (seed, seed+1, seed+2...)</span>
                 </label>
                 
-                <div id="qig-advanced-settings">
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Advanced Settings</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content" id="qig-advanced-settings">
                     <label>Steps</label>
+                    <small style="opacity:0.6;font-size:10px;">More steps = higher quality but slower (20-30 is typical)</small>
                     <input id="qig-steps" type="number" value="${s.steps}" min="1" max="150">
                     <label>CFG Scale</label>
+                    <small style="opacity:0.6;font-size:10px;">How strictly the image follows the prompt — higher = more literal (5-10 typical)</small>
                     <input id="qig-cfg" type="number" value="${s.cfgScale}" min="1" max="30" step="0.5">
                     <label>Sampler</label>
+                    <small style="opacity:0.6;font-size:10px;">Algorithm used to generate the image — euler_a is a good default</small>
                     <select id="qig-sampler">${samplerOpts}</select>
                     <label>Seed (-1 = random)</label>
+                    <small style="opacity:0.6;font-size:10px;">Same seed + same prompt = same image. -1 for random each time</small>
                     <input id="qig-seed" type="number" value="${s.seed}">
+                    </div>
                 </div>
             </div>
         </div>
