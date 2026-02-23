@@ -1752,17 +1752,22 @@ async function genLocal(prompt, negative, s) {
             let lastModelRef = ["4", 0];
             let lastClipRef = ["4", 1];
             const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
+            let injectedCount = 0;
             loras.forEach((l, i) => {
-                const [name, w] = l.split(":");
-                const trimmedName = name.trim();
-                if (!trimmedName) return;
+                const lastColon = l.lastIndexOf(":");
+                const hasWeight = lastColon > 0 && !isNaN(parseFloat(l.slice(lastColon + 1)));
+                const name = (hasWeight ? l.slice(0, lastColon) : l).trim();
+                const pw = hasWeight ? parseFloat(l.slice(lastColon + 1)) : NaN;
+                const weight = isNaN(pw) ? 0.8 : pw;
+                if (!name) return;
+                injectedCount++;
                 const nodeId = String(loraNodeStart + i);
                 workflowNodes[nodeId] = {
                     class_type: "LoraLoader",
                     inputs: {
-                        lora_name: trimmedName,
-                        strength_model: parseFloat(w) || 0.8,
-                        strength_clip: parseFloat(w) || 0.8,
+                        lora_name: name,
+                        strength_model: weight,
+                        strength_clip: weight,
                         model: lastModelRef,
                         clip: lastClipRef
                     }
@@ -1779,7 +1784,7 @@ async function genLocal(prompt, negative, s) {
                 workflowNodes["6"].inputs.clip = lastClipRef;
                 workflowNodes["7"].inputs.clip = lastClipRef;
             }
-            log(`ComfyUI: Injected ${loras.length} LoRA(s)`);
+            log(`ComfyUI: Injected ${injectedCount} LoRA(s)`);
         }
 
         log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}`);
@@ -1836,10 +1841,13 @@ async function genLocal(prompt, negative, s) {
         const loraTags = s.a1111Loras.split(",")
             .map(l => l.trim()).filter(l => l)
             .map(l => {
-                const [name, w] = l.split(":");
-                const trimmedName = name.trim();
-                if (!trimmedName) return null;
-                return `<lora:${trimmedName}:${parseFloat(w) || 0.8}>`;
+                const lastColon = l.lastIndexOf(":");
+                const hasWeight = lastColon > 0 && !isNaN(parseFloat(l.slice(lastColon + 1)));
+                const name = (hasWeight ? l.slice(0, lastColon) : l).trim();
+                const pw = hasWeight ? parseFloat(l.slice(lastColon + 1)) : NaN;
+                const weight = isNaN(pw) ? 0.8 : pw;
+                if (!name) return null;
+                return `<lora:${name}:${weight}>`;
             }).filter(Boolean).join(" ");
         if (loraTags) {
             payload.prompt = `${payload.prompt} ${loraTags}`;
@@ -1992,7 +2000,7 @@ async function genProxy(prompt, negative, s) {
                 cfg_scale: s.proxyCfg || 6,
                 sampler: s.proxySampler || "Euler a",
                 negative_prompt: negative,
-                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
+                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
                 facefix: s.proxyFacefix || undefined
         };
         if (isGeminiImage) {
@@ -2103,7 +2111,7 @@ async function genProxy(prompt, negative, s) {
             cfg_scale: s.proxyCfg || 6,
             sampler: s.proxySampler || "Euler a",
             seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
-            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const [id, w] = l.trim().split(":"); return { id: id.trim(), weight: parseFloat(w) || 0.8 }; }).filter(l => l.id) : undefined,
+            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
             facefix: s.proxyFacefix || undefined,
             reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
         }),
