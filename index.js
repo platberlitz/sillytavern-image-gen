@@ -910,11 +910,12 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
 
         const isNatural = s.llmPromptStyle === "natural";
-        const isCustom = s.llmPromptStyle === "custom";
+        const wantsCustom = s.llmPromptStyle === "custom";
+        const isCustom = wantsCustom && !!s.llmCustomInstruction?.trim();
         const isMultiMessage = basePrompt.includes("\n\n[") && basePrompt.includes("]: ");
 
         let instruction;
-        if (isCustom && s.llmCustomInstruction) {
+        if (isCustom) {
             log(`Using custom instruction: ${s.llmCustomInstruction.substring(0, 100)}...`);
             instruction = s.llmCustomInstruction
                 .replace(/\{\{scene\}\}/gi, basePrompt)
@@ -937,7 +938,7 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             if (skinEnforce) {
                 instruction += skinEnforce;
             }
-        } else if (isCustom) {
+        } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
             // Don't set instruction here - let it fall through to default tags style
         } else if (isNatural) {
@@ -2106,15 +2107,25 @@ async function genProxy(prompt, negative, s, signal) {
             log(`Gemini image model detected, adding responseModalities`);
         }
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 120000);
+        let timedOut = false;
+        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 120000);
         if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-        const res = await fetch(chatUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(payload),
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
+        let res;
+        try {
+            res = await fetch(chatUrl, {
+                method: "POST",
+                headers,
+                body: JSON.stringify(payload),
+                signal: controller.signal
+            });
+        } catch (e) {
+            if (e.name === "AbortError" && timedOut && !signal?.aborted) {
+                throw new Error("Proxy request timed out after 120 seconds");
+            }
+            throw e;
+        } finally {
+            clearTimeout(timeoutId);
+        }
         if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
         const data = await res.json();
         log(`Response keys: ${JSON.stringify(Object.keys(data))}`);
@@ -2193,30 +2204,40 @@ async function genProxy(prompt, negative, s, signal) {
     }
 
     const controller2 = new AbortController();
-    const timeoutId2 = setTimeout(() => controller2.abort(), 120000);
+    let timedOut2 = false;
+    const timeoutId2 = setTimeout(() => { timedOut2 = true; controller2.abort(); }, 120000);
     if (signal) signal.addEventListener("abort", () => controller2.abort(), { once: true });
-    const res = await fetch(s.proxyUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-            model: s.proxyModel,
-            prompt: prompt,
-            negative_prompt: negative,
-            n: 1,
-            size: `${s.width}x${s.height}`,
-            width: s.width,
-            height: s.height,
-            steps: s.proxySteps || 25,
-            cfg_scale: s.proxyCfg || 6,
-            sampler: s.proxySampler || "Euler a",
-            seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
-            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
-            facefix: s.proxyFacefix || undefined,
-            reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
-        }),
-        signal: controller2.signal
-    });
-    clearTimeout(timeoutId2);
+    let res;
+    try {
+        res = await fetch(s.proxyUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+                model: s.proxyModel,
+                prompt: prompt,
+                negative_prompt: negative,
+                n: 1,
+                size: `${s.width}x${s.height}`,
+                width: s.width,
+                height: s.height,
+                steps: s.proxySteps || 25,
+                cfg_scale: s.proxyCfg || 6,
+                sampler: s.proxySampler || "Euler a",
+                seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
+                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
+                facefix: s.proxyFacefix || undefined,
+                reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
+            }),
+            signal: controller2.signal
+        });
+    } catch (e) {
+        if (e.name === "AbortError" && timedOut2 && !signal?.aborted) {
+            throw new Error("Proxy request timed out after 120 seconds");
+        }
+        throw e;
+    } finally {
+        clearTimeout(timeoutId2);
+    }
     if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
     const data = await res.json();
     if (data.data?.[0]?.url) return data.data[0].url;
@@ -2777,11 +2798,12 @@ function showGallery() {
         };
         const grid = document.getElementById("qig-gallery-grid");
         grid.innerHTML = sessionGallery.length ? sessionGallery.map((item, index) => {
-            const imgSrc = item.thumbnail || item.url;
+            const imgSrc = escapeHtml(item.thumbnail || item.url || "");
             const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
+            const safeSnippet = escapeHtml(snippet);
             return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
                 `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
-                (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${snippet}</div>` : '') +
+                (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${safeSnippet}</div>` : '') +
                 `</div>`;
         }).join('') : '<p style="color:#888;">No images yet</p>';
         grid.querySelectorAll("[data-gallery-index]").forEach(el => {
@@ -3179,7 +3201,7 @@ function renderTemplates() {
     if (!container) return;
     const html = promptTemplates.map((t, i) =>
         `<span style="display:inline-flex;align-items:center;margin:2px;">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${t.name}</button>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadTemplate(${i})">${escapeHtml(t.name || "")}</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deleteTemplate(${i})">×</button></span>`
     ).join('');
     container.innerHTML = promptTemplates.length > 0
@@ -3527,10 +3549,10 @@ function renderProfileSelect() {
     const provider = getSettings().provider;
     const profiles = Object.keys(connectionProfiles[provider] || {});
     container.innerHTML = profiles.length
-        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${p}">${p}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
+        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
         : "<span style='color:#888;font-size:11px;'>No saved profiles</span>";
     const dropdown = document.getElementById("qig-profile-dropdown");
-    if (dropdown) dropdown.onchange = (e) => { if (e.target.value) loadConnectionProfile(e.target.value); e.target.value = ""; };
+    if (dropdown) dropdown.onchange = (e) => { if (e.target.value) loadConnectionProfile(e.target.value); };
     const delBtn = document.getElementById("qig-profile-del");
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
@@ -3601,7 +3623,7 @@ function renderPresets() {
     if (!container) return;
     const html = generationPresets.map((p, i) =>
         `<span style="display:inline-flex;align-items:center;margin:2px;">` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadPreset(${i})">${p.name}</button>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="loadPreset(${i})">${escapeHtml(p.name || "")}</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;margin-left:1px;" onclick="deletePreset(${i})">×</button></span>`
     ).join('');
     container.innerHTML = generationPresets.length > 0
@@ -3750,7 +3772,7 @@ function renderRefImages() {
     if (!container) return;
     const imgs = getSettings().proxyRefImages || [];
     container.innerHTML = imgs.map((src, i) =>
-        `<div style="position:relative;"><img src="${src}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+        `<div style="position:relative;"><img src="${escapeHtml(src || "")}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
     ).join('');
 }
 
@@ -3767,7 +3789,7 @@ function renderNanobananaRefImages() {
     if (!container) return;
     const imgs = getSettings().nanobananaRefImages || [];
     container.innerHTML = imgs.map((src, i) =>
-        `<div style="position:relative;"><img src="${src}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeNanobananaRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+        `<div style="position:relative;"><img src="${escapeHtml(src || "")}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeNanobananaRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
     ).join('');
 }
 
@@ -3795,7 +3817,7 @@ function bindCheckbox(id, key) {
 
 function modelSelect(provider, settingKey, currentVal) {
     const models = PROVIDER_MODELS[provider];
-    if (!models) return `<input id="qig-${settingKey}" type="text" value="${currentVal}" placeholder="Model ID">`;
+    if (!models) return `<input id="qig-${settingKey}" type="text" value="${escapeHtml(currentVal ?? "")}" placeholder="Model ID">`;
     const opts = models.map(m => `<option value="${m.id}" ${currentVal === m.id ? "selected" : ""}>${m.name}</option>`).join("");
     return `<select id="qig-${settingKey}">${opts}</select>`;
 }
@@ -3809,6 +3831,7 @@ function buildOptions(items, selectedValue, labelFn) {
 function createUI() {
     clearCache();
     const s = getSettings();
+    const esc = (v) => escapeHtml(v == null ? "" : String(v));
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
     const providerOpts = buildOptions(Object.entries(PROVIDERS), s.provider, v => v.name);
     const styleOpts = buildOptions(Object.entries(STYLES), s.style, v => v.name);
@@ -3847,41 +3870,41 @@ function createUI() {
                 
                 <div id="qig-novelai-settings" class="qig-provider-section">
                     <label>NovelAI API Key</label>
-                    <input id="qig-nai-key" type="password" value="${s.naiKey}">
+                    <input id="qig-nai-key" type="password" value="${esc(s.naiKey)}">
                     <label>Model</label>
-                    <input id="qig-nai-model" type="text" value="${s.naiModel}" placeholder="nai-diffusion-4-5-curated">
+                    <input id="qig-nai-model" type="text" value="${esc(s.naiModel)}" placeholder="nai-diffusion-4-5-curated">
                     <label>Proxy URL <small>(optional — leave blank to use official API)</small></label>
-                    <input id="qig-nai-proxy-url" type="text" value="${s.naiProxyUrl}" placeholder="https://your-proxy-url">
+                    <input id="qig-nai-proxy-url" type="text" value="${esc(s.naiProxyUrl)}" placeholder="https://your-proxy-url">
                     <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
-                    <input id="qig-nai-proxy-key" type="password" value="${s.naiProxyKey}" placeholder="Leave blank to use API key above">
+                    <input id="qig-nai-proxy-key" type="password" value="${esc(s.naiProxyKey)}" placeholder="Leave blank to use API key above">
                 </div>
                 
                 <div id="qig-arliai-settings" class="qig-provider-section">
                     <label>ArliAI API Key</label>
-                    <input id="qig-arli-key" type="password" value="${s.arliKey}">
+                    <input id="qig-arli-key" type="password" value="${esc(s.arliKey)}">
                     <label>Model</label>
-                    <input id="qig-arli-model" type="text" value="${s.arliModel}" placeholder="arliai-realistic-v1">
+                    <input id="qig-arli-model" type="text" value="${esc(s.arliModel)}" placeholder="arliai-realistic-v1">
                 </div>
                 
                 <div id="qig-nanogpt-settings" class="qig-provider-section">
                     <label>NanoGPT API Key</label>
-                    <input id="qig-nanogpt-key" type="password" value="${s.nanogptKey}">
+                    <input id="qig-nanogpt-key" type="password" value="${esc(s.nanogptKey)}">
                     <label>Model</label>
-                    <input id="qig-nanogpt-model" type="text" value="${s.nanogptModel}" placeholder="image-flux-schnell">
+                    <input id="qig-nanogpt-model" type="text" value="${esc(s.nanogptModel)}" placeholder="image-flux-schnell">
                 </div>
                 
                 <div id="qig-chutes-settings" class="qig-provider-section">
                     <label>Chutes API Key</label>
-                    <input id="qig-chutes-key" type="password" value="${s.chutesKey}">
+                    <input id="qig-chutes-key" type="password" value="${esc(s.chutesKey)}">
                     <label>Model</label>
-                    <input id="qig-chutes-model" type="text" value="${s.chutesModel}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
+                    <input id="qig-chutes-model" type="text" value="${esc(s.chutesModel)}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
                 </div>
                 
                 <div id="qig-civitai-settings" class="qig-provider-section">
                     <label>CivitAI API Key</label>
-                    <input id="qig-civitai-key" type="password" value="${s.civitaiKey}">
+                    <input id="qig-civitai-key" type="password" value="${esc(s.civitaiKey)}">
                     <label>Model URN</label>
-                    <input id="qig-civitai-model" type="text" value="${s.civitaiModel}" placeholder="urn:air:sd1:checkpoint:civitai:4201@130072">
+                    <input id="qig-civitai-model" type="text" value="${esc(s.civitaiModel)}" placeholder="urn:air:sd1:checkpoint:civitai:4201@130072">
                     <small style="opacity:0.6;font-size:10px;">Find this on the model page → API tab → copy the URN</small>
                     <label>Scheduler</label>
                     <select id="qig-civitai-scheduler">
@@ -3893,19 +3916,19 @@ function createUI() {
                     </select>
                     <label>LoRAs (URN:weight, comma-separated)</label>
                     <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
-                    <input id="qig-civitai-loras" type="text" value="${s.civitaiLoras || ""}" placeholder="urn:air:sd1:lora:civitai:82098@87153:0.8, urn:air:sdxl:lora:civitai:12345@67890:1.0">
+                    <input id="qig-civitai-loras" type="text" value="${esc(s.civitaiLoras || "")}" placeholder="urn:air:sd1:lora:civitai:82098@87153:0.8, urn:air:sdxl:lora:civitai:12345@67890:1.0">
                 </div>
                 
                 <div id="qig-nanobanana-settings" class="qig-provider-section">
                     <label>Gemini API Key</label>
-                    <input id="qig-nanobanana-key" type="password" value="${s.nanobananaKey}">
+                    <input id="qig-nanobanana-key" type="password" value="${esc(s.nanobananaKey)}">
                     <label>Model</label>
                     <select id="qig-nanobanana-model">
                         <option value="gemini-2.5-flash-image" ${s.nanobananaModel === "gemini-2.5-flash-image" ? "selected" : ""}>Gemini 2.5 Flash Image</option>
                         <option value="gemini-2.0-flash-exp" ${s.nanobananaModel === "gemini-2.0-flash-exp" ? "selected" : ""}>Gemini 2.0 Flash Exp</option>
                     </select>
                     <label>Extra Instructions</label>
-                    <textarea id="qig-nanobanana-extra" rows="2" placeholder="Additional instructions for Nanobanana Pro...">${s.nanobananaExtraInstructions || ""}</textarea>
+                    <textarea id="qig-nanobanana-extra" rows="2" placeholder="Additional instructions for Nanobanana Pro...">${esc(s.nanobananaExtraInstructions || "")}</textarea>
                     <label>Reference Images (up to 15)</label>
                     <div id="qig-nanobanana-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-nanobanana-ref-input" accept="image/*" multiple style="display:none">
@@ -3914,36 +3937,36 @@ function createUI() {
 
                 <div id="qig-stability-settings" class="qig-provider-section">
                     <label>Stability AI API Key</label>
-                    <input id="qig-stability-key" type="password" value="${s.stabilityKey}">
+                    <input id="qig-stability-key" type="password" value="${esc(s.stabilityKey)}">
                     <div class="form-hint">Uses SDXL 1.0</div>
                 </div>
 
                 <div id="qig-replicate-settings" class="qig-provider-section">
                     <label>Replicate API Key</label>
-                    <input id="qig-replicate-key" type="password" value="${s.replicateKey}">
+                    <input id="qig-replicate-key" type="password" value="${esc(s.replicateKey)}">
                     <label>Model Version</label>
-                    <input id="qig-replicate-model" type="text" value="${s.replicateModel}" placeholder="stability-ai/sdxl:...">
+                    <input id="qig-replicate-model" type="text" value="${esc(s.replicateModel)}" placeholder="stability-ai/sdxl:...">
                     <small style="opacity:0.6;font-size:10px;">owner/model:version format from the Replicate model page</small>
                 </div>
 
                 <div id="qig-fal-settings" class="qig-provider-section">
                     <label>Fal.ai API Key</label>
-                    <input id="qig-fal-key" type="password" value="${s.falKey}">
+                    <input id="qig-fal-key" type="password" value="${esc(s.falKey)}">
                     <label>Model Endpoint</label>
-                    <input id="qig-fal-model" type="text" value="${s.falModel}" placeholder="fal-ai/flux/schnell">
+                    <input id="qig-fal-model" type="text" value="${esc(s.falModel)}" placeholder="fal-ai/flux/schnell">
                     <small style="opacity:0.6;font-size:10px;">Model path from the Fal.ai dashboard (e.g., fal-ai/flux/schnell)</small>
                 </div>
 
                 <div id="qig-together-settings" class="qig-provider-section">
                     <label>Together AI API Key</label>
-                    <input id="qig-together-key" type="password" value="${s.togetherKey}">
+                    <input id="qig-together-key" type="password" value="${esc(s.togetherKey)}">
                     <label>Model</label>
-                    <input id="qig-together-model" type="text" value="${s.togetherModel}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
+                    <input id="qig-together-model" type="text" value="${esc(s.togetherModel)}" placeholder="stabilityai/stable-diffusion-xl-base-1.0">
                 </div>
                 
                 <div id="qig-local-settings" class="qig-provider-section">
                     <label>Local URL</label>
-                    <input id="qig-local-url" type="text" value="${s.localUrl}" placeholder="http://127.0.0.1:7860">
+                    <input id="qig-local-url" type="text" value="${esc(s.localUrl)}" placeholder="http://127.0.0.1:7860">
                     <label>Type</label>
                     <select id="qig-local-type">
                         <option value="a1111" ${s.localType === "a1111" ? "selected" : ""}>Automatic1111</option>
@@ -3951,17 +3974,17 @@ function createUI() {
                     </select>
                     <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
                          <label>Checkpoint Name</label>
-                         <input id="qig-local-model" type="text" value="${s.localModel}" placeholder="model.safetensors">
+                         <input id="qig-local-model" type="text" value="${esc(s.localModel)}" placeholder="model.safetensors">
                          <div class="form-hint">Must match exactly with your ComfyUI checkpoints folder</div>
                          <div class="qig-row">
-                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${s.comfyDenoise || 1.0}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
-                            <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${s.comfyClipSkip || 1}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
+                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise || 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
+                            <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
                          <label>LoRAs (filename:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
-                         <input id="qig-comfy-loras" type="text" value="${s.comfyLoras || ""}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
+                         <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
                          <label>Custom Workflow JSON (optional)</label>
-                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${s.comfyWorkflow || ""}</textarea>
+                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${esc(s.comfyWorkflow || "")}</textarea>
                          <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
@@ -3974,9 +3997,9 @@ function createUI() {
                          </div>
                          <label>LoRAs (name:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
-                         <input id="qig-a1111-loras" type="text" value="${s.a1111Loras || ""}" placeholder="my_lora:0.8, detail_lora:0.6">
+                         <input id="qig-a1111-loras" type="text" value="${esc(s.a1111Loras || "")}" placeholder="my_lora:0.8, detail_lora:0.6">
                          <div class="qig-row" style="margin-top:8px;">
-                            <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${s.a1111ClipSkip || 1}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
+                            <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${esc(s.a1111ClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-hires" type="checkbox" ${s.a1111HiresFix ? "checked" : ""}>
@@ -3988,11 +4011,11 @@ function createUI() {
                                  <option value="Latent" selected>Latent</option>
                              </select>
                              <div class="qig-row" style="margin-top:4px;">
-                                 <div><label>Scale</label><input id="qig-a1111-hires-scale" type="number" value="${s.a1111HiresScale || 2}" min="1" max="4" step="0.25"></div>
-                                 <div><label>2nd Pass Steps (0=same)</label><input id="qig-a1111-hires-steps" type="number" value="${s.a1111HiresSteps || 0}" min="0" max="150"></div>
+                                 <div><label>Scale</label><input id="qig-a1111-hires-scale" type="number" value="${esc(s.a1111HiresScale || 2)}" min="1" max="4" step="0.25"></div>
+                                 <div><label>2nd Pass Steps (0=same)</label><input id="qig-a1111-hires-steps" type="number" value="${esc(s.a1111HiresSteps || 0)}" min="0" max="150"></div>
                              </div>
                              <label>Denoise: <span id="qig-a1111-hires-denoise-val">${s.a1111HiresDenoise || 0.55}</span></label>
-                             <input id="qig-a1111-hires-denoise" type="range" min="0" max="1" step="0.05" value="${s.a1111HiresDenoise || 0.55}">
+                             <input id="qig-a1111-hires-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.a1111HiresDenoise || 0.55)}">
                          </div>
                          <label class="checkbox_label">
                              <input id="qig-a1111-adetailer" type="checkbox" ${s.a1111Adetailer ? "checked" : ""}>
@@ -4009,9 +4032,9 @@ function createUI() {
                                  <option value="mediapipe_face_short" ${s.a1111AdetailerModel === "mediapipe_face_short" ? "selected" : ""}>MediaPipe Face Short</option>
                              </select>
                              <label>ADetailer Prompt (optional)</label>
-                             <input id="qig-a1111-ad-prompt" type="text" value="${s.a1111AdetailerPrompt || ""}" placeholder="Leave empty to use main prompt">
+                             <input id="qig-a1111-ad-prompt" type="text" value="${esc(s.a1111AdetailerPrompt || "")}" placeholder="Leave empty to use main prompt">
                              <label>ADetailer Negative (optional)</label>
-                             <input id="qig-a1111-ad-negative" type="text" value="${s.a1111AdetailerNegative || ""}" placeholder="Leave empty to use main negative">
+                             <input id="qig-a1111-ad-negative" type="text" value="${esc(s.a1111AdetailerNegative || "")}" placeholder="Leave empty to use main negative">
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-save-webui" type="checkbox" ${s.a1111SaveToWebUI ? "checked" : ""}>
@@ -4034,7 +4057,7 @@ function createUI() {
                                  <option value="ip-adapter-faceid-plusv2_sdxl" ${s.a1111IpAdapterMode === "ip-adapter-faceid-plusv2_sdxl" ? "selected" : ""}>FaceID Plus v2 (SDXL)</option>
                              </select>
                              <label>Weight: <span id="qig-a1111-ipadapter-weight-val">${s.a1111IpAdapterWeight || 0.7}</span></label>
-                             <input id="qig-a1111-ipadapter-weight" type="range" min="0" max="1.5" step="0.05" value="${s.a1111IpAdapterWeight || 0.7}">
+                             <input id="qig-a1111-ipadapter-weight" type="range" min="0" max="1.5" step="0.05" value="${esc(s.a1111IpAdapterWeight || 0.7)}">
                              
                              <label class="checkbox_label" style="margin-top:4px;">
                                  <input id="qig-a1111-ipadapter-pixel" type="checkbox" ${s.a1111IpAdapterPixelPerfect ? "checked" : ""}>
@@ -4061,15 +4084,15 @@ function createUI() {
                              </div>
 
                              <div class="qig-row" style="margin-top:4px;">
-                                 <div><label>Start Step</label><input id="qig-a1111-ipadapter-start" type="number" min="0" max="1" step="0.05" value="${s.a1111IpAdapterStartStep ?? 0}"></div>
-                                 <div><label>End Step</label><input id="qig-a1111-ipadapter-end" type="number" min="0" max="1" step="0.05" value="${s.a1111IpAdapterEndStep ?? 1}"></div>
+                                 <div><label>Start Step</label><input id="qig-a1111-ipadapter-start" type="number" min="0" max="1" step="0.05" value="${esc(s.a1111IpAdapterStartStep ?? 0)}"></div>
+                                 <div><label>End Step</label><input id="qig-a1111-ipadapter-end" type="number" min="0" max="1" step="0.05" value="${esc(s.a1111IpAdapterEndStep ?? 1)}"></div>
                              </div>
                              <div class="form-hint">Requires ControlNet + IP-Adapter extension with FaceID models</div>
                          </div>
                          <hr style="margin:8px 0;opacity:0.2;">
                          <label>Reference Image</label>
                          <div style="display:flex;gap:4px;align-items:center;">
-                             <img id="qig-local-ref-preview" src="${s.localRefImage || ''}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                             <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
                              <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
                              <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
                          </div>
@@ -4077,25 +4100,25 @@ function createUI() {
                          
                          <div style="display:${s.localRefImage ? 'block' : 'none'};margin-top:4px;">
                             <label>Denoising Strength: <span id="qig-local-denoise-val">${s.localDenoise}</span></label>
-                            <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${s.localDenoise}">
+                            <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.localDenoise)}">
                          </div>
                     </div>
                 </div>
                 
                 <div id="qig-proxy-settings" class="qig-provider-section">
                     <label>Proxy URL</label>
-                    <input id="qig-proxy-url" type="text" value="${s.proxyUrl}" placeholder="https://proxy.com/v1">
+                    <input id="qig-proxy-url" type="text" value="${esc(s.proxyUrl)}" placeholder="https://proxy.com/v1">
                     <label>API Key (optional)</label>
-                    <input id="qig-proxy-key" type="password" value="${s.proxyKey}">
+                    <input id="qig-proxy-key" type="password" value="${esc(s.proxyKey)}">
                     <label>Model</label>
-                    <input id="qig-proxy-model" type="text" value="${s.proxyModel}" placeholder="PixAI model ID">
+                    <input id="qig-proxy-model" type="text" value="${esc(s.proxyModel)}" placeholder="PixAI model ID">
                     <label>LoRAs (id:weight, comma-separated)</label>
                     <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
-                    <input id="qig-proxy-loras" type="text" value="${s.proxyLoras || ""}" placeholder="123456:0.8, 789012:0.6">
+                    <input id="qig-proxy-loras" type="text" value="${esc(s.proxyLoras || "")}" placeholder="123456:0.8, 789012:0.6">
                     <div class="qig-row">
-                        <div><label>Steps</label><input id="qig-proxy-steps" type="number" value="${s.proxySteps || 25}" min="8" max="50"></div>
-                        <div><label>CFG</label><input id="qig-proxy-cfg" type="number" value="${s.proxyCfg || 6}" min="1" max="15" step="0.5"></div>
-                        <div><label>Seed</label><input id="qig-proxy-seed" type="number" value="${s.proxySeed ?? -1}"></div>
+                        <div><label>Steps</label><input id="qig-proxy-steps" type="number" value="${esc(s.proxySteps || 25)}" min="8" max="50"></div>
+                        <div><label>CFG</label><input id="qig-proxy-cfg" type="number" value="${esc(s.proxyCfg || 6)}" min="1" max="15" step="0.5"></div>
+                        <div><label>Seed</label><input id="qig-proxy-seed" type="number" value="${esc(s.proxySeed ?? -1)}"></div>
                     </div>
                     <label>Sampler</label>
                     <select id="qig-proxy-sampler">
@@ -4111,7 +4134,7 @@ function createUI() {
                         <span>Enable Face Fix (PixAI ADetailer)</span>
                     </label>
                     <label>Extra Instructions</label>
-                    <textarea id="qig-proxy-extra" rows="2" placeholder="Additional instructions for the image model...">${s.proxyExtraInstructions || ""}</textarea>
+                    <textarea id="qig-proxy-extra" rows="2" placeholder="Additional instructions for the image model...">${esc(s.proxyExtraInstructions || "")}</textarea>
                     <label>Reference Images (up to 15)</label>
                     <div id="qig-proxy-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-proxy-ref-input" accept="image/*" multiple style="display:none">
@@ -4127,7 +4150,7 @@ function createUI() {
                     <div class="inline-drawer-content">
                         <small style="opacity:0.7;">Base prompt used for direct generation, or as scene context when LLM prompt is enabled</small>
                         <label>Prompt <button id="qig-save-template" class="menu_button" style="float:right;padding:2px 8px;font-size:11px;" title="Save the current prompt text as a reusable template">💾 Save Template</button></label>
-                        <textarea id="qig-prompt" rows="2">${s.prompt}</textarea>
+                        <textarea id="qig-prompt" rows="2">${esc(s.prompt)}</textarea>
                         <div id="qig-templates" style="margin:4px 0;"></div>
                         <div style="display:flex;gap:4px;margin:4px 0;">
                             <button id="qig-save-preset" class="menu_button" style="padding:2px 8px;font-size:11px;" title="Save all generation settings (prompt, negative, size, steps, etc.) as a preset">💾 Save Preset</button>
@@ -4140,11 +4163,11 @@ function createUI() {
                 </div>
                 <label>Negative Prompt</label>
                 <small style="opacity:0.6;font-size:10px;">Things to avoid in the image (e.g., "bad hands, blurry, watermark")</small>
-                <textarea id="qig-negative" rows="2">${s.negativePrompt}</textarea>
+                <textarea id="qig-negative" rows="2">${esc(s.negativePrompt)}</textarea>
                 
                 <label>Quality Tags</label>
                 <small style="opacity:0.6;font-size:10px;">Tags prepended to every prompt to improve output quality</small>
-                <textarea id="qig-quality" rows="1">${s.qualityTags}</textarea>
+                <textarea id="qig-quality" rows="1">${esc(s.qualityTags)}</textarea>
                 <label class="checkbox_label">
                     <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
                     <span>Prepend quality tags to prompt</span>
@@ -4156,7 +4179,7 @@ function createUI() {
                 <small style="opacity:0.6;font-size:10px;">Feeds the selected chat message to the image generator as scene context</small>
                 <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
                     <label>Message selection</label>
-                    <input id="qig-msg-range" type="text" value="${s.messageRange}" placeholder="-1"
+                    <input id="qig-msg-range" type="text" value="${esc(s.messageRange)}" placeholder="-1"
                            title="-1 (last), 5 (single), 3-7 (range), 3,5,7 (specific), last5 (last N)">
                     <small style="color:var(--SmartThemeBodyColor);opacity:0.6;font-size:10px;margin-top:2px;display:block;">
                         -1 = last | 3-7 = range | 3,5,7 = pick | last5 = last N
@@ -4201,12 +4224,12 @@ function createUI() {
                     <div style="margin-top:8px;">
                         <label>Prefill (start LLM response with):</label>
                         <small style="opacity:0.6;font-size:10px;">Pre-fills the start of the AI's response to guide its output format</small>
-                        <input id="qig-llm-prefill" type="text" value="${s.llmPrefill || ''}"
+                        <input id="qig-llm-prefill" type="text" value="${esc(s.llmPrefill || '')}"
                                placeholder="e.g., Image prompt:" style="width:100%;">
                     </div>
                     <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                         <label>Custom LLM Instruction</label>
-                        <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${s.llmCustomInstruction || ""}</textarea>
+                        <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
                     </div>
                 </div>
 
@@ -4267,10 +4290,10 @@ function createUI() {
                         </label>
                         <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
                             <label>Inject prompt template</label>
-                            <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${s.injectPrompt || ""}</textarea>
+                            <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${esc(s.injectPrompt || "")}</textarea>
                             <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Injected into chat completion to instruct AI to use &lt;pic&gt; tags.</small>
                             <label>Extraction regex</label>
-                            <input id="qig-inject-regex" type="text" value="${(s.injectRegex || '').replace(/"/g, '&quot;')}" style="width:100%;font-family:monospace;font-size:11px;">
+                            <input id="qig-inject-regex" type="text" value="${esc(s.injectRegex || '')}" style="width:100%;font-family:monospace;font-size:11px;">
                             <small style="opacity:0.6;font-size:10px;">Capture group 1 = image prompt. Default extracts from &lt;pic prompt="..."&gt;</small>
                             <label>Injection position</label>
                             <select id="qig-inject-position">
@@ -4280,7 +4303,7 @@ function createUI() {
                             </select>
                             <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
                                 <label>Depth</label>
-                                <input id="qig-inject-depth" type="number" value="${s.injectDepth || 0}" min="0" max="100">
+                                <input id="qig-inject-depth" type="number" value="${esc(s.injectDepth || 0)}" min="0" max="100">
                             </div>
                             <label>Tag handling</label>
                             <select id="qig-inject-insert-mode">
@@ -4321,7 +4344,7 @@ function createUI() {
                         <label style="font-size:11px;margin-top:4px;">Completion Preset (optional)</label>
                         <select id="qig-llm-override-preset-select" style="width:100%;"></select>
                         <label style="font-size:11px;margin-top:4px;">Max Tokens</label>
-                        <input id="qig-llm-override-max" type="number" value="${s.llmOverrideMaxTokens || 500}" min="50" max="4096" style="width:100%;">
+                        <input id="qig-llm-override-max" type="number" value="${esc(s.llmOverrideMaxTokens || 500)}" min="50" max="4096" style="width:100%;">
                     </div>
                 </div>
 
@@ -4333,9 +4356,9 @@ function createUI() {
                 <label>Size</label>
                 <small style="opacity:0.6;font-size:10px;">Output resolution in pixels — larger = slower and more VRAM</small>
                 <div id="qig-size-custom" class="qig-row">
-                    <input id="qig-width" type="number" value="${s.width}" min="256" max="2048" step="64">
+                    <input id="qig-width" type="number" value="${esc(s.width)}" min="256" max="2048" step="64">
                     <span>×</span>
-                    <input id="qig-height" type="number" value="${s.height}" min="256" max="2048" step="64">
+                    <input id="qig-height" type="number" value="${esc(s.height)}" min="256" max="2048" step="64">
                     <select id="qig-aspect" style="width:70px;margin-left:4px">
                         <option value="">-</option>
                         <option value="1:1">1:1</option>
@@ -4351,7 +4374,7 @@ function createUI() {
                 
                 <label>Batch Count</label>
                 <small style="opacity:0.6;font-size:10px;">Number of images to generate per click (1-10)</small>
-                <input id="qig-batch" type="number" value="${s.batchCount}" min="1" max="10">
+                <input id="qig-batch" type="number" value="${esc(s.batchCount)}" min="1" max="10">
                 <label class="checkbox_label" id="qig-seq-seeds-wrap" style="display:${(s.batchCount || 1) > 1 ? '' : 'none'}">
                     <input id="qig-seq-seeds" type="checkbox" ${s.sequentialSeeds ? "checked" : ""}>
                     <span>Sequential seeds (seed, seed+1, seed+2...)</span>
@@ -4365,16 +4388,16 @@ function createUI() {
                     <div class="inline-drawer-content" id="qig-advanced-settings">
                     <label>Steps</label>
                     <small style="opacity:0.6;font-size:10px;">More steps = higher quality but slower (20-30 is typical)</small>
-                    <input id="qig-steps" type="number" value="${s.steps}" min="1" max="150">
+                    <input id="qig-steps" type="number" value="${esc(s.steps)}" min="1" max="150">
                     <label>CFG Scale</label>
                     <small style="opacity:0.6;font-size:10px;">How strictly the image follows the prompt — higher = more literal (5-10 typical)</small>
-                    <input id="qig-cfg" type="number" value="${s.cfgScale}" min="1" max="30" step="0.5">
+                    <input id="qig-cfg" type="number" value="${esc(s.cfgScale)}" min="1" max="30" step="0.5">
                     <label>Sampler</label>
                     <small style="opacity:0.6;font-size:10px;">Algorithm used to generate the image — euler_a is a good default</small>
                     <select id="qig-sampler">${samplerOpts}</select>
                     <label>Seed (-1 = random)</label>
                     <small style="opacity:0.6;font-size:10px;">Same seed + same prompt = same image. -1 for random each time</small>
-                    <input id="qig-seed" type="number" value="${s.seed}">
+                    <input id="qig-seed" type="number" value="${esc(s.seed)}">
                     </div>
                 </div>
             </div>
@@ -4556,9 +4579,12 @@ function createUI() {
         } else {
             // Fallback to presets if no API or no models found
             console.log("No IP-Adapter models detected via API, using presets.");
-            // We don't change innerHTML here so it keeps the hardcoded presets from HTML
-            // but maybe we should append a warning?
-            cnSelect.insertAdjacentHTML('beforeend', '<option value="" disabled>-- No IP-Adapter models detected --</option>');
+            const hasNoModelsOption = Array.from(cnSelect.options || []).some(opt =>
+                opt.disabled && opt.textContent.includes("No IP-Adapter models detected")
+            );
+            if (!hasNoModelsOption) {
+                cnSelect.insertAdjacentHTML('beforeend', '<option value="" disabled>-- No IP-Adapter models detected --</option>');
+            }
         }
 
         // Fetch Upscalers for Hires Fix
@@ -5753,7 +5779,7 @@ async function handleMetadataDrop(e) {
                 const el = document.getElementById("qig-cfg");
                 if (el) el.value = s.cfgScale;
             }
-            if (params.seed) {
+            if (params.seed !== undefined && !Number.isNaN(params.seed)) {
                 s.seed = params.seed;
                 const el = document.getElementById("qig-seed");
                 if (el) el.value = s.seed;
@@ -5766,14 +5792,21 @@ async function handleMetadataDrop(e) {
                 if (wEl) wEl.value = s.width;
                 if (hEl) hEl.value = s.height;
             }
+            if (params.model && PROVIDERS[params.model]) {
+                s.provider = params.model;
+                const providerEl = document.getElementById("qig-provider");
+                if (providerEl) providerEl.value = s.provider;
+                updateProviderUI();
+                renderProfileSelect();
+            }
             // Try to map sampler (approximate match)
             if (params.sampler) {
                 // Not perfect but helps
                 const samplerMap = {
                     "Euler a": "euler_a",
                     "Euler": "euler",
-                    "DPM++ 2M Karras": "dpmpp_2m",
-                    "DPM++ SDE Karras": "dpmpp_sde"
+                    "DPM++ 2M Karras": "dpm++_2m",
+                    "DPM++ SDE Karras": "dpm++_sde"
                 };
                 if (samplerMap[params.sampler]) {
                     s.sampler = samplerMap[params.sampler];
