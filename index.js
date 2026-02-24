@@ -1752,13 +1752,18 @@ async function genLocal(prompt, negative, s, signal) {
                     body: JSON.stringify({ prompt: customWorkflow }),
                     signal
                 });
-                if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
+                if (!res.ok) {
+                    let detail = "";
+                    try { const b = await res.json(); detail = b.error?.message || b.error || ""; } catch {}
+                    throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}`);
+                }
                 const data = await res.json();
 
                 const promptId = data.prompt_id;
                 for (let i = 0; i < 120; i++) {
                     if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
                     await new Promise(r => setTimeout(r, 1000));
+                    showStatus(`Generating... (waiting ${i + 1}s)`);
                     let hist;
                     try {
                         const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
@@ -1766,6 +1771,7 @@ async function genLocal(prompt, negative, s, signal) {
                         hist = await histRes.json();
                     } catch { continue; }
                     const result = hist[promptId];
+                    checkComfyResult(result);
                     if (result?.outputs) {
                         for (const nodeId in result.outputs) {
                             const output = result.outputs[nodeId];
@@ -1778,8 +1784,24 @@ async function genLocal(prompt, negative, s, signal) {
                 }
                 throw new Error("ComfyUI timeout");
             } catch (e) {
-                if (e.message.includes('timeout') || e.message.includes('ComfyUI error')) throw e;
-                log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
+                if (e instanceof SyntaxError) {
+                    log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
+                } else {
+                    throw e;
+                }
+            }
+        }
+
+        function checkComfyResult(result) {
+            if (result?.status?.status_str === "error") {
+                const errorMsgs = result.status.messages || [];
+                const executionError = errorMsgs.find(m => m[0] === "execution_error");
+                const errMsg = executionError?.[1]?.exception_message || "Unknown execution error";
+                let hint = "";
+                if (/clip.*invalid|invalid.*clip/i.test(errMsg)) {
+                    hint = " (Hint: model may lack a CLIP encoder — Flux/UNET-only models need a custom workflow with a separate CLIP loader)";
+                }
+                throw new Error(`ComfyUI execution error: ${errMsg}${hint}`);
             }
         }
 
@@ -1862,7 +1884,11 @@ async function genLocal(prompt, negative, s, signal) {
             body: JSON.stringify({ prompt: workflowNodes }),
             signal
         });
-        if (!res.ok) throw new Error(`ComfyUI error: ${res.status}`);
+        if (!res.ok) {
+            let detail = "";
+            try { const b = await res.json(); detail = b.error?.message || b.error || ""; } catch {}
+            throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}`);
+        }
         const data = await res.json();
         // Poll for result - find any SaveImage output
         const promptId = data.prompt_id;
@@ -1877,6 +1903,7 @@ async function genLocal(prompt, negative, s, signal) {
                 hist = await histRes.json();
             } catch { continue; }
             const result = hist[promptId];
+            checkComfyResult(result);
             if (result?.outputs) {
                 for (const nodeId in result.outputs) {
                     const output = result.outputs[nodeId];
@@ -4927,6 +4954,17 @@ async function generateImageInjectPalette() {
             showStatus(`🖼️ Generating palette-inject image...`);
 
             let prompt = await generateLLMPrompt(s, extractedPrompt);
+
+            // Show prompt editing dialog if enabled
+            if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
+                const editedPrompt = await showPromptEditDialog(prompt);
+                if (editedPrompt !== null) {
+                    prompt = editedPrompt;
+                } else {
+                    continue;
+                }
+            }
+
             let negative = resolvePrompt(s.negativePrompt);
 
             // Apply style
@@ -5296,6 +5334,17 @@ async function processInjectMessage(messageText, messageIndex) {
             showStatus("🖼️ Generating inject-mode image...");
 
             let prompt = await generateLLMPrompt(s, extractedPrompt);
+
+            // Show prompt editing dialog if enabled
+            if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
+                const editedPrompt = await showPromptEditDialog(prompt);
+                if (editedPrompt !== null) {
+                    prompt = editedPrompt;
+                } else {
+                    continue;
+                }
+            }
+
             let negative = resolvePrompt(s.negativePrompt);
 
             // Apply style
