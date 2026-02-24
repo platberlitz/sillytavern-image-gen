@@ -66,6 +66,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🔲 **Resizable Popup** - Drag the corner handle to resize the image popup
 - ⚡ **Auto-generate** - Generate after each AI response
 - 📥 **Auto-insert** - Skip popup and insert images directly into chat
+- 💾 **Save to ST Server** - Optional auto-save for every generated image (persists across sessions)
 
 ### Advanced Features
 - 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
@@ -118,6 +119,8 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Prefill** | Text to start LLM response with (e.g., "Tags:", "Image prompt:") |
 | **Add enhanced quality tags** | LLM includes additional quality descriptors |
 | **Add lighting tags** | LLM includes professional lighting descriptions |
+| **Save to ST server** | Auto-save generated images to the SillyTavern server (persistent) |
+| **Embed metadata in saved PNGs** | Include prompt/negative/settings metadata when saving to server |
 | **Add random artist tags** | LLM includes art style references from artists |
 | **Batch Count** | Number of images to generate (1-10) |
 | **Sequential Seeds** | Generate batch with incrementing seeds (seed, seed+1, seed+2...) |

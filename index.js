@@ -10,6 +10,7 @@ function getRandomArtist(useTagFormat = false) {
 
 const extensionName = "quick-image-gen";
 let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret;
+let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -35,6 +36,8 @@ const defaultSettings = {
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
+    saveToServer: false,
+    saveToServerEmbedMetadata: true,
     disablePaletteButton: false,
     paletteMode: "direct",
     confirmBeforeGenerate: false,
@@ -3117,7 +3120,10 @@ async function regenerateImage() {
             showStatus("🔄 Regenerating...");
             const result = await generateForProvider(lastPrompt, lastNegative, s, currentAbortController?.signal);
             hideStatus();
-            if (result) displayImage(result);
+            if (result) {
+                const finalUrl = await maybeFinalizeUrl(result, lastPrompt, lastNegative, getMetadataSettings(s));
+                if (finalUrl) displayImage(finalUrl);
+            }
         } else {
             const results = [];
             let baseSeed = Math.floor(Math.random() * 2147483647);
@@ -3128,7 +3134,10 @@ async function regenerateImage() {
                 const expandedPrompt = expandWildcards(lastPrompt);
                 const expandedNegative = expandWildcards(lastNegative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                if (result) results.push(result);
+                if (result) {
+                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
+                    if (finalUrl) results.push(finalUrl);
+                }
             }
             hideStatus();
             if (results.length > 1) {
@@ -4352,6 +4361,14 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
+                <label class="checkbox_label" style="margin-top:4px;">
+                    <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""}>
+                    <span>Save images to ST server (persistent)</span>
+                </label>
+                <label class="checkbox_label" style="margin-left:16px;opacity:${s.saveToServer ? "1" : "0.6"};">
+                    <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${s.saveToServer ? "" : "disabled"}>
+                    <span>Embed metadata in saved PNGs</span>
+                </label>
 
                 <label>Size</label>
                 <small style="opacity:0.6;font-size:10px;">Output resolution in pixels — larger = slower and more VRAM</small>
@@ -4742,6 +4759,29 @@ function createUI() {
     };
     bindCheckbox("qig-auto-generate", "autoGenerate");
     bindCheckbox("qig-auto-insert", "autoInsert");
+    const saveToServerEl = document.getElementById("qig-save-to-server");
+    const saveToServerMetaEl = document.getElementById("qig-save-to-server-meta");
+    const updateSaveToServerMetaState = () => {
+        if (!saveToServerMetaEl) return;
+        const enabled = !!saveToServerEl?.checked;
+        saveToServerMetaEl.disabled = !enabled;
+        const label = saveToServerMetaEl.closest("label");
+        if (label) label.style.opacity = enabled ? "1" : "0.6";
+    };
+    if (saveToServerEl) {
+        saveToServerEl.onchange = (e) => {
+            getSettings().saveToServer = e.target.checked;
+            saveSettingsDebounced();
+            updateSaveToServerMetaState();
+        };
+    }
+    if (saveToServerMetaEl) {
+        saveToServerMetaEl.onchange = (e) => {
+            getSettings().saveToServerEmbedMetadata = e.target.checked;
+            saveSettingsDebounced();
+        };
+    }
+    updateSaveToServerMetaState();
     document.getElementById("qig-disable-palette").onchange = (e) => {
         getSettings().disablePaletteButton = e.target.checked;
         saveSettingsDebounced();
@@ -5040,7 +5080,10 @@ async function generateImageInjectPalette() {
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                if (result) results.push(result);
+                if (result) {
+                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
+                    if (finalUrl) results.push(finalUrl);
+                }
             }
             s.seed = originalSeed;
 
@@ -5198,7 +5241,10 @@ async function generateImage() {
             const expandedPrompt = expandWildcards(prompt);
             const expandedNegative = expandWildcards(negative);
             const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-            if (result) results.push(result);
+            if (result) {
+                const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
+                if (finalUrl) results.push(finalUrl);
+            }
         }
         log(`Generated ${results.length} image(s) successfully`);
         if (s.autoInsert) {
@@ -5420,7 +5466,10 @@ async function processInjectMessage(messageText, messageIndex) {
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                if (result) results.push(result);
+                if (result) {
+                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
+                    if (finalUrl) results.push(finalUrl);
+                }
             }
             s.seed = originalSeed;
 
@@ -5472,6 +5521,21 @@ jQuery(function () {
             getContext = extensionsModule.getContext;
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
             generateQuietPrompt = scriptModule.generateQuietPrompt;
+
+            try {
+                const utilsModule = await import("../../../utils.js");
+                saveBase64AsFile = utilsModule.saveBase64AsFile;
+                getSanitizedFilename = utilsModule.getSanitizedFilename;
+            } catch (e) {
+                console.warn("[ImageGen] Could not import utils module:", e.message);
+            }
+
+            try {
+                const rossModule = await import("../../../RossAscends-mods.js");
+                humanizedDateTime = rossModule.humanizedDateTime;
+            } catch (e) {
+                console.warn("[ImageGen] Could not import RossAscends-mods:", e.message);
+            }
 
             try {
                 const secretsModule = await import("../../../../scripts/secrets.js");
@@ -5535,6 +5599,126 @@ jQuery(function () {
     })();
 });
 
+
+let _saveToServerToastTs = 0;
+function warnSaveToServer(msg) {
+    log(msg);
+    if (typeof toastr !== "undefined") {
+        const now = Date.now();
+        if (now - _saveToServerToastTs > 4000) {
+            toastr.warning(msg);
+            _saveToServerToastTs = now;
+        }
+    }
+}
+
+function getMetadataSettings(s) {
+    return {
+        steps: s.steps,
+        sampler: s.sampler,
+        cfgScale: s.cfgScale,
+        seed: s.seed,
+        width: s.width,
+        height: s.height,
+        provider: s.provider,
+        saveToServer: s.saveToServer,
+        saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
+    };
+}
+
+function getServerSubfolder() {
+    try {
+        const ctx = getContext?.();
+        if (!ctx) return "QuickImageGen";
+        if (ctx.groupId) {
+            const groupKey = Object.keys(ctx.groups || {}).find(k => ctx.groups[k]?.id === ctx.groupId);
+            const groupId = groupKey ? ctx.groups[groupKey]?.id : null;
+            if (groupId != null) return String(groupId);
+        }
+        const name = ctx.characters?.[ctx.characterId]?.name;
+        if (name) return name;
+    } catch (e) {
+        log(`SaveToServer: Failed to resolve subfolder: ${e.message}`);
+    }
+    return "QuickImageGen";
+}
+
+async function fetchImageBuffer(url) {
+    const isDataLike = url.startsWith("data:") || url.startsWith("blob:");
+    const res = isDataLike ? await fetch(url) : await corsFetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch image (${res.status})`);
+    const contentType = res.headers.get("content-type") || "";
+    const buffer = await res.arrayBuffer();
+    return { buffer, contentType };
+}
+
+function detectImageFormat(buffer, contentType = "", url = "") {
+    const bytes = new Uint8Array(buffer);
+    const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
+    if (isPng) return { ext: "png", isPng: true };
+    const isJpeg = bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
+    if (isJpeg) return { ext: "jpg", isPng: false };
+    const isWebp = bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
+    if (isWebp) return { ext: "webp", isPng: false };
+    const ct = contentType.toLowerCase();
+    if (ct.includes("png")) return { ext: "png", isPng: true };
+    if (ct.includes("webp")) return { ext: "webp", isPng: false };
+    if (ct.includes("jpeg") || ct.includes("jpg")) return { ext: "jpg", isPng: false };
+    const lowerUrl = String(url).toLowerCase();
+    if (lowerUrl.includes(".png")) return { ext: "png", isPng: true };
+    if (lowerUrl.includes(".webp")) return { ext: "webp", isPng: false };
+    if (lowerUrl.includes(".jpg") || lowerUrl.includes(".jpeg")) return { ext: "jpg", isPng: false };
+    return { ext: "jpg", isPng: false };
+}
+
+function arrayBufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunkSize = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+    }
+    return btoa(binary);
+}
+
+async function saveImageToServer(url, prompt, negative, settings) {
+    const { buffer, contentType } = await fetchImageBuffer(url);
+    const formatInfo = detectImageFormat(buffer, contentType, url);
+    let finalBuffer = buffer;
+
+    if (formatInfo.isPng && settings?.saveToServerEmbedMetadata !== false) {
+        const metaText = buildMetadataString(prompt, negative, settings || {});
+        finalBuffer = embedPNGMetadata(buffer, metaText);
+    }
+
+    const base64 = arrayBufferToBase64(finalBuffer);
+    const subFolder = getServerSubfolder();
+    let filename = `qig_${typeof humanizedDateTime === "function" ? humanizedDateTime() : Date.now()}`;
+    if (typeof getSanitizedFilename === "function") {
+        try {
+            filename = await getSanitizedFilename(filename);
+        } catch (e) {
+            log(`SaveToServer: filename sanitize failed: ${e.message}`);
+        }
+    }
+    return await saveBase64AsFile(base64, subFolder, filename, formatInfo.ext);
+}
+
+async function maybeFinalizeUrl(url, prompt, negative, settings) {
+    const s = settings || getSettings();
+    if (!s?.saveToServer) return url;
+    if (typeof saveBase64AsFile !== "function") {
+        warnSaveToServer("Save to server unavailable (missing API)");
+        return url;
+    }
+    try {
+        const path = await saveImageToServer(url, prompt, negative, s);
+        return path || url;
+    } catch (e) {
+        warnSaveToServer(`Save to server failed: ${e.message}`);
+        return url;
+    }
+}
 
 // === PNG Metadata Embedding ===
 function crc32(data) {
