@@ -262,14 +262,40 @@ Example: `{red|blue|green} hair, {indoor|outdoor} scene` → each batch image ge
 ## Local Img2Img
 When using the Local (A1111) provider, you can upload a reference image to perform Image-to-Image generation. The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
 
-## ComfyUI Setup
-When using ComfyUI, you must start it with CORS headers enabled to allow cross-origin requests from SillyTavern:
+## ComfyUI Setup (Friendly Step-by-Step)
+
+If this is your first time connecting QIG to ComfyUI, follow this quick path:
+
+### 1) Start ComfyUI with CORS enabled
+QIG runs inside SillyTavern's browser context, so ComfyUI must allow cross-origin requests.
 
 ```bash
 python main.py --enable-cors-header
 ```
 
-Without this flag, you'll get "403 Forbidden" errors due to origin mismatch.
+If you start ComfyUI with a launcher/shortcut, add `--enable-cors-header` to its launch arguments.
+
+### 2) Set QIG to Local + ComfyUI
+In the extension:
+- **Provider**: `Local`
+- **Local Type**: `ComfyUI`
+- **URL**: `http://127.0.0.1:8188` (or your custom host/port)
+
+### 3) Paste an API-format workflow
+In ComfyUI, open your workflow and use **Save (API Format)**. Paste that JSON into QIG's **Custom Workflow** box.
+
+Tip: UI-exported workflow JSON is not always the same as API-format JSON. Use the API format specifically.
+
+### 4) Set checkpoint/model fields
+If your workflow uses `%model%`, set **Checkpoint Name** to the exact checkpoint filename from ComfyUI (including extension, e.g. `myModel.safetensors`).
+
+### 5) Run a first test
+Use a short prompt with a small size (for example `512x512`) and click **Generate**. Once this works, tune steps, CFG, and the workflow.
+
+### Common connection issues
+- **403 Forbidden**: ComfyUI was started without `--enable-cors-header`
+- **Connection error/timeouts**: wrong URL/port or ComfyUI not running
+- **No image output**: workflow is not API format or is missing expected output wiring
 
 ### ComfyUI Settings
 | Setting | Description |
