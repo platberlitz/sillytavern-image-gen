@@ -141,6 +141,16 @@ const defaultSettings = {
     llmOverrideProfileId: "",
     llmOverridePreset: "",
     llmOverrideMaxTokens: 500,
+    // ComfyUI Flux/UNET support
+    comfySkipNegativePrompt: false,
+    // Backups of localStorage stores (survive browser storage wipes)
+    _backupTemplates: null,
+    _backupCharSettings: null,
+    _backupProfiles: null,
+    _backupCharRefImages: null,
+    _backupGenPresets: null,
+    _backupComfyWorkflows: null,
+    _backupContextualFilters: null,
 };
 
 let lastPrompt = "";
@@ -162,6 +172,28 @@ function safeSetStorage(key, value, errorMessage = "") {
         log(`Storage write failed for ${key}: ${e.message}`);
         if (errorMessage) toastr?.error?.(errorMessage);
         return false;
+    }
+}
+// Backup mapping: localStorage key → extensionSettings backup key
+const BACKUP_KEYS = {
+    qig_templates: "_backupTemplates",
+    qig_char_settings: "_backupCharSettings",
+    qig_profiles: "_backupProfiles",
+    qig_char_ref_images: "_backupCharRefImages",
+    qig_gen_presets: "_backupGenPresets",
+    qig_comfy_workflows: "_backupComfyWorkflows",
+    qig_contextual_filters: "_backupContextualFilters",
+};
+function backupToSettings(localKey, data) {
+    const backupKey = BACKUP_KEYS[localKey];
+    if (!backupKey) return;
+    try {
+        const es = extension_settings?.[extensionName];
+        if (!es) return;
+        es[backupKey] = data;
+        saveSettingsDebounced?.();
+    } catch (e) {
+        log(`Backup write failed for ${backupKey}: ${e.message}`);
     }
 }
 function escapeHtml(str) {
@@ -544,6 +576,28 @@ function requestGenerationCancel() {
         _autoGenTimeout = null;
     }
 
+    // Send server-side interrupt (fire-and-forget) so the GPU actually stops
+    try {
+        const s = extension_settings?.[extensionName];
+        if (s?.provider === "local" && s.localUrl) {
+            const baseUrl = s.localUrl.replace(/\/$/, "");
+            if (s.localType === "comfyui") {
+                fetch(`${baseUrl}/interrupt`, { method: "POST" }).catch(() => {});
+            } else {
+                fetch(`${baseUrl}/sdapi/v1/interrupt`, { method: "POST" }).catch(() => {});
+            }
+        }
+    } catch (e) { /* best-effort */ }
+
+    // Safety timeout: force-reset UI if still generating after 5 seconds
+    const thisCancelSerial = cancelRequestSerial;
+    setTimeout(() => {
+        if (isGenerating && cancelRequestSerial === thisCancelSerial) {
+            log("Cancel safety timeout: forcing endGeneration()");
+            endGeneration();
+        }
+    }, 5000);
+
     const paletteBtn = getOrCacheElement("qig-input-btn");
     if (paletteBtn) {
         paletteBtn.title = "Cancelling...";
@@ -569,6 +623,29 @@ async function loadSettings() {
     }
     if (saved && saved.injectPrompt === oldDefaultPrompt) {
         s.injectPrompt = defaultSettings.injectPrompt;
+    }
+    // Restore localStorage stores from extensionSettings backup if localStorage was wiped
+    const restoreTargets = [
+        { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
+        { localKey: "qig_char_settings", backupKey: "_backupCharSettings", setter: v => { charSettings = v; } },
+        { localKey: "qig_profiles", backupKey: "_backupProfiles", setter: v => { connectionProfiles = v; } },
+        { localKey: "qig_char_ref_images", backupKey: "_backupCharRefImages", setter: v => { charRefImages = v; } },
+        { localKey: "qig_gen_presets", backupKey: "_backupGenPresets", setter: v => { generationPresets = v; } },
+        { localKey: "qig_comfy_workflows", backupKey: "_backupComfyWorkflows", setter: v => { comfyWorkflows = v; } },
+        { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", setter: v => { contextualFilters = v; } },
+    ];
+    let restoredCount = 0;
+    for (const { localKey, backupKey, setter } of restoreTargets) {
+        const localVal = localStorage.getItem(localKey);
+        if (localVal == null && s[backupKey] != null) {
+            setter(s[backupKey]);
+            safeSetStorage(localKey, JSON.stringify(s[backupKey]));
+            restoredCount++;
+        }
+    }
+    if (restoredCount > 0) {
+        log(`Restored ${restoredCount} preset store(s) from server backup`);
+        toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
     }
 }
 
@@ -1913,14 +1990,19 @@ async function genLocal(prompt, negative, s, signal) {
                 const executionError = errorMsgs.find(m => m[0] === "execution_error");
                 const errMsg = executionError?.[1]?.exception_message || "Unknown execution error";
                 let hint = "";
-                if (/clip.*invalid|invalid.*clip/i.test(errMsg)) {
-                    hint = " (Hint: model may lack a CLIP encoder — Flux/UNET-only models need a custom workflow with a separate CLIP loader)";
+                if (/clip.*invalid|invalid.*clip|clip.*not.*found/i.test(errMsg)) {
+                    hint = " (Hint: model may lack a built-in CLIP encoder. Flux/UNET-only models need a custom workflow with DualCLIPLoader and VAELoader nodes. Try enabling 'Skip Negative Prompt' in ComfyUI settings, or use a custom workflow JSON exported from ComfyUI.)";
+                } else if (/vae.*invalid|invalid.*vae|vae.*not.*found/i.test(errMsg)) {
+                    hint = " (Hint: model may lack a built-in VAE. Flux/UNET-only models need a separate VAELoader node in a custom workflow.)";
+                } else if (/negative.*conditioning|conditioning.*negative/i.test(errMsg)) {
+                    hint = " (Hint: this model may not support negative prompts. Try enabling 'Skip Negative Prompt' in ComfyUI settings.)";
                 }
                 throw new Error(`ComfyUI execution error: ${errMsg}${hint}`);
             }
         }
 
         // ComfyUI API - Default workflow
+        const skipNeg = !!s.comfySkipNegativePrompt;
         const workflowNodes = {
             "3": {
                 class_type: "KSampler",
@@ -1933,17 +2015,20 @@ async function genLocal(prompt, negative, s, signal) {
                     denoise: denoise,
                     model: ["4", 0],
                     positive: ["6", 0],
-                    negative: ["7", 0],
+                    negative: skipNeg ? ["6", 0] : ["7", 0],
                     latent_image: ["5", 0]
                 }
             },
             "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
             "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
             "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
-            "7": { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
             "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
             "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
         };
+        // Only add negative CLIPTextEncode node if not skipping
+        if (!skipNeg) {
+            workflowNodes["7"] = { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } };
+        }
 
         // Add CLIP SetLastLayer if clip_skip > 1
         if (clipSkip > 1) {
@@ -1986,7 +2071,7 @@ async function genLocal(prompt, negative, s, signal) {
                 workflowNodes["10"].inputs.clip = lastClipRef;
             } else {
                 workflowNodes["6"].inputs.clip = lastClipRef;
-                workflowNodes["7"].inputs.clip = lastClipRef;
+                if (workflowNodes["7"]) workflowNodes["7"].inputs.clip = lastClipRef;
             }
             log(`ComfyUI: Injected ${injectedCount} LoRA(s)`);
         }
@@ -3337,6 +3422,7 @@ function saveTemplate() {
     promptTemplates.unshift({ name, prompt, negative, quality });
     promptTemplates = promptTemplates.slice(0, 20);
     if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to save template. Browser storage may be full.")) return;
+    backupToSettings("qig_templates", promptTemplates);
     renderTemplates();
 }
 
@@ -3356,6 +3442,7 @@ function loadTemplate(i) {
 function deleteTemplate(i) {
     promptTemplates.splice(i, 1);
     if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to delete template. Browser storage may be full.")) return;
+    backupToSettings("qig_templates", promptTemplates);
     renderTemplates();
 }
 
@@ -3381,6 +3468,7 @@ function clearTemplates() {
     if (confirm("Clear all templates?")) {
         promptTemplates = [];
         localStorage.removeItem("qig_templates");
+        backupToSettings("qig_templates", promptTemplates);
         renderTemplates();
     }
 }
@@ -3388,6 +3476,7 @@ function clearTemplates() {
 // === Contextual Filters (lorebook-style prompt injection) ===
 function saveContextualFilters() {
     safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters), "Failed to save contextual filters. Browser storage may be full.");
+    backupToSettings("qig_contextual_filters", contextualFilters);
 }
 
 function showFilterDialog(filter) {
@@ -3638,6 +3727,8 @@ function saveCharSettings() {
     }
     const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages), "Failed to save character reference images. Browser storage may be full.");
     if (!savedCharSettings || !savedCharRefs) return;
+    backupToSettings("qig_char_settings", charSettings);
+    backupToSettings("qig_char_ref_images", charRefImages);
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
 }
@@ -3689,6 +3780,7 @@ function saveConnectionProfile() {
     if (!connectionProfiles[provider]) connectionProfiles[provider] = {};
     connectionProfiles[provider][name] = profile;
     if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to save profile. Browser storage may be full.")) return;
+    backupToSettings("qig_profiles", connectionProfiles);
     renderProfileSelect(name);
     showStatus(`${existing ? "♻️ Updated" : "💾 Saved"} profile: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -3712,6 +3804,7 @@ function deleteConnectionProfile(name) {
     if (!confirm(`Delete profile "${name}"?`)) return;
     delete connectionProfiles[provider]?.[name];
     if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to delete profile. Browser storage may be full.")) return;
+    backupToSettings("qig_profiles", connectionProfiles);
     renderProfileSelect();
 }
 
@@ -3731,7 +3824,7 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
@@ -3739,7 +3832,8 @@ function getComfyWorkflowSnapshot(s = getSettings()) {
         comfyDenoise: s.comfyDenoise ?? 1.0,
         comfyClipSkip: s.comfyClipSkip ?? 1,
         comfyLoras: s.comfyLoras || "",
-        comfyWorkflow: s.comfyWorkflow || ""
+        comfyWorkflow: s.comfyWorkflow || "",
+        comfySkipNegativePrompt: !!s.comfySkipNegativePrompt
     };
 }
 
@@ -3752,7 +3846,9 @@ function applyComfyWorkflowSnapshot(snapshot) {
 }
 
 function saveComfyWorkflowStore(errorMessage = "Failed to save workflow presets. Browser storage may be full.") {
-    return safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows), errorMessage);
+    const result = safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows), errorMessage);
+    if (result) backupToSettings("qig_comfy_workflows", comfyWorkflows);
+    return result;
 }
 
 function setComfyWorkflowActionState(hasSelection) {
@@ -3874,6 +3970,7 @@ function savePreset() {
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to save preset. Browser storage may be full.")) return;
+    backupToSettings("qig_gen_presets", generationPresets);
     renderPresets();
     showStatus(`💾 Saved preset: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -3904,6 +4001,7 @@ function loadPreset(i) {
 function deletePreset(i) {
     generationPresets.splice(i, 1);
     if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to delete preset. Browser storage may be full.")) return;
+    backupToSettings("qig_gen_presets", generationPresets);
     renderPresets();
 }
 
@@ -3911,6 +4009,7 @@ function clearPresets() {
     if (confirm("Clear all presets?")) {
         generationPresets = [];
         localStorage.removeItem("qig_gen_presets");
+        backupToSettings("qig_gen_presets", generationPresets);
         renderPresets();
     }
 }
@@ -4012,30 +4111,37 @@ function importSettings() {
             if (data.connectionProfiles) {
                 connectionProfiles = data.connectionProfiles;
                 if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles))) throw new Error("Could not save imported profiles. Browser storage may be full.");
+                backupToSettings("qig_profiles", connectionProfiles);
             }
             if (Array.isArray(data.comfyWorkflows)) {
                 comfyWorkflows = data.comfyWorkflows;
                 if (!safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows))) throw new Error("Could not save imported workflow presets. Browser storage may be full.");
+                backupToSettings("qig_comfy_workflows", comfyWorkflows);
             }
             if (data.promptTemplates) {
                 promptTemplates = data.promptTemplates;
                 if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates))) throw new Error("Could not save imported templates. Browser storage may be full.");
+                backupToSettings("qig_templates", promptTemplates);
             }
             if (data.generationPresets) {
                 generationPresets = data.generationPresets;
                 if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets))) throw new Error("Could not save imported presets. Browser storage may be full.");
+                backupToSettings("qig_gen_presets", generationPresets);
             }
             if (data.charSettings) {
                 charSettings = data.charSettings;
                 if (!safeSetStorage("qig_char_settings", JSON.stringify(charSettings))) throw new Error("Could not save imported character settings. Browser storage may be full.");
+                backupToSettings("qig_char_settings", charSettings);
             }
             if (data.charRefImages) {
                 charRefImages = data.charRefImages;
                 if (!safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages))) throw new Error("Could not save imported character reference images. Browser storage may be full.");
+                backupToSettings("qig_char_ref_images", charRefImages);
             }
             if (data.contextualFilters) {
                 contextualFilters = data.contextualFilters;
                 if (!safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters))) throw new Error("Could not save imported contextual filters. Browser storage may be full.");
+                backupToSettings("qig_contextual_filters", contextualFilters);
             }
             renderTemplates();
             renderPresets();
@@ -4106,7 +4212,8 @@ function refreshProviderInputs(provider) {
             ["qig-a1111-ipadapter-resize", "a1111IpAdapterResizeMode"],
             ["qig-a1111-ipadapter-control", "a1111IpAdapterControlMode"],
             ["qig-a1111-ipadapter-start", "a1111IpAdapterStartStep"],
-            ["qig-a1111-ipadapter-end", "a1111IpAdapterEndStep"]
+            ["qig-a1111-ipadapter-end", "a1111IpAdapterEndStep"],
+            ["qig-comfy-skip-neg", "comfySkipNegativePrompt"]
         ],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -4362,6 +4469,11 @@ function createUI() {
                             <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise || 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
+                         <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
+                            <input id="qig-comfy-skip-neg" type="checkbox" ${s.comfySkipNegativePrompt ? "checked" : ""}>
+                            <span>Skip Negative Prompt</span>
+                            <small style="opacity:0.6;font-size:10px;">(for Flux/UNET-only models that don't use negative conditioning)</small>
+                         </label>
                          <label>LoRAs (filename:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
                          <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
@@ -4860,6 +4972,16 @@ function createUI() {
     bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-model", "localModel");
+    document.getElementById("qig-local-model").addEventListener("change", (e) => {
+        const val = (e.target.value || "").toLowerCase();
+        if (/flux|unet|\.gguf/.test(val) && !getSettings().comfySkipNegativePrompt) {
+            toastr.warning(
+                'This looks like a Flux/UNET model. Consider enabling "Skip Negative Prompt" in ComfyUI settings, and using a custom workflow with DualCLIPLoader + VAELoader nodes.',
+                "Flux/UNET Model Detected",
+                { timeOut: 8000 }
+            );
+        }
+    });
     document.getElementById("qig-comfy-workflow-select").onchange = (e) => {
         selectedComfyWorkflowId = e.target.value || "";
         setComfyWorkflowActionState(!!selectedComfyWorkflowId);
@@ -4882,6 +5004,10 @@ function createUI() {
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-workflow", "comfyWorkflow");
     bind("qig-comfy-loras", "comfyLoras");
+    document.getElementById("qig-comfy-skip-neg").onchange = (e) => {
+        getSettings().comfySkipNegativePrompt = e.target.checked;
+        saveSettingsDebounced();
+    };
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
@@ -5868,7 +5994,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 }
             } finally {
                 s.seed = originalSeed;
-                if (startedGeneration) endGeneration();
+                if (startedGeneration || cancelRequested) endGeneration();
             }
         }
     } finally {
@@ -6359,18 +6485,34 @@ async function handleMetadataDrop(e) {
             }
             // Try to map sampler (approximate match)
             if (params.sampler) {
-                // Not perfect but helps
                 const samplerMap = {
                     "Euler a": "euler_a",
                     "Euler": "euler",
                     "DPM++ 2M Karras": "dpm++_2m",
-                    "DPM++ SDE Karras": "dpm++_sde"
+                    "DPM++ 2M": "dpm++_2m",
+                    "DPM++ SDE Karras": "dpm++_sde",
+                    "DPM++ SDE": "dpm++_sde",
+                    "DPM++ 2M SDE Karras": "dpm++_2m",
+                    "DPM++ 2M SDE": "dpm++_2m",
+                    "DDIM": "ddim",
+                    "LMS": "lms",
+                    "LMS Karras": "lms",
+                    "Heun": "heun",
+                    "DPM2": "dpm_2",
+                    "DPM2 a": "dpm_2_ancestral",
+                    "DPM2 Karras": "dpm_2",
+                    "DPM2 a Karras": "dpm_2_ancestral",
+                    "UniPC": "uni_pc",
                 };
-                if (samplerMap[params.sampler]) {
-                    s.sampler = samplerMap[params.sampler];
-                    // Also update dropdown
+                const mapped = samplerMap[params.sampler];
+                if (mapped) {
+                    const oldSampler = s.sampler;
+                    s.sampler = mapped;
                     const el = document.getElementById("qig-sampler");
                     if (el) el.value = s.sampler;
+                    if (oldSampler !== mapped) {
+                        toastr.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`);
+                    }
                 }
             }
 
