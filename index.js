@@ -171,9 +171,19 @@ let batchKeyHandler = null;
 const _processedInjectIndices = new Set();
 let currentAbortController = null;
 let _autoGenTimeout = null;
+let cancelRequested = false;
+let cancelRequestSerial = 0;
 
-function checkAborted() {
-    if (currentAbortController?.signal?.aborted) {
+function getCancelCheckpoint() {
+    return cancelRequestSerial;
+}
+
+function wasCancelRequestedSince(checkpoint) {
+    return typeof checkpoint === "number" && checkpoint !== cancelRequestSerial;
+}
+
+function checkAborted(checkpoint) {
+    if (cancelRequested || currentAbortController?.signal?.aborted || wasCancelRequestedSince(checkpoint)) {
         throw new DOMException("Generation cancelled by user", "AbortError");
     }
 }
@@ -457,6 +467,78 @@ function showStatus(msg) {
 }
 
 const hideStatus = () => showStatus();
+
+function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    if (paletteBtn) {
+        if (active) {
+            paletteBtn.classList.remove("fa-palette");
+            paletteBtn.classList.add("fa-spinner", "fa-spin");
+            paletteBtn.title = "Cancel Generation";
+            paletteBtn.style.opacity = "0.7";
+        } else {
+            paletteBtn.classList.remove("fa-spinner", "fa-spin");
+            paletteBtn.classList.add("fa-palette");
+            paletteBtn.title = "Generate Image";
+            paletteBtn.style.opacity = "0.7";
+        }
+    }
+
+    if (!disableGenerateButton) return;
+    const btn = getOrCacheElement("qig-generate-btn");
+    if (!btn) return;
+    if (active) {
+        btn.disabled = true;
+        btn.textContent = "Generating...";
+    } else {
+        btn.disabled = false;
+        btn.textContent = "🎨 Generate";
+    }
+}
+
+function beginGeneration({ disableGenerateButton = false, clearPendingAuto = false } = {}) {
+    if (clearPendingAuto && _autoGenTimeout) {
+        clearTimeout(_autoGenTimeout);
+        _autoGenTimeout = null;
+    }
+    cancelRequested = false;
+    isGenerating = true;
+    currentAbortController = new AbortController();
+    setGenerationActiveUI(true, { disableGenerateButton });
+}
+
+function endGeneration({ disableGenerateButton = false } = {}) {
+    currentAbortController = null;
+    isGenerating = false;
+    cancelRequested = false;
+    showStatus(null);
+    setGenerationActiveUI(false, { disableGenerateButton });
+}
+
+function requestGenerationCancel() {
+    if (!isGenerating) return false;
+    if (currentAbortController?.signal?.aborted) {
+        log("Cancel already requested, ignoring duplicate click");
+        return false;
+    }
+
+    cancelRequested = true;
+    cancelRequestSerial += 1;
+    if (currentAbortController) {
+        currentAbortController.abort();
+    }
+    if (_autoGenTimeout) {
+        clearTimeout(_autoGenTimeout);
+        _autoGenTimeout = null;
+    }
+
+    const paletteBtn = getOrCacheElement("qig-input-btn");
+    if (paletteBtn) {
+        paletteBtn.title = "Cancelling...";
+        paletteBtn.style.opacity = "0.4";
+    }
+    return true;
+}
 
 async function loadSettings() {
     const saved = extension_settings[extensionName];
@@ -3095,30 +3177,20 @@ async function regenerateImage() {
         showStatus("❌ No previous prompt to regenerate");
         return;
     }
-    isGenerating = true;
-    currentAbortController = new AbortController();
+    beginGeneration({ disableGenerateButton: true });
     const s = getSettings();
     const batchCount = s.batchCount || 1;
     const originalSeed = s.seed;
+    const cancelCheckpoint = getCancelCheckpoint();
     s.seed = -1;
-
-    const paletteBtn = getOrCacheElement("qig-input-btn");
-    if (paletteBtn) {
-        paletteBtn.classList.remove("fa-palette");
-        paletteBtn.classList.add("fa-spinner", "fa-spin");
-        paletteBtn.title = "Cancel Generation";
-    }
-    const btn = getOrCacheElement("qig-generate-btn");
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = "Generating...";
-    }
 
     log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
+        checkAborted(cancelCheckpoint);
         if (batchCount <= 1) {
             showStatus("🔄 Regenerating...");
             const result = await generateForProvider(lastPrompt, lastNegative, s, currentAbortController?.signal);
+            checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
                 const finalUrl = await maybeFinalizeUrl(result, lastPrompt, lastNegative, getMetadataSettings(s));
@@ -3128,7 +3200,7 @@ async function regenerateImage() {
             const results = [];
             let baseSeed = Math.floor(Math.random() * 2147483647);
             for (let i = 0; i < batchCount; i++) {
-                checkAborted();
+                checkAborted(cancelCheckpoint);
                 if (s.sequentialSeeds) s.seed = baseSeed + i;
                 showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(lastPrompt);
@@ -3157,19 +3229,7 @@ async function regenerateImage() {
         }
     } finally {
         s.seed = originalSeed;
-        currentAbortController = null;
-        isGenerating = false;
-        showStatus(null);
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = "🎨 Generate";
-        }
-        if (paletteBtn) {
-            paletteBtn.classList.remove("fa-spinner", "fa-spin");
-            paletteBtn.classList.add("fa-palette");
-            paletteBtn.title = "Generate Image";
-            paletteBtn.style.opacity = "0.7";
-        }
+        endGeneration({ disableGenerateButton: true });
     }
 }
 
@@ -4898,17 +4958,9 @@ function addInputButton() {
     btn.title = "Generate Image";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
-        if (isGenerating && currentAbortController) {
-            if (currentAbortController.signal.aborted) {
-                log("Cancel already requested, ignoring duplicate click");
-                return;
-            }
+        if (isGenerating) {
+            if (!requestGenerationCancel()) return;
             log("User cancelled generation via palette button");
-            currentAbortController.abort();
-            // Also cancel any pending autoGenerate timeout
-            if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-            btn.title = "Cancelling...";
-            btn.style.opacity = "0.4";
             toastr.warning("Cancelling generation...");
             return;
         }
@@ -4926,18 +4978,12 @@ function addInputButton() {
 
 async function generateImageInjectPalette() {
     if (isGenerating) return;
-    isGenerating = true;
-    currentAbortController = new AbortController();
+    beginGeneration();
     const s = getSettings();
-
-    const paletteBtn = getOrCacheElement("qig-input-btn");
-    if (paletteBtn) {
-        paletteBtn.classList.remove("fa-palette");
-        paletteBtn.classList.add("fa-spinner", "fa-spin");
-        paletteBtn.title = "Cancel Generation";
-    }
+    const cancelCheckpoint = getCancelCheckpoint();
 
     try {
+        checkAborted(cancelCheckpoint);
         // Build regex from settings (same as processInjectMessage)
         const regexPattern = s.injectRegex || '<pic\\s+prompt="([^"]+)"\\s*/?>';
         let regex;
@@ -4993,6 +5039,7 @@ async function generateImageInjectPalette() {
                     llmResponse = await generateQuietPrompt(fullInstruction);
                 }
             }
+            checkAborted(cancelCheckpoint);
 
             log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
 
@@ -5016,10 +5063,11 @@ async function generateImageInjectPalette() {
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
         for (const extractedPrompt of matches) {
-            checkAborted();
+            checkAborted(cancelCheckpoint);
             showStatus(`🖼️ Generating palette-inject image...`);
 
-            let prompt = await generateLLMPrompt(s, extractedPrompt);
+            let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
+            checkAborted(cancelCheckpoint);
 
             // Show prompt editing dialog if enabled
             if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
@@ -5057,6 +5105,7 @@ async function generateImageInjectPalette() {
 
             // Apply LLM-matched concept filters
             const llmMatched = await matchLLMFilters(extractedPrompt);
+            checkAborted(cancelCheckpoint);
             for (const f of llmMatched) {
                 if (f.positive) prompt = `${prompt}, ${f.positive}`;
                 if (f.negative) negative = `${negative}, ${f.negative}`;
@@ -5074,7 +5123,7 @@ async function generateImageInjectPalette() {
                 baseSeed = Math.floor(Math.random() * 2147483647);
             }
             for (let i = 0; i < batchCount; i++) {
-                checkAborted();
+                checkAborted(cancelCheckpoint);
                 if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
                 showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
@@ -5113,15 +5162,7 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message);
         }
     } finally {
-        currentAbortController = null;
-        isGenerating = false;
-        showStatus(null);
-        if (paletteBtn) {
-            paletteBtn.classList.remove("fa-spinner", "fa-spin");
-            paletteBtn.classList.add("fa-palette");
-            paletteBtn.title = "Generate Image";
-            paletteBtn.style.opacity = "0.7";
-        }
+        endGeneration();
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
     }
@@ -5130,16 +5171,13 @@ async function generateImageInjectPalette() {
 async function generateImage() {
     if (isGenerating) return;
     if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
-    // Cancel any pending autoGenerate timeout to prevent overlapping triggers
-    if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-    isGenerating = true;
-    currentAbortController = new AbortController();
+    beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
     const s = getSettings();
-    const paletteBtn = getOrCacheElement("qig-input-btn");
-    const btn = getOrCacheElement("qig-generate-btn");
+    const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = s.seed;
 
     try {
+    checkAborted(cancelCheckpoint);
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
 
@@ -5163,14 +5201,8 @@ async function generateImage() {
     const batchCount = s.batchCount || 1;
     showStatus(`🎨 Generating ${batchCount} image(s)...`);
 
-    if (paletteBtn) {
-        paletteBtn.classList.remove("fa-palette");
-        paletteBtn.classList.add("fa-spinner", "fa-spin");
-        paletteBtn.title = "Cancel Generation";
-    }
-
     let prompt = await generateLLMPrompt(s, scenePrompt || basePrompt, currentAbortController?.signal);
-    checkAborted();
+    checkAborted(cancelCheckpoint);
     lastPromptWasLLM = (s.useLLMPrompt && prompt !== (scenePrompt || basePrompt));
 
     // Show prompt editing dialog if enabled
@@ -5208,7 +5240,7 @@ async function generateImage() {
     // Apply LLM-matched concept filters — use raw scene text for natural language analysis
     const llmSceneText = scenePrompt || basePrompt;
     const llmMatched = await matchLLMFilters(llmSceneText);
-    checkAborted();
+    checkAborted(cancelCheckpoint);
     for (const f of llmMatched) {
         if (f.positive) prompt = `${prompt}, ${f.positive}`;
         if (f.negative) negative = `${negative}, ${f.negative}`;
@@ -5223,11 +5255,6 @@ async function generateImage() {
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
 
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = "Generating...";
-    }
-
         const results = [];
         log(`Using provider: ${s.provider}, batch: ${batchCount}`);
         let baseSeed = originalSeed;
@@ -5235,7 +5262,7 @@ async function generateImage() {
             baseSeed = Math.floor(Math.random() * 2147483647);
         }
         for (let i = 0; i < batchCount; i++) {
-            checkAborted();
+            checkAborted(cancelCheckpoint);
             if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
             const expandedPrompt = expandWildcards(prompt);
@@ -5270,19 +5297,7 @@ async function generateImage() {
         }
     } finally {
         s.seed = originalSeed;
-        currentAbortController = null;
-        isGenerating = false;
-        showStatus(null);
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = "🎨 Generate";
-        }
-        if (paletteBtn) {
-            paletteBtn.classList.remove("fa-spinner", "fa-spin");
-            paletteBtn.classList.add("fa-palette");
-            paletteBtn.title = "Generate Image";
-            paletteBtn.style.opacity = "0.7";
-        }
+        endGeneration({ disableGenerateButton: true });
         // Clear caches after each generation to prevent reusing stale prompts
         clearStyleCache();
         log("Cleared all caches after generation");
@@ -5342,6 +5357,7 @@ function onChatCompletionPromptReady(eventData) {
 async function processInjectMessage(messageText, messageIndex) {
     const s = getSettings();
     if (!s.injectEnabled || !s.injectRegex) return;
+    const cancelCheckpoint = getCancelCheckpoint();
 
     let regex;
     try {
@@ -5386,26 +5402,34 @@ async function processInjectMessage(messageText, messageIndex) {
 
     // Generate images for each extracted prompt
     for (const extractedPrompt of matches) {
-        checkAborted();
-        if (isGenerating) {
-            log("Inject: Waiting for current generation to finish...");
-            await new Promise((resolve, reject) => {
-                let elapsed = 0;
-                const check = setInterval(() => {
-                    elapsed += 500;
-                    if (!isGenerating) { clearInterval(check); resolve(); }
-                    else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
-                }, 500);
-            });
-        }
-
+        const originalSeed = s.seed;
+        let startedGeneration = false;
         try {
-            isGenerating = true;
-            currentAbortController = new AbortController();
+            checkAborted(cancelCheckpoint);
+            if (isGenerating) {
+                log("Inject: Waiting for current generation to finish...");
+                await new Promise((resolve, reject) => {
+                    let elapsed = 0;
+                    const check = setInterval(() => {
+                        elapsed += 500;
+                        if (!isGenerating) { clearInterval(check); resolve(); }
+                        else if (wasCancelRequestedSince(cancelCheckpoint)) {
+                            clearInterval(check);
+                            reject(new DOMException("Generation cancelled by user", "AbortError"));
+                        }
+                        else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
+                    }, 500);
+                });
+            }
+            checkAborted(cancelCheckpoint);
+            beginGeneration();
+            startedGeneration = true;
+            checkAborted(cancelCheckpoint);
             log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
             showStatus("🖼️ Generating inject-mode image...");
 
-            let prompt = await generateLLMPrompt(s, extractedPrompt);
+            let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
+            checkAborted(cancelCheckpoint);
 
             // Show prompt editing dialog if enabled
             if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
@@ -5443,6 +5467,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
             // Apply LLM-matched concept filters
             const llmMatched = await matchLLMFilters(extractedPrompt);
+            checkAborted(cancelCheckpoint);
             for (const f of llmMatched) {
                 if (f.positive) prompt = `${prompt}, ${f.positive}`;
                 if (f.negative) negative = `${negative}, ${f.negative}`;
@@ -5454,13 +5479,12 @@ async function processInjectMessage(messageText, messageIndex) {
 
             const batchCount = s.batchCount || 1;
             const results = [];
-            const originalSeed = s.seed;
             let baseSeed = originalSeed;
             if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
                 baseSeed = Math.floor(Math.random() * 2147483647);
             }
             for (let i = 0; i < batchCount; i++) {
-                checkAborted();
+                checkAborted(cancelCheckpoint);
                 if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
                 showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
@@ -5500,9 +5524,8 @@ async function processInjectMessage(messageText, messageIndex) {
                 toastr.error("Inject generation failed: " + e.message);
             }
         } finally {
-            currentAbortController = null;
-            isGenerating = false;
-            showStatus(null);
+            s.seed = originalSeed;
+            if (startedGeneration) endGeneration();
         }
     }
 
