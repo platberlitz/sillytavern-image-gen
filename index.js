@@ -164,7 +164,9 @@ let charSettings = safeParse("qig_char_settings", {});
 let connectionProfiles = safeParse("qig_profiles", {});
 let charRefImages = safeParse("qig_char_ref_images", {});
 let generationPresets = safeParse("qig_gen_presets", []);
+let comfyWorkflows = safeParse("qig_comfy_workflows", []);
 let contextualFilters = safeParse("qig_contextual_filters", []);
+let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
@@ -200,7 +202,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -3579,16 +3581,23 @@ function loadCharSettings() {
 function saveConnectionProfile() {
     const s = getSettings();
     const provider = s.provider;
-    const name = prompt("Profile name:");
-    if (!name) return;
+    const rawName = prompt("Profile name:");
+    if (rawName == null) return;
+    const name = rawName.trim();
+    if (!name) {
+        toastr.warning("Profile name cannot be empty");
+        return;
+    }
     const keys = PROVIDER_KEYS[provider] || [];
     const profile = {};
     keys.forEach(k => profile[k] = s[k]);
+    const existing = !!connectionProfiles[provider]?.[name];
+    if (existing && !confirm(`Profile "${name}" already exists. Overwrite it?`)) return;
     if (!connectionProfiles[provider]) connectionProfiles[provider] = {};
     connectionProfiles[provider][name] = profile;
     localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles));
-    renderProfileSelect();
-    showStatus(`💾 Saved profile: ${name}`);
+    renderProfileSelect(name);
+    showStatus(`${existing ? "♻️ Updated" : "💾 Saved"} profile: ${name}`);
     setTimeout(hideStatus, 2000);
 }
 
@@ -3600,6 +3609,7 @@ function loadConnectionProfile(name) {
     Object.assign(s, profile);
     saveSettingsDebounced();
     refreshProviderInputs(provider);
+    renderProfileSelect(name);
     showStatus(`📂 Loaded profile: ${name}`);
     setTimeout(hideStatus, 2000);
 }
@@ -3612,18 +3622,143 @@ function deleteConnectionProfile(name) {
     renderProfileSelect();
 }
 
-function renderProfileSelect() {
+function renderProfileSelect(selectedName = "") {
     const container = document.getElementById("qig-profile-select");
     if (!container) return;
     const provider = getSettings().provider;
     const profiles = Object.keys(connectionProfiles[provider] || {});
+    const previousSelection = document.getElementById("qig-profile-dropdown")?.value || "";
+    const selected = selectedName || previousSelection;
     container.innerHTML = profiles.length
-        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
+        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${escapeHtml(p)}" ${p === selected ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
         : "<span style='color:#888;font-size:11px;'>No saved profiles</span>";
     const dropdown = document.getElementById("qig-profile-dropdown");
     if (dropdown) dropdown.onchange = (e) => { if (e.target.value) loadConnectionProfile(e.target.value); };
     const delBtn = document.getElementById("qig-profile-del");
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
+}
+
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow"];
+
+function getComfyWorkflowSnapshot(s = getSettings()) {
+    return {
+        localModel: s.localModel || "",
+        comfyDenoise: s.comfyDenoise ?? 1.0,
+        comfyClipSkip: s.comfyClipSkip ?? 1,
+        comfyLoras: s.comfyLoras || "",
+        comfyWorkflow: s.comfyWorkflow || ""
+    };
+}
+
+function applyComfyWorkflowSnapshot(snapshot) {
+    const s = getSettings();
+    COMFY_WORKFLOW_KEYS.forEach(k => {
+        if (snapshot[k] !== undefined) s[k] = snapshot[k];
+    });
+    s.localType = "comfyui";
+}
+
+function saveComfyWorkflowStore() {
+    localStorage.setItem("qig_comfy_workflows", JSON.stringify(comfyWorkflows));
+}
+
+function setComfyWorkflowActionState(hasSelection) {
+    ["qig-comfy-workflow-load", "qig-comfy-workflow-update", "qig-comfy-workflow-del"].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !hasSelection;
+    });
+}
+
+function renderComfyWorkflowPresets(selectedId = "") {
+    const select = document.getElementById("qig-comfy-workflow-select");
+    if (!select) return;
+    const previousSelection = select.value || selectedComfyWorkflowId || "";
+    const targetId = selectedId || previousSelection;
+    const options = [
+        `<option value="">-- Select Workflow Preset --</option>`,
+        ...comfyWorkflows.map(w => `<option value="${escapeHtml(w.id || "")}" ${w.id === targetId ? "selected" : ""}>${escapeHtml(w.name || "(unnamed)")}</option>`)
+    ];
+    select.innerHTML = options.join("");
+    const found = targetId && comfyWorkflows.some(w => w.id === targetId);
+    selectedComfyWorkflowId = found ? targetId : "";
+    if (selectedComfyWorkflowId) select.value = selectedComfyWorkflowId;
+    setComfyWorkflowActionState(!!selectedComfyWorkflowId);
+}
+
+function getSelectedComfyWorkflowPreset() {
+    const select = document.getElementById("qig-comfy-workflow-select");
+    const id = select?.value || selectedComfyWorkflowId;
+    if (!id) return null;
+    return comfyWorkflows.find(w => w.id === id) || null;
+}
+
+function loadSelectedComfyWorkflowPreset() {
+    const preset = getSelectedComfyWorkflowPreset();
+    if (!preset) {
+        toastr.warning("Select a workflow preset first");
+        return;
+    }
+    applyComfyWorkflowSnapshot(preset);
+    saveSettingsDebounced();
+    refreshProviderInputs("local");
+    renderComfyWorkflowPresets(preset.id);
+    showStatus(`📂 Loaded workflow preset: ${preset.name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function saveComfyWorkflowPresetAs() {
+    const rawName = prompt("Workflow preset name:");
+    if (rawName == null) return;
+    const name = rawName.trim();
+    if (!name) {
+        toastr.warning("Workflow preset name cannot be empty");
+        return;
+    }
+    const existing = comfyWorkflows.find(w => w.name === name);
+    const snapshot = getComfyWorkflowSnapshot();
+    if (existing) {
+        if (!confirm(`Workflow preset "${name}" already exists. Overwrite it?`)) return;
+        Object.assign(existing, snapshot, { updatedAt: new Date().toISOString() });
+        saveComfyWorkflowStore();
+        renderComfyWorkflowPresets(existing.id);
+        showStatus(`♻️ Updated workflow preset: ${name}`);
+        setTimeout(hideStatus, 2000);
+        return;
+    }
+    const id = `cwf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    comfyWorkflows.push({ id, name, ...snapshot, updatedAt: new Date().toISOString() });
+    saveComfyWorkflowStore();
+    renderComfyWorkflowPresets(id);
+    showStatus(`💾 Saved workflow preset: ${name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function updateSelectedComfyWorkflowPreset() {
+    const preset = getSelectedComfyWorkflowPreset();
+    if (!preset) {
+        toastr.warning("Select a workflow preset first");
+        return;
+    }
+    if (!confirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`)) return;
+    Object.assign(preset, getComfyWorkflowSnapshot(), { updatedAt: new Date().toISOString() });
+    saveComfyWorkflowStore();
+    renderComfyWorkflowPresets(preset.id);
+    showStatus(`♻️ Updated workflow preset: ${preset.name}`);
+    setTimeout(hideStatus, 2000);
+}
+
+function deleteSelectedComfyWorkflowPreset() {
+    const preset = getSelectedComfyWorkflowPreset();
+    if (!preset) {
+        toastr.warning("Select a workflow preset first");
+        return;
+    }
+    if (!confirm(`Delete workflow preset "${preset.name}"?`)) return;
+    comfyWorkflows = comfyWorkflows.filter(w => w.id !== preset.id);
+    saveComfyWorkflowStore();
+    renderComfyWorkflowPresets("");
+    showStatus(`🗑️ Deleted workflow preset: ${preset.name}`);
+    setTimeout(hideStatus, 2000);
 }
 
 // === Generation Presets ===
@@ -3747,9 +3882,10 @@ window.clearPresets = clearPresets;
 // === Export / Import Settings ===
 function exportAllSettings() {
     const data = {
-        version: 1,
+        version: 2,
         exportDate: new Date().toISOString(),
         connectionProfiles,
+        comfyWorkflows,
         promptTemplates,
         generationPresets,
         charSettings,
@@ -3781,6 +3917,7 @@ function importSettings() {
             if (!data.version) { toastr.error("Invalid settings file"); return; }
             if (!confirm(`Import settings from ${data.exportDate || 'unknown date'}? This will overwrite current settings.`)) return;
             if (data.connectionProfiles) { connectionProfiles = data.connectionProfiles; localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles)); }
+            if (Array.isArray(data.comfyWorkflows)) { comfyWorkflows = data.comfyWorkflows; localStorage.setItem("qig_comfy_workflows", JSON.stringify(comfyWorkflows)); }
             if (data.promptTemplates) { promptTemplates = data.promptTemplates; localStorage.setItem("qig_templates", JSON.stringify(promptTemplates)); }
             if (data.generationPresets) { generationPresets = data.generationPresets; localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets)); }
             if (data.charSettings) { charSettings = data.charSettings; localStorage.setItem("qig_char_settings", JSON.stringify(charSettings)); }
@@ -3789,6 +3926,7 @@ function importSettings() {
             renderTemplates();
             renderPresets();
             renderProfileSelect();
+            renderComfyWorkflowPresets();
             renderContextualFilters();
             toastr.success("Settings imported successfully");
         } catch (err) {
@@ -3797,6 +3935,22 @@ function importSettings() {
         }
     };
     input.click();
+}
+
+function syncLocalTypeSections(localType) {
+    const a1111Opts = document.getElementById("qig-local-a1111-opts");
+    const comfyOpts = document.getElementById("qig-local-comfyui-opts");
+    if (a1111Opts) a1111Opts.style.display = localType === "a1111" ? "block" : "none";
+    if (comfyOpts) comfyOpts.style.display = localType === "comfyui" ? "block" : "none";
+}
+
+function syncA1111VisibilityFromSettings(s) {
+    const hiresOpts = document.getElementById("qig-a1111-hires-opts");
+    if (hiresOpts) hiresOpts.style.display = s.a1111HiresFix ? "block" : "none";
+    const adetailerOpts = document.getElementById("qig-a1111-adetailer-opts");
+    if (adetailerOpts) adetailerOpts.style.display = s.a1111Adetailer ? "block" : "none";
+    const ipadapterOpts = document.getElementById("qig-a1111-ipadapter-opts");
+    if (ipadapterOpts) ipadapterOpts.style.display = s.a1111IpAdapter ? "block" : "none";
 }
 
 function refreshProviderInputs(provider) {
@@ -3809,13 +3963,54 @@ function refreshProviderInputs(provider) {
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
-        local: [["qig-local-url", "localUrl"], ["qig-local-type", "localType"], ["qig-a1111-loras", "a1111Loras"], ["qig-a1111-hires", "a1111HiresFix"], ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"], ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"], ["qig-a1111-ad-negative", "a1111AdetailerNegative"], ["qig-comfy-loras", "comfyLoras"]],
+        local: [
+            ["qig-local-url", "localUrl"],
+            ["qig-local-type", "localType"],
+            ["qig-local-model", "localModel"],
+            ["qig-local-denoise", "localDenoise"],
+            ["qig-comfy-denoise", "comfyDenoise"],
+            ["qig-comfy-clip", "comfyClipSkip"],
+            ["qig-comfy-workflow", "comfyWorkflow"],
+            ["qig-comfy-loras", "comfyLoras"],
+            ["qig-a1111-model", "a1111Model"],
+            ["qig-a1111-clip", "a1111ClipSkip"],
+            ["qig-a1111-loras", "a1111Loras"],
+            ["qig-a1111-hires", "a1111HiresFix"],
+            ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"],
+            ["qig-a1111-hires-scale", "a1111HiresScale"],
+            ["qig-a1111-hires-steps", "a1111HiresSteps"],
+            ["qig-a1111-hires-denoise", "a1111HiresDenoise"],
+            ["qig-a1111-adetailer", "a1111Adetailer"],
+            ["qig-a1111-adetailer-model", "a1111AdetailerModel"],
+            ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"],
+            ["qig-a1111-ad-negative", "a1111AdetailerNegative"],
+            ["qig-a1111-save-webui", "a1111SaveToWebUI"],
+            ["qig-a1111-ipadapter", "a1111IpAdapter"],
+            ["qig-a1111-ipadapter-mode", "a1111IpAdapterMode"],
+            ["qig-a1111-ipadapter-weight", "a1111IpAdapterWeight"],
+            ["qig-a1111-ipadapter-pixel", "a1111IpAdapterPixelPerfect"],
+            ["qig-a1111-ipadapter-resize", "a1111IpAdapterResizeMode"],
+            ["qig-a1111-ipadapter-control", "a1111IpAdapterControlMode"],
+            ["qig-a1111-ipadapter-start", "a1111IpAdapterStartStep"],
+            ["qig-a1111-ipadapter-end", "a1111IpAdapterEndStep"]
+        ],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
         if (el) el.type === "checkbox" ? el.checked = s[key] : el.value = s[key] ?? "";
     });
+
+    if (provider === "local") {
+        syncLocalTypeSections(s.localType);
+        syncA1111VisibilityFromSettings(s);
+        const localDenoise = document.getElementById("qig-local-denoise-val");
+        if (localDenoise) localDenoise.textContent = String(s.localDenoise ?? 0.75);
+        const hiresDenoise = document.getElementById("qig-a1111-hires-denoise-val");
+        if (hiresDenoise) hiresDenoise.textContent = String(s.a1111HiresDenoise ?? 0.55);
+        const ipWeight = document.getElementById("qig-a1111-ipadapter-weight-val");
+        if (ipWeight) ipWeight.textContent = String(s.a1111IpAdapterWeight ?? 0.7);
+    }
 
     // Update reference images display
     if (provider === "proxy") renderRefImages();
@@ -3902,6 +4097,10 @@ function createUI() {
     const s = getSettings();
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
     const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
+    const comfyWorkflowPresetOpts = [
+        `<option value="">-- Select Workflow Preset --</option>`,
+        ...comfyWorkflows.map(w => `<option value="${esc(w.id || "")}" ${w.id === selectedComfyWorkflowId ? "selected" : ""}>${esc(w.name || "(unnamed)")}</option>`)
+    ].join("");
     const providerOpts = buildOptions(Object.entries(PROVIDERS), s.provider, v => v.name);
     const styleOpts = buildOptions(Object.entries(STYLES), s.style, v => v.name);
 
@@ -4052,9 +4251,18 @@ function createUI() {
                          <label>LoRAs (filename:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
                          <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
-                         <label>Custom Workflow JSON (optional)</label>
+                         <label>Workflow Preset</label>
+                         <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
+                             <select id="qig-comfy-workflow-select" style="flex:1;min-width:180px;">${comfyWorkflowPresetOpts}</select>
+                             <button id="qig-comfy-workflow-load" class="menu_button" style="padding:2px 8px;">📂 Load</button>
+                             <button id="qig-comfy-workflow-save-as" class="menu_button" style="padding:2px 8px;">💾 Save As</button>
+                             <button id="qig-comfy-workflow-update" class="menu_button" style="padding:2px 8px;">♻️ Update</button>
+                             <button id="qig-comfy-workflow-del" class="menu_button" style="padding:2px 8px;">🗑️</button>
+                         </div>
+                         <small style="opacity:0.6;font-size:10px;">Use presets for quick graph switching (e.g., with LoRA / without LoRA). Profiles save provider settings; workflow presets focus on Comfy graph fields.</small>
+                         <label>Custom Workflow JSON</label>
                          <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${esc(s.comfyWorkflow || "")}</textarea>
-                         <div class="form-hint">Leave empty to use default workflow. Export from ComfyUI: Save → API Format</div>
+                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format.</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Model</label>
@@ -4497,6 +4705,7 @@ function createUI() {
     renderTemplates();
     renderPresets();
     renderProfileSelect();
+    renderComfyWorkflowPresets();
     renderContextualFilters();
 
     document.getElementById("qig-provider").onchange = (e) => {
@@ -4537,10 +4746,17 @@ function createUI() {
     bind("qig-together-model", "togetherModel");
     bind("qig-local-url", "localUrl");
     bind("qig-local-model", "localModel");
+    document.getElementById("qig-comfy-workflow-select").onchange = (e) => {
+        selectedComfyWorkflowId = e.target.value || "";
+        setComfyWorkflowActionState(!!selectedComfyWorkflowId);
+    };
+    document.getElementById("qig-comfy-workflow-load").onclick = loadSelectedComfyWorkflowPreset;
+    document.getElementById("qig-comfy-workflow-save-as").onclick = saveComfyWorkflowPresetAs;
+    document.getElementById("qig-comfy-workflow-update").onclick = updateSelectedComfyWorkflowPreset;
+    document.getElementById("qig-comfy-workflow-del").onclick = deleteSelectedComfyWorkflowPreset;
     document.getElementById("qig-local-type").onchange = (e) => {
         getSettings().localType = e.target.value;
-        document.getElementById("qig-local-a1111-opts").style.display = e.target.value === "a1111" ? "block" : "none";
-        document.getElementById("qig-local-comfyui-opts").style.display = e.target.value === "comfyui" ? "block" : "none";
+        syncLocalTypeSections(e.target.value);
         saveSettingsDebounced();
     };
     bind("qig-local-denoise", "localDenoise", true);

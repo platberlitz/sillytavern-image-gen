@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -55,7 +55,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Generation Presets** - Save/load complete generation settings (provider, style, dimensions, steps, prompt, contextual filters, inject mode config, etc.)
 - 👤 **Character Settings** - Save settings per character
 - 👤 **Per-Character Reference Images** - Reference images saved/loaded with character settings
-- 📤 **Export Settings** - Export all profiles, templates, presets, and character settings to JSON
+- 📤 **Export Settings** - Export all profiles, Comfy workflow presets, templates, generation presets, and character settings to JSON
 - 📥 **Import Settings** - Import settings from a previously exported file
 
 ### Gallery & Session
@@ -107,7 +107,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | Setting | Description |
 |---------|-------------|
 | **Provider** | Image generation backend (13 options) |
-| **Connection Profile** | Save/load provider settings |
+| **Connection Profile** | Save/load provider settings (with overwrite confirmation on duplicate names) |
 | **Style** | Visual style preset (40+ options) |
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
 | **Negative Prompt** | What to avoid in generation |
@@ -141,9 +141,10 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 📋 Logs | View generation logs |
 | 💾 Save for Char | Save settings for current character |
 | 💾 Save Profile | Save current provider settings |
+| 📂/💾/♻️/🗑️ Workflow Preset | Load, save, update, and delete Comfy workflow presets |
 | 💾 Save Template | Save current prompt + negative + quality as template |
 | 💾 Save Preset | Save all current generation settings as a named preset |
-| 📤 Export | Export all settings (profiles, templates, presets, char settings) to JSON |
+| 📤 Export | Export all settings (profiles, Comfy workflow presets, templates, presets, char settings) to JSON |
 | 📥 Import | Import settings from a previously exported JSON file |
 | 📌 Insert All | Insert all batch images into chat (batch mode) |
 | 💾 Save All | Download all batch images with metadata (batch mode) |
@@ -203,10 +204,33 @@ Save and load provider configurations per-provider:
 - **Replicate**: API key, model
 - **Fal.ai**: API key, model
 - **Together AI**: API key, model
-- **Local**: URL, type (A1111/ComfyUI), CLIP skip, LoRAs, Hires Fix, ADetailer settings
+- **Local**: URL, type (A1111/ComfyUI), checkpoint/model, Comfy workflow JSON, Comfy denoise/clip/LoRAs, A1111 and IP-Adapter settings
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
+
+If you save with an existing profile name, QIG prompts before overwriting.
+
+---
+
+## Comfy Workflow Presets
+
+Comfy Workflow Presets are separate from Connection Profiles and are designed for fast graph switching (for example `With LoRA` / `Without LoRA`).
+
+Each preset stores:
+- Checkpoint Name
+- Comfy Denoise
+- Comfy CLIP Skip
+- Comfy LoRAs
+- Custom Workflow JSON
+
+Buttons:
+- **📂 Load**: Apply selected preset to current Comfy settings
+- **💾 Save As**: Save current Comfy settings as a new preset
+- **♻️ Update**: Overwrite selected preset with current settings
+- **🗑️ Delete**: Remove selected preset
+
+Use **Connection Profiles** for broader provider setup, and **Workflow Presets** for Comfy graph variants.
 
 ---
 
@@ -314,6 +338,8 @@ Use these placeholders in custom workflows:
 - `%negative%` - Negative prompt
 - `%seed%`, `%width%`, `%height%`, `%steps%`, `%cfg%`
 - `%denoise%`, `%clip_skip%`, `%sampler%`, `%scheduler%`, `%model%`
+
+Custom Workflow JSON is optional for standard SD1.5/SDXL checkpoints, but required for non-standard pipelines (for example Flux/UNET-only, dual-CLIP, or custom node graphs).
 
 ### A1111 Settings
 | Setting | Description |
