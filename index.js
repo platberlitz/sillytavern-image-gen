@@ -154,6 +154,16 @@ function safeParse(key, fallback) {
         return val != null ? val : fallback;
     } catch { return fallback; }
 }
+function safeSetStorage(key, value, errorMessage = "") {
+    try {
+        localStorage.setItem(key, value);
+        return true;
+    } catch (e) {
+        log(`Storage write failed for ${key}: ${e.message}`);
+        if (errorMessage) toastr?.error?.(errorMessage);
+        return false;
+    }
+}
 function escapeHtml(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -857,13 +867,25 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
     messages.push({ role: "user", content: instruction });
 
-    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${s.llmOverridePreset || 'none'})`);
+    const requestedPreset = s.llmOverridePreset || "";
+    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${requestedPreset || "profile default"})`);
 
     // Rotate to the profile's secret if it has one
     let previousSecretId = null;
     let secretKey = null;
+    let profile = null;
+    let originalProfilePreset;
+    let presetOverridden = false;
     try {
-        const profile = CMRS.getProfile(s.llmOverrideProfileId);
+        profile = CMRS.getProfile(s.llmOverrideProfileId);
+
+        // Apply selected preset for this request only, then restore it.
+        if (profile && requestedPreset && profile.preset !== requestedPreset) {
+            originalProfilePreset = profile.preset;
+            profile.preset = requestedPreset;
+            presetOverridden = true;
+        }
+
         const profileSecretId = profile?.['secret-id'];
         if (profileSecretId && rotateSecret && secret_state) {
             secretKey = findSecretKeyForId(profileSecretId);
@@ -878,7 +900,7 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             }
         }
     } catch (e) {
-        log(`LLM Override: Could not rotate secret: ${e.message}`);
+        log(`LLM Override: Could not prepare profile override: ${e.message}`);
     }
 
     try {
@@ -886,7 +908,7 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             s.llmOverrideProfileId,
             messages,
             s.llmOverrideMaxTokens || 500,
-            { extractData: true, includePreset: !!s.llmOverridePreset, stream: false }
+            { extractData: true, includePreset: true, stream: false }
         );
         return extractLLMResponse(response);
     } catch (e) {
@@ -909,6 +931,11 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             } catch (e) {
                 log(`LLM Override: Could not restore secret: ${e.message}`);
             }
+        }
+
+        // Restore profile preset if we overrode it for this call.
+        if (presetOverridden && profile) {
+            profile.preset = originalProfilePreset;
         }
     }
 }
@@ -1238,7 +1265,7 @@ async function generateLiteralFallback(originalInstruction) {
 }
 async function genPollinations(prompt, negative, s, signal) {
     if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-    const seed = s.seed === -1 ? Date.now() : s.seed;
+    const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
     let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
     if (negative) url += `&negative=${encodeURIComponent(negative)}`;
     if (s.pollinationsModel && s.pollinationsModel !== "flux") url += `&model=${s.pollinationsModel}`;
@@ -2159,7 +2186,10 @@ async function genProxy(prompt, negative, s, signal) {
     const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
 
     if (isChatProxy) {
-        const chatUrl = s.proxyUrl.replace(/\/$/, "") + "/chat/completions";
+        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
+        const chatUrl = /\/chat\/completions$/i.test(proxyUrlBase)
+            ? proxyUrlBase
+            : proxyUrlBase + "/chat/completions";
         log(`Using chat completions: ${chatUrl}`);
         const negPrompt = negative ? `\nAvoid: ${negative}` : "";
         const extraInstr = s.proxyExtraInstructions ? `\n${s.proxyExtraInstructions}` : "";
@@ -2419,12 +2449,27 @@ function showPromptHistory() {
             <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
                     <span style="color:#e94560;font-size:12px;">#${promptHistory.length - i} - ${entry.time}</span>
-                    <button onclick="navigator.clipboard.writeText(this.closest('div').querySelector('pre').textContent)" style="background:#333;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Copy</button>
+                    <button class="qig-copy-prompt" data-index="${i}" style="background:#333;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Copy</button>
                 </div>
                 <pre style="white-space:pre-wrap;word-break:break-word;color:#ddd;margin:0;font-size:13px;">${escapeHtml(entry.prompt)}</pre>
                 ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${escapeHtml(entry.negative)}</pre>` : ''}
             </div>
         `).join('');
+        container.querySelectorAll(".qig-copy-prompt").forEach((btn) => {
+            btn.onclick = async () => {
+                const idx = parseInt(btn.dataset.index, 10);
+                const entry = promptHistory[idx];
+                if (!entry) return;
+                try {
+                    await navigator.clipboard.writeText(entry.prompt || "");
+                    toastr?.success?.("Prompt copied");
+                } catch (e) {
+                    log(`Prompt copy failed: ${e.message}`);
+                    toastr?.error?.("Failed to copy prompt");
+                }
+            };
+        });
+
         document.getElementById("qig-clear-history").onclick = () => {
             if (confirm("Clear all prompt history?")) {
                 promptHistory = [];
@@ -2446,14 +2491,17 @@ async function blobUrlToDataUrl(blobUrl) {
     });
 }
 
-async function insertImageIntoMessage(imageUrl) {
+async function insertImageIntoMessage(imageUrl, targetMessageIndex = null) {
     const ctx = getContext();
     const chat = ctx.chat;
     if (!chat || chat.length === 0) throw new Error("No messages in chat");
 
     const s = getSettings();
     const indices = parseMessageRange(s.messageRange, chat.length);
-    const idx = indices.length > 0 ? indices[indices.length - 1] : chat.length - 1;
+    const fallbackIdx = indices.length > 0 ? indices[indices.length - 1] : chat.length - 1;
+    const idx = Number.isInteger(targetMessageIndex)
+        ? Math.max(0, Math.min(targetMessageIndex, chat.length - 1))
+        : fallbackIdx;
     const message = chat[idx];
     if (!message) throw new Error("Could not find target message");
 
@@ -2499,6 +2547,49 @@ async function insertImageIntoMessage(imageUrl) {
     }
 
     await ctx.saveChat();
+}
+
+async function insertImageAsNewMessage(imageUrl) {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    if (!chat) throw new Error("No active chat");
+
+    let url = imageUrl;
+    if (imageUrl.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(imageUrl);
+    }
+
+    const title = lastPrompt || 'Generated Image';
+    const message = {
+        name: ctx.name2 || "Assistant",
+        is_user: false,
+        is_system: false,
+        send_date: new Date().toISOString(),
+        mes: "",
+        extra: {
+            media: [{ url, type: 'image', title, source: 'generated' }],
+            media_display: 'gallery',
+            media_index: 0,
+            inline_image: true,
+        },
+    };
+
+    chat.push(message);
+    if (typeof ctx.addOneMessage === 'function') {
+        ctx.addOneMessage(message);
+    }
+    await ctx.saveChat();
+}
+
+async function autoInsertInjectImage(imageUrl, { messageIndex, insertMode } = {}) {
+    const mode = insertMode || "replace";
+    if (mode === "new") {
+        return await insertImageAsNewMessage(imageUrl);
+    }
+    if (mode === "replace" && Number.isInteger(messageIndex)) {
+        return await insertImageIntoMessage(imageUrl, messageIndex);
+    }
+    return await insertImageIntoMessage(imageUrl);
 }
 
 function persistImageUrl(url) {
@@ -3244,7 +3335,8 @@ function saveTemplate() {
     const name = window.prompt("Template name:");
     if (!name) return;
     promptTemplates.unshift({ name, prompt, negative, quality });
-    localStorage.setItem("qig_templates", JSON.stringify(promptTemplates.slice(0, 20)));
+    promptTemplates = promptTemplates.slice(0, 20);
+    if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to save template. Browser storage may be full.")) return;
     renderTemplates();
 }
 
@@ -3263,7 +3355,7 @@ function loadTemplate(i) {
 
 function deleteTemplate(i) {
     promptTemplates.splice(i, 1);
-    localStorage.setItem("qig_templates", JSON.stringify(promptTemplates));
+    if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates), "Failed to delete template. Browser storage may be full.")) return;
     renderTemplates();
 }
 
@@ -3295,7 +3387,7 @@ function clearTemplates() {
 
 // === Contextual Filters (lorebook-style prompt injection) ===
 function saveContextualFilters() {
-    localStorage.setItem("qig_contextual_filters", JSON.stringify(contextualFilters));
+    safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters), "Failed to save contextual filters. Browser storage may be full.");
 }
 
 function showFilterDialog(filter) {
@@ -3537,14 +3629,15 @@ function saveCharSettings() {
         width: s.width,
         height: s.height
     };
-    localStorage.setItem("qig_char_settings", JSON.stringify(charSettings));
+    const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
     const refs = getCurrentRefImages(s);
     if (refs.length > 0) {
         charRefImages[charId] = refs;
     } else {
         delete charRefImages[charId];
     }
-    localStorage.setItem("qig_char_ref_images", JSON.stringify(charRefImages));
+    const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages), "Failed to save character reference images. Browser storage may be full.");
+    if (!savedCharSettings || !savedCharRefs) return;
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
 }
@@ -3595,7 +3688,7 @@ function saveConnectionProfile() {
     if (existing && !confirm(`Profile "${name}" already exists. Overwrite it?`)) return;
     if (!connectionProfiles[provider]) connectionProfiles[provider] = {};
     connectionProfiles[provider][name] = profile;
-    localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles));
+    if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to save profile. Browser storage may be full.")) return;
     renderProfileSelect(name);
     showStatus(`${existing ? "♻️ Updated" : "💾 Saved"} profile: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -3618,7 +3711,7 @@ function deleteConnectionProfile(name) {
     const provider = getSettings().provider;
     if (!confirm(`Delete profile "${name}"?`)) return;
     delete connectionProfiles[provider]?.[name];
-    localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles));
+    if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to delete profile. Browser storage may be full.")) return;
     renderProfileSelect();
 }
 
@@ -3658,8 +3751,8 @@ function applyComfyWorkflowSnapshot(snapshot) {
     s.localType = "comfyui";
 }
 
-function saveComfyWorkflowStore() {
-    localStorage.setItem("qig_comfy_workflows", JSON.stringify(comfyWorkflows));
+function saveComfyWorkflowStore(errorMessage = "Failed to save workflow presets. Browser storage may be full.") {
+    return safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows), errorMessage);
 }
 
 function setComfyWorkflowActionState(hasSelection) {
@@ -3719,7 +3812,7 @@ function saveComfyWorkflowPresetAs() {
     if (existing) {
         if (!confirm(`Workflow preset "${name}" already exists. Overwrite it?`)) return;
         Object.assign(existing, snapshot, { updatedAt: new Date().toISOString() });
-        saveComfyWorkflowStore();
+        if (!saveComfyWorkflowStore()) return;
         renderComfyWorkflowPresets(existing.id);
         showStatus(`♻️ Updated workflow preset: ${name}`);
         setTimeout(hideStatus, 2000);
@@ -3727,7 +3820,7 @@ function saveComfyWorkflowPresetAs() {
     }
     const id = `cwf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     comfyWorkflows.push({ id, name, ...snapshot, updatedAt: new Date().toISOString() });
-    saveComfyWorkflowStore();
+    if (!saveComfyWorkflowStore()) return;
     renderComfyWorkflowPresets(id);
     showStatus(`💾 Saved workflow preset: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -3741,7 +3834,7 @@ function updateSelectedComfyWorkflowPreset() {
     }
     if (!confirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`)) return;
     Object.assign(preset, getComfyWorkflowSnapshot(), { updatedAt: new Date().toISOString() });
-    saveComfyWorkflowStore();
+    if (!saveComfyWorkflowStore()) return;
     renderComfyWorkflowPresets(preset.id);
     showStatus(`♻️ Updated workflow preset: ${preset.name}`);
     setTimeout(hideStatus, 2000);
@@ -3755,7 +3848,7 @@ function deleteSelectedComfyWorkflowPreset() {
     }
     if (!confirm(`Delete workflow preset "${preset.name}"?`)) return;
     comfyWorkflows = comfyWorkflows.filter(w => w.id !== preset.id);
-    saveComfyWorkflowStore();
+    if (!saveComfyWorkflowStore()) return;
     renderComfyWorkflowPresets("");
     showStatus(`🗑️ Deleted workflow preset: ${preset.name}`);
     setTimeout(hideStatus, 2000);
@@ -3780,7 +3873,7 @@ function savePreset() {
     const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
-    localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets));
+    if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to save preset. Browser storage may be full.")) return;
     renderPresets();
     showStatus(`💾 Saved preset: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -3810,7 +3903,7 @@ function loadPreset(i) {
 
 function deletePreset(i) {
     generationPresets.splice(i, 1);
-    localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets));
+    if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to delete preset. Browser storage may be full.")) return;
     renderPresets();
 }
 
@@ -3916,13 +4009,34 @@ function importSettings() {
             const data = JSON.parse(text);
             if (!data.version) { toastr.error("Invalid settings file"); return; }
             if (!confirm(`Import settings from ${data.exportDate || 'unknown date'}? This will overwrite current settings.`)) return;
-            if (data.connectionProfiles) { connectionProfiles = data.connectionProfiles; localStorage.setItem("qig_profiles", JSON.stringify(connectionProfiles)); }
-            if (Array.isArray(data.comfyWorkflows)) { comfyWorkflows = data.comfyWorkflows; localStorage.setItem("qig_comfy_workflows", JSON.stringify(comfyWorkflows)); }
-            if (data.promptTemplates) { promptTemplates = data.promptTemplates; localStorage.setItem("qig_templates", JSON.stringify(promptTemplates)); }
-            if (data.generationPresets) { generationPresets = data.generationPresets; localStorage.setItem("qig_gen_presets", JSON.stringify(generationPresets)); }
-            if (data.charSettings) { charSettings = data.charSettings; localStorage.setItem("qig_char_settings", JSON.stringify(charSettings)); }
-            if (data.charRefImages) { charRefImages = data.charRefImages; localStorage.setItem("qig_char_ref_images", JSON.stringify(charRefImages)); }
-            if (data.contextualFilters) { contextualFilters = data.contextualFilters; localStorage.setItem("qig_contextual_filters", JSON.stringify(contextualFilters)); }
+            if (data.connectionProfiles) {
+                connectionProfiles = data.connectionProfiles;
+                if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles))) throw new Error("Could not save imported profiles. Browser storage may be full.");
+            }
+            if (Array.isArray(data.comfyWorkflows)) {
+                comfyWorkflows = data.comfyWorkflows;
+                if (!safeSetStorage("qig_comfy_workflows", JSON.stringify(comfyWorkflows))) throw new Error("Could not save imported workflow presets. Browser storage may be full.");
+            }
+            if (data.promptTemplates) {
+                promptTemplates = data.promptTemplates;
+                if (!safeSetStorage("qig_templates", JSON.stringify(promptTemplates))) throw new Error("Could not save imported templates. Browser storage may be full.");
+            }
+            if (data.generationPresets) {
+                generationPresets = data.generationPresets;
+                if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets))) throw new Error("Could not save imported presets. Browser storage may be full.");
+            }
+            if (data.charSettings) {
+                charSettings = data.charSettings;
+                if (!safeSetStorage("qig_char_settings", JSON.stringify(charSettings))) throw new Error("Could not save imported character settings. Browser storage may be full.");
+            }
+            if (data.charRefImages) {
+                charRefImages = data.charRefImages;
+                if (!safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages))) throw new Error("Could not save imported character reference images. Browser storage may be full.");
+            }
+            if (data.contextualFilters) {
+                contextualFilters = data.contextualFilters;
+                if (!safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters))) throw new Error("Could not save imported contextual filters. Browser storage may be full.");
+            }
             renderTemplates();
             renderPresets();
             renderProfileSelect();
@@ -5353,17 +5467,22 @@ async function generateImageInjectPalette() {
             s.seed = originalSeed;
 
             if (results.length > 0) {
-                if (s.autoInsert) {
-                    for (const r of results) {
-                        addToGallery(r);
-                        try { await insertImageIntoMessage(r); } catch (err) {
+                if (results.length === 1) {
+                    if (s.autoInsert) {
+                        addToGallery(results[0]);
+                        try {
+                            await autoInsertInjectImage(results[0], {
+                                insertMode: s.injectInsertMode,
+                            });
+                        } catch (err) {
                             log(`Palette inject: Auto-insert failed: ${err.message}`);
-                            displayImage(r);
+                            displayImage(results[0]);
                         }
+                    } else {
+                        displayImage(results[0]);
                     }
-                } else if (results.length === 1) {
-                    displayImage(results[0]);
                 } else {
+                    // Always show batch picker for multiple images
                     displayBatchResults(results);
                 }
                 toastr.success(`Palette inject: ${results.length} image(s) generated`);
@@ -5571,182 +5690,194 @@ function onChatCompletionPromptReady(eventData) {
 }
 
 async function processInjectMessage(messageText, messageIndex) {
-    const s = getSettings();
-    if (!s.injectEnabled || !s.injectRegex) return;
     const cancelCheckpoint = getCancelCheckpoint();
+    const shouldReleaseIndex = messageIndex !== undefined;
 
-    let regex;
     try {
-        regex = new RegExp(s.injectRegex, "gi");
-    } catch (e) {
-        log(`Inject: Invalid regex: ${e.message}`);
-        return;
-    }
+        const s = getSettings();
+        if (!s.injectEnabled || !s.injectRegex) return;
 
-    const matches = [];
-    let match;
-    while ((match = regex.exec(messageText)) !== null) {
-        const captured = match.slice(1).find(g => g !== undefined);
-        if (captured) matches.push(captured.trim());
-    }
-
-    if (matches.length === 0) return;
-
-    log(`Inject: Found ${matches.length} image tag(s) in message`);
-
-    // Clean tags from displayed message if enabled
-    if (s.injectAutoClean !== false) {
+        let regex;
         try {
-            const ctx = getContext();
-            const chat = ctx.chat;
-            if (!chat || chat.length === 0) return;
-            const idx = messageIndex !== undefined ? messageIndex : chat.length - 1;
-            const msg = chat[idx];
-            if (msg) {
-                const cleanRegex = new RegExp(s.injectRegex, "gi");
-                msg.mes = msg.mes.replace(cleanRegex, "").trim();
-                await ctx.saveChat();
-                if (typeof ctx.reloadCurrentChat === 'function') {
-                    await ctx.reloadCurrentChat();
-                }
-                log("Inject: Cleaned image tags from message");
-            }
+            regex = new RegExp(s.injectRegex, "gi");
         } catch (e) {
-            log(`Inject: Error cleaning tags: ${e.message}`);
+            log(`Inject: Invalid regex: ${e.message}`);
+            return;
         }
-    }
 
-    // Generate images for each extracted prompt
-    for (const extractedPrompt of matches) {
-        const originalSeed = s.seed;
-        let startedGeneration = false;
-        try {
-            checkAborted(cancelCheckpoint);
-            if (isGenerating) {
-                log("Inject: Waiting for current generation to finish...");
-                await new Promise((resolve, reject) => {
-                    let elapsed = 0;
-                    const check = setInterval(() => {
-                        elapsed += 500;
-                        if (!isGenerating) { clearInterval(check); resolve(); }
-                        else if (wasCancelRequestedSince(cancelCheckpoint)) {
-                            clearInterval(check);
-                            reject(new DOMException("Generation cancelled by user", "AbortError"));
-                        }
-                        else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
-                    }, 500);
-                });
-            }
-            checkAborted(cancelCheckpoint);
-            beginGeneration();
-            startedGeneration = true;
-            checkAborted(cancelCheckpoint);
-            log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
-            showStatus("🖼️ Generating inject-mode image...");
+        const matches = [];
+        let match;
+        while ((match = regex.exec(messageText)) !== null) {
+            const captured = match.slice(1).find(g => g !== undefined);
+            if (captured) matches.push(captured.trim());
+        }
 
-            let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
-            checkAborted(cancelCheckpoint);
+        if (matches.length === 0) return;
 
-            // Show prompt editing dialog if enabled
-            if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
-                const editedPrompt = await showPromptEditDialog(prompt);
-                if (editedPrompt !== null) {
-                    prompt = editedPrompt;
-                } else {
-                    continue;
+        log(`Inject: Found ${matches.length} image tag(s) in message`);
+
+        // Clean tags from displayed message if enabled
+        if (s.injectAutoClean !== false) {
+            try {
+                const ctx = getContext();
+                const chat = ctx.chat;
+                if (!chat || chat.length === 0) return;
+                const idx = messageIndex !== undefined ? messageIndex : chat.length - 1;
+                const msg = chat[idx];
+                if (msg) {
+                    const cleanRegex = new RegExp(s.injectRegex, "gi");
+                    msg.mes = msg.mes.replace(cleanRegex, "").trim();
+                    await ctx.saveChat();
+                    if (typeof ctx.reloadCurrentChat === 'function') {
+                        await ctx.reloadCurrentChat();
+                    }
+                    log("Inject: Cleaned image tags from message");
                 }
+            } catch (e) {
+                log(`Inject: Error cleaning tags: ${e.message}`);
             }
+        }
 
-            let negative = resolvePrompt(s.negativePrompt);
-
-            // Apply style
-            prompt = applyStyle(prompt, s);
-
-            // Apply quality tags
-            if (s.appendQuality && s.qualityTags) {
-                prompt = `${s.qualityTags}, ${prompt}`;
-            }
-
-            // Apply ST Style
-            if (s.useSTStyle !== false) {
-                const stStyle = getSTStyleSettings();
-                if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-                if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-                if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-                if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
-            }
-
-            // Apply contextual filters
-            const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
-            prompt = filtered.prompt;
-            negative = filtered.negative;
-
-            // Apply LLM-matched concept filters
-            const llmMatched = await matchLLMFilters(extractedPrompt);
-            checkAborted(cancelCheckpoint);
-            for (const f of llmMatched) {
-                if (f.positive) prompt = `${prompt}, ${f.positive}`;
-                if (f.negative) negative = `${negative}, ${f.negative}`;
-            }
-
-            lastPrompt = prompt;
-            lastNegative = negative;
-            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
-
-            const batchCount = s.batchCount || 1;
-            const results = [];
-            let baseSeed = originalSeed;
-            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
-                baseSeed = Math.floor(Math.random() * 2147483647);
-            }
-            for (let i = 0; i < batchCount; i++) {
+        // Generate images for each extracted prompt
+        for (const extractedPrompt of matches) {
+            const originalSeed = s.seed;
+            let startedGeneration = false;
+            try {
                 checkAborted(cancelCheckpoint);
-                if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
-                showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
-                const expandedPrompt = expandWildcards(prompt);
-                const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-                if (result) {
-                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
-                    if (finalUrl) results.push(finalUrl);
+                if (isGenerating) {
+                    log("Inject: Waiting for current generation to finish...");
+                    await new Promise((resolve, reject) => {
+                        let elapsed = 0;
+                        const check = setInterval(() => {
+                            elapsed += 500;
+                            if (!isGenerating) { clearInterval(check); resolve(); }
+                            else if (wasCancelRequestedSince(cancelCheckpoint)) {
+                                clearInterval(check);
+                                reject(new DOMException("Generation cancelled by user", "AbortError"));
+                            }
+                            else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
+                        }, 500);
+                    });
                 }
-            }
-            s.seed = originalSeed;
+                checkAborted(cancelCheckpoint);
+                beginGeneration();
+                startedGeneration = true;
+                checkAborted(cancelCheckpoint);
+                log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
+                showStatus("🖼️ Generating inject-mode image...");
 
-            if (results.length > 0) {
-                if (results.length === 1) {
-                    if (s.autoInsert) {
-                        addToGallery(results[0]);
-                        try { await insertImageIntoMessage(results[0]); } catch (err) {
-                            log(`Inject: Auto-insert failed: ${err.message}`);
+                let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
+                checkAborted(cancelCheckpoint);
+
+                // Show prompt editing dialog if enabled
+                if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
+                    const editedPrompt = await showPromptEditDialog(prompt);
+                    if (editedPrompt !== null) {
+                        prompt = editedPrompt;
+                    } else {
+                        continue;
+                    }
+                }
+
+                let negative = resolvePrompt(s.negativePrompt);
+
+                // Apply style
+                prompt = applyStyle(prompt, s);
+
+                // Apply quality tags
+                if (s.appendQuality && s.qualityTags) {
+                    prompt = `${s.qualityTags}, ${prompt}`;
+                }
+
+                // Apply ST Style
+                if (s.useSTStyle !== false) {
+                    const stStyle = getSTStyleSettings();
+                    if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                    if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                    if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                    if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+                }
+
+                // Apply contextual filters
+                const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
+                prompt = filtered.prompt;
+                negative = filtered.negative;
+
+                // Apply LLM-matched concept filters
+                const llmMatched = await matchLLMFilters(extractedPrompt);
+                checkAborted(cancelCheckpoint);
+                for (const f of llmMatched) {
+                    if (f.positive) prompt = `${prompt}, ${f.positive}`;
+                    if (f.negative) negative = `${negative}, ${f.negative}`;
+                }
+
+                lastPrompt = prompt;
+                lastNegative = negative;
+                lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+
+                const batchCount = s.batchCount || 1;
+                const results = [];
+                let baseSeed = originalSeed;
+                if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+                    baseSeed = Math.floor(Math.random() * 2147483647);
+                }
+                for (let i = 0; i < batchCount; i++) {
+                    checkAborted(cancelCheckpoint);
+                    if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+                    showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
+                    const expandedPrompt = expandWildcards(prompt);
+                    const expandedNegative = expandWildcards(negative);
+                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                    if (result) {
+                        const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
+                        if (finalUrl) results.push(finalUrl);
+                    }
+                }
+                s.seed = originalSeed;
+
+                if (results.length > 0) {
+                    if (results.length === 1) {
+                        if (s.autoInsert) {
+                            addToGallery(results[0]);
+                            try {
+                                await autoInsertInjectImage(results[0], {
+                                    messageIndex,
+                                    insertMode: s.injectInsertMode,
+                                });
+                            } catch (err) {
+                                log(`Inject: Auto-insert failed: ${err.message}`);
+                                displayImage(results[0]);
+                            }
+                        } else {
                             displayImage(results[0]);
                         }
                     } else {
-                        displayImage(results[0]);
+                        // Always show batch picker for multiple images
+                        displayBatchResults(results);
                     }
-                } else {
-                    // Always show batch picker for multiple images
-                    displayBatchResults(results);
+                    toastr.success(`Inject mode: ${results.length} image(s) generated`);
                 }
-                toastr.success(`Inject mode: ${results.length} image(s) generated`);
+            } catch (e) {
+                if (e.name === "AbortError") {
+                    log("Inject: Generation cancelled by user");
+                    toastr.info("Generation cancelled");
+                    break; // Exit the entire match loop on cancel
+                } else {
+                    log(`Inject: Generation error: ${e.message}`);
+                    toastr.error("Inject generation failed: " + e.message);
+                }
+            } finally {
+                s.seed = originalSeed;
+                if (startedGeneration) endGeneration();
             }
-        } catch (e) {
-            if (e.name === "AbortError") {
-                log("Inject: Generation cancelled by user");
-                toastr.info("Generation cancelled");
-                break; // Exit the entire match loop on cancel
-            } else {
-                log(`Inject: Generation error: ${e.message}`);
-                toastr.error("Inject generation failed: " + e.message);
-            }
-        } finally {
-            s.seed = originalSeed;
-            if (startedGeneration) endGeneration();
+        }
+    } finally {
+        // Expire this index after a delay so future messages at the same index can be processed,
+        // even when returning early (invalid regex, no matches, disabled mode, etc).
+        if (shouldReleaseIndex) {
+            setTimeout(() => _processedInjectIndices.delete(messageIndex), 5000);
         }
     }
-
-    // Expire this index after a delay so future messages at the same index can be processed
-    setTimeout(() => _processedInjectIndices.delete(messageIndex), 5000);
 }
 
 
@@ -5787,6 +5918,7 @@ jQuery(function () {
             await loadSettings();
             createUI();
             addInputButton();
+            loadCharSettings();
 
             // Populate LLM override dropdowns if enabled
             const initSettings = getSettings();
@@ -6168,7 +6300,10 @@ async function handleMetadataDrop(e) {
     e.stopPropagation();
 
     const file = e.dataTransfer.files[0];
-    if (!file || !file.type.startsWith('image/png')) return;
+    if (!file) return;
+    const fileType = (file.type || "").toLowerCase();
+    const fileName = (file.name || "").toLowerCase();
+    if (fileType && !fileType.startsWith('image/png') && !fileName.endsWith('.png')) return;
 
     showStatus("🔍 Reading metadata...");
     try {
