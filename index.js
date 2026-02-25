@@ -430,22 +430,37 @@ function log(msg) {
     console.log("[QIG]", msg);
 }
 
+function parseFloatOr(value, fallback) {
+    const n = parseFloat(value);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function parseIntOr(value, fallback) {
+    const n = parseInt(value, 10);
+    return Number.isFinite(n) ? n : fallback;
+}
+
+function isComfyFluxMode(s) {
+    return !!s?.comfySkipNegativePrompt && !!(s?.comfyFluxClipModel1 || "").trim();
+}
+
 // CORS-aware fetch: tries direct, falls back to ST's /proxy/ endpoint
 let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled
 async function corsFetch(url, opts = {}) {
     const crossOrigin = (() => {
         try { return new URL(url).origin !== location.origin; } catch { return true; }
     })();
-    // Try direct: same-origin always, cross-origin only if previously confirmed
-    if (_corsProxyState === 1 || (_corsProxyState === 0 && !crossOrigin)) {
+    // Prefer direct fetch; only skip direct cross-origin when proxy has already been proven required.
+    if (!crossOrigin || _corsProxyState !== 2) {
         try {
             const res = await fetch(url, opts);
-            if (_corsProxyState === 0) _corsProxyState = 1;
+            if (crossOrigin) _corsProxyState = 1;
             return res;
         } catch (e) {
             if (e.name === 'AbortError') throw e;
             if (!(e instanceof TypeError)) throw e;
-            // TypeError = CORS or network failure, try proxy
+            if (!crossOrigin) throw e;
+            // TypeError on cross-origin usually means CORS/network failure, try proxy.
         }
     }
     if (_corsProxyState === -1) {
@@ -469,6 +484,7 @@ async function corsFetch(url, opts = {}) {
 
 // A1111 Model API helpers
 let a1111ModelsCache = [];
+let a1111ControlNetScriptKey = "ControlNet";
 async function fetchA1111Models(url) {
     try {
         const baseUrl = url.replace(/\/$/, "");
@@ -485,51 +501,20 @@ async function fetchA1111Models(url) {
 }
 
 async function fetchControlNetModels(url) {
-    try {
-        let fetchUrl = `${url}/controlnet/model_list`;
-        // Check if using sd-proxy (url ends with 3000 typically, or just try proxy endpoint first?)
-        // Better: if the normal fetch fails, try the proxy endpoint? 
-        // Or if the url refers to the proxy... 
-        // Let's assume if it looks like a proxy URL we use the proxy endpoint.
-        // Actually, simpler: The proxy endpoint is /api/proxy/controlnet/model_list
-        // If s.localUrl is http://localhost:3000, then fetchUrl becomes http://localhost:3000/controlnet/model_list which fails.
-        // The endpoint is at /api/proxy/controlnet/model_list
-
-        // If url points to sd-proxy, it likely doesn't have /controlnet/model_list natively.
-        // Try standard first, if 404, try proxy path?
-
-        let res = await corsFetch(fetchUrl);
-        if (res.status === 404) {
-            res = await fetch(`${url}/api/proxy/controlnet/model_list`, {
-                headers: { 'x-local-url': getSettings().localUrl } // This might be circular if url=localUrl.
-                // Wait, in fetchA1111Models(s.localUrl), url IS s.localUrl.
-                // If s.localUrl is the PROXY url, we need to send the TARGET url in header?
-                // But in proxy mode, usually s.localUrl IS the proxy url.
-                // But the proxy needs to know where the REAL A1111 is.
-                // The proxy reads 'x-local-url' header.
-                // We don't have the real A1111 url stored if we are in "Local" mode pointing to proxy?
-                // Actually, sd-proxy 'local' backend handler reads 'x-local-url'.
-                // Users usually set 'x-local-url' in headers or default to localhost:7860.
-                // We should pass the header if we have custom header settings? 
-                // Currently we don't have generic custom headers for "Local" provider.
-                // We only have `s.localUrl`.
-            });
-        }
-
-        if (!res.ok) return [];
-        const data = await res.json();
-        return data.model_list || [];
-    } catch (e) {
-        // Retry with proxy path if first attempt failed with network error (e.g. CORS or Connection Refused on incorrect path)
+    const baseUrl = url.replace(/\/$/, "");
+    const endpoints = [
+        `${baseUrl}/controlnet/model_list`,
+        `${baseUrl}/api/proxy/controlnet/model_list`
+    ];
+    for (const endpoint of endpoints) {
         try {
-            const res = await fetch(`${url}/api/proxy/controlnet/model_list`);
-            if (res.ok) {
-                const data = await res.json();
-                return data.model_list || [];
-            }
-        } catch (e2) { }
-        return [];
+            const res = await corsFetch(endpoint);
+            if (!res.ok) continue;
+            const data = await res.json();
+            if (Array.isArray(data?.model_list)) return data.model_list;
+        } catch {}
     }
+    return [];
 }
 
 async function switchA1111Model(url, modelTitle) {
@@ -585,13 +570,36 @@ async function fetchA1111VAEs(url) {
     }
 }
 
-async function fetchComfyUIModels(url) {
+async function fetchComfyNodeModelList(baseUrl, nodeClass, inputKey) {
+    const res = await corsFetch(`${baseUrl}/object_info/${nodeClass}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const values = data?.[nodeClass]?.input?.required?.[inputKey]?.[0];
+    return Array.isArray(values) ? values : [];
+}
+
+async function fetchComfyUIModels(url, preferUnet = false) {
     try {
-        const res = await corsFetch(`${url.replace(/\/$/, "")}/object_info/CheckpointLoaderSimple`);
-        if (!res.ok) throw new Error(`${res.status}`);
-        const data = await res.json();
-        const ckpts = data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
-        return Array.isArray(ckpts) ? ckpts : [];
+        const baseUrl = url.replace(/\/$/, "");
+        const [ckpts, unets] = await Promise.all([
+            fetchComfyNodeModelList(baseUrl, "CheckpointLoaderSimple", "ckpt_name").catch(() => []),
+            fetchComfyNodeModelList(baseUrl, "UNETLoader", "unet_name").catch(() => [])
+        ]);
+
+        if (preferUnet) {
+            if (unets.length > 0) return unets;
+            if (ckpts.length > 0) {
+                log("ComfyUI: UNET list unavailable, falling back to checkpoints");
+                return ckpts;
+            }
+        } else {
+            if (ckpts.length > 0) return ckpts;
+            if (unets.length > 0) {
+                log("ComfyUI: Checkpoint list unavailable, falling back to UNET models");
+                return unets;
+            }
+        }
+        return [];
     } catch (e) {
         log("Failed to fetch ComfyUI models: " + e.message);
         return [];
@@ -701,9 +709,9 @@ function requestGenerationCancel() {
         if (s?.provider === "local" && s.localUrl) {
             const baseUrl = s.localUrl.replace(/\/$/, "");
             if (s.localType === "comfyui") {
-                fetch(`${baseUrl}/interrupt`, { method: "POST" }).catch(() => {});
+                corsFetch(`${baseUrl}/interrupt`, { method: "POST" }).catch(() => {});
             } else {
-                fetch(`${baseUrl}/sdapi/v1/interrupt`, { method: "POST" }).catch(() => {});
+                corsFetch(`${baseUrl}/sdapi/v1/interrupt`, { method: "POST" }).catch(() => {});
             }
         }
     } catch (e) { /* best-effort */ }
@@ -2012,8 +2020,8 @@ async function genLocal(prompt, negative, s, signal) {
         const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/\+\+/g, "pp");
         const schedulerName = s.comfyScheduler || "normal";
         const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
-        const denoise = parseFloat(s.comfyDenoise) || 1.0;
-        const clipSkip = parseInt(s.comfyClipSkip) || 1;
+        const denoise = parseFloatOr(s.comfyDenoise, 1.0);
+        const clipSkip = parseIntOr(s.comfyClipSkip, 1);
 
         // Check for custom workflow JSON
         if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
@@ -2116,7 +2124,7 @@ async function genLocal(prompt, negative, s, signal) {
 
         // ComfyUI API - Default workflow
         const skipNeg = !!s.comfySkipNegativePrompt;
-        const fluxMode = skipNeg && !!(s.comfyFluxClipModel1 || "").trim();
+        const fluxMode = isComfyFluxMode(s);
 
         let workflowNodes;
         if (fluxMode) {
@@ -2338,13 +2346,14 @@ async function genLocal(prompt, negative, s, signal) {
         scheduler: s.a1111Scheduler || "Automatic",
         seed: s.seed
     };
+    const controlNetUnits = [];
 
     // Restore Faces & Tiling
     if (s.a1111RestoreFaces) payload.restore_faces = true;
     if (s.a1111Tiling) payload.tiling = true;
 
     // Variation Seed / Subseed
-    const subseedStrength = parseFloat(s.a1111SubseedStrength) || 0;
+    const subseedStrength = parseFloatOr(s.a1111SubseedStrength, 0);
     if (subseedStrength > 0) {
         payload.subseed = s.a1111Subseed ?? -1;
         payload.subseed_strength = subseedStrength;
@@ -2370,7 +2379,7 @@ async function genLocal(prompt, negative, s, signal) {
     }
 
     // CLIP skip
-    const clipSkip = parseInt(s.a1111ClipSkip) || 1;
+    const clipSkip = parseIntOr(s.a1111ClipSkip, 1);
     if (clipSkip > 1) {
         payload.override_settings = payload.override_settings || {};
         payload.override_settings.CLIP_stop_at_last_layers = clipSkip;
@@ -2386,15 +2395,15 @@ async function genLocal(prompt, negative, s, signal) {
     if (s.a1111HiresFix && !isImg2Img) {
         payload.enable_hr = true;
         payload.hr_upscaler = s.a1111HiresUpscaler || "Latent";
-        payload.hr_scale = parseFloat(s.a1111HiresScale) || 2;
-        payload.hr_second_pass_steps = parseInt(s.a1111HiresSteps) || 0;
-        payload.denoising_strength = parseFloat(s.a1111HiresDenoise) || 0.55;
+        payload.hr_scale = parseFloatOr(s.a1111HiresScale, 2);
+        payload.hr_second_pass_steps = parseIntOr(s.a1111HiresSteps, 0);
+        payload.denoising_strength = parseFloatOr(s.a1111HiresDenoise, 0.55);
         if (s.a1111HiresSampler) payload.hr_sampler_name = s.a1111HiresSampler;
         if (s.a1111HiresScheduler) payload.hr_scheduler = s.a1111HiresScheduler;
         if (s.a1111HiresPrompt) payload.hr_prompt = s.a1111HiresPrompt;
         if (s.a1111HiresNegative) payload.hr_negative_prompt = s.a1111HiresNegative;
-        const hiresResizeX = parseInt(s.a1111HiresResizeX) || 0;
-        const hiresResizeY = parseInt(s.a1111HiresResizeY) || 0;
+        const hiresResizeX = parseIntOr(s.a1111HiresResizeX, 0);
+        const hiresResizeY = parseIntOr(s.a1111HiresResizeY, 0);
         if (hiresResizeX > 0) payload.hr_resize_x = hiresResizeX;
         if (hiresResizeY > 0) payload.hr_resize_y = hiresResizeY;
         log(`A1111: Hires Fix: upscaler=${payload.hr_upscaler}, scale=${payload.hr_scale}, denoise=${payload.denoising_strength}${payload.hr_sampler_name ? ', sampler=' + payload.hr_sampler_name : ''}${payload.hr_scheduler ? ', scheduler=' + payload.hr_scheduler : ''}${hiresResizeX ? ', resize=' + hiresResizeX + 'x' + hiresResizeY : ''}`);
@@ -2446,7 +2455,7 @@ async function genLocal(prompt, negative, s, signal) {
     if (isImg2Img && !s.a1111IpAdapter) {
         // Standard img2img - use as init image
         payload.init_images = [s.localRefImage.replace(/^data:image\/.+;base64,/, '')];
-        payload.denoising_strength = parseFloat(s.localDenoise) || 0.75;
+        payload.denoising_strength = parseFloatOr(s.localDenoise, 0.75);
     }
 
     // IP-Adapter Face - use reference image for face only
@@ -2466,20 +2475,16 @@ async function genLocal(prompt, negative, s, signal) {
             enabled: true,
             module: ipAdapterPreprocessor,
             model: ipAdapterModel,
-            weight: parseFloat(s.a1111IpAdapterWeight) || 0.7,
+            weight: parseFloatOr(s.a1111IpAdapterWeight, 0.7),
             image: imageData,
             input_image: imageData,  // Forge Neo compatibility
             resize_mode: s.a1111IpAdapterResizeMode || "Crop and Resize",
             control_mode: s.a1111IpAdapterControlMode || "Balanced",
             pixel_perfect: s.a1111IpAdapterPixelPerfect ?? true,
-            guidance_start: parseFloat(s.a1111IpAdapterStartStep) || 0,
-            guidance_end: parseFloat(s.a1111IpAdapterEndStep) || 1
+            guidance_start: parseFloatOr(s.a1111IpAdapterStartStep, 0),
+            guidance_end: parseFloatOr(s.a1111IpAdapterEndStep, 1)
         };
-
-        payload.alwayson_scripts = payload.alwayson_scripts || {};
-        // Register under both script names for A1111 extension and Forge Neo built-in ControlNet
-        payload.alwayson_scripts.ControlNet = { args: [controlNetUnit] };
-        payload.alwayson_scripts["sd_forge_controlnet"] = { args: [controlNetUnit] };
+        controlNetUnits.push(controlNetUnit);
 
         const logPayload = { ...controlNetUnit, image: "BASE64_TRUNCATED", input_image: "BASE64_TRUNCATED" };
         log(`A1111/Forge ControlNet Payload: ${JSON.stringify(logPayload)}`);
@@ -2492,31 +2497,24 @@ async function genLocal(prompt, negative, s, signal) {
             enabled: true,
             module: s.a1111ControlNetModule || "none",
             model: s.a1111ControlNetModel,
-            weight: parseFloat(s.a1111ControlNetWeight) ?? 1.0,
+            weight: parseFloatOr(s.a1111ControlNetWeight, 1.0),
             resize_mode: s.a1111ControlNetResizeMode || "Crop and Resize",
             control_mode: s.a1111ControlNetControlMode || "Balanced",
             pixel_perfect: s.a1111ControlNetPixelPerfect ?? true,
-            guidance_start: parseFloat(s.a1111ControlNetGuidanceStart) || 0,
-            guidance_end: parseFloat(s.a1111ControlNetGuidanceEnd) || 1
+            guidance_start: parseFloatOr(s.a1111ControlNetGuidanceStart, 0),
+            guidance_end: parseFloatOr(s.a1111ControlNetGuidanceEnd, 1)
         };
         if (s.a1111ControlNetImage) {
             const cnImageData = s.a1111ControlNetImage.replace(/^data:image\/.+;base64,/, '');
             cnUnit.image = cnImageData;
             cnUnit.input_image = cnImageData;
         }
-
-        payload.alwayson_scripts = payload.alwayson_scripts || {};
-        if (payload.alwayson_scripts.ControlNet) {
-            // IP-Adapter already registered a unit — append this as a second unit
-            payload.alwayson_scripts.ControlNet.args.push(cnUnit);
-            if (payload.alwayson_scripts["sd_forge_controlnet"]) {
-                payload.alwayson_scripts["sd_forge_controlnet"].args.push(cnUnit);
-            }
-        } else {
-            payload.alwayson_scripts.ControlNet = { args: [cnUnit] };
-            payload.alwayson_scripts["sd_forge_controlnet"] = { args: [cnUnit] };
-        }
+        controlNetUnits.push(cnUnit);
         log(`A1111: Generic ControlNet: model=${s.a1111ControlNetModel}, module=${cnUnit.module}, weight=${cnUnit.weight}, image=${s.a1111ControlNetImage ? 'yes' : 'no'}`);
+    }
+    if (controlNetUnits.length > 0) {
+        payload.alwayson_scripts = payload.alwayson_scripts || {};
+        payload.alwayson_scripts[a1111ControlNetScriptKey] = { args: controlNetUnits };
     }
 
     log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, loras=${s.a1111Loras || 'none'}, hires=${s.a1111HiresFix && !isImg2Img ? 'on' : 'off'}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}, controlnet=${s.a1111ControlNet ? 'on' : 'off'}`);
@@ -2539,14 +2537,54 @@ async function genLocal(prompt, negative, s, signal) {
         } catch { /* ignore polling errors */ }
     }, 500);
 
+    const getAlternateControlNetScriptKey = (key) => key === "ControlNet" ? "sd_forge_controlnet" : "ControlNet";
+    const parseA1111ErrorDetail = async (res) => {
+        try {
+            const data = await res.json();
+            if (typeof data?.detail === "string") return data.detail;
+            if (typeof data?.error === "string") return data.error;
+            return JSON.stringify(data);
+        } catch {
+            try { return await res.text(); } catch { return ""; }
+        }
+    };
+    const postA1111 = async (requestPayload) => corsFetch(`${baseUrl}${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(requestPayload),
+        signal
+    });
+
     try {
-        const res = await corsFetch(`${baseUrl}${endpoint}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-            signal
-        });
-        if (!res.ok) throw new Error(`A1111 error: ${res.status}`);
+        let requestPayload = payload;
+        let res = await postA1111(requestPayload);
+        if (!res.ok && controlNetUnits.length > 0 && res.status === 422) {
+            const detail = await parseA1111ErrorDetail(res);
+            const missingCurrentScript = new RegExp(`always on script ${a1111ControlNetScriptKey} not found`, "i");
+            if (missingCurrentScript.test(detail)) {
+                const fallbackKey = getAlternateControlNetScriptKey(a1111ControlNetScriptKey);
+                log(`A1111: Script "${a1111ControlNetScriptKey}" not found, retrying ControlNet payload as "${fallbackKey}"`);
+                const retryPayload = JSON.parse(JSON.stringify(requestPayload));
+                const scriptData = retryPayload?.alwayson_scripts?.[a1111ControlNetScriptKey];
+                delete retryPayload?.alwayson_scripts?.[a1111ControlNetScriptKey];
+                if (scriptData) {
+                    retryPayload.alwayson_scripts[fallbackKey] = scriptData;
+                    const retryRes = await postA1111(retryPayload);
+                    if (retryRes.ok) {
+                        a1111ControlNetScriptKey = fallbackKey;
+                        res = retryRes;
+                        requestPayload = retryPayload;
+                    } else {
+                        const retryDetail = await parseA1111ErrorDetail(retryRes);
+                        throw new Error(`A1111 error: ${retryRes.status}${retryDetail ? `: ${retryDetail}` : ""}`);
+                    }
+                }
+            }
+        }
+        if (!res.ok) {
+            const detail = await parseA1111ErrorDetail(res);
+            throw new Error(`A1111 error: ${res.status}${detail ? `: ${detail}` : ""}`);
+        }
         const data = await res.json();
         if (data.images?.[0]) return `data:image/png;base64,${data.images[0]}`;
         throw new Error("No image in response");
@@ -4868,16 +4906,16 @@ function createUI() {
                         <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
                     </select>
                     <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
-                         <label>Checkpoint</label>
+                         <label>Model</label>
                          <div style="display:flex;gap:4px;align-items:center;">
                              <select id="qig-local-model" style="flex:1;">
                                  <option value="${esc(s.localModel)}" selected>${esc(s.localModel || "-- Click Refresh --")}</option>
                              </select>
-                             <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh checkpoint list">🔄</button>
+                             <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
-                         <div class="form-hint">Click Refresh to load checkpoints from ComfyUI, or type a name manually</div>
+                         <div class="form-hint">Click Refresh to load checkpoints (standard mode) or diffusion UNETs (Flux/UNET mode) from ComfyUI, or type a model manually.</div>
                          <div class="qig-row">
-                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise || 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
+                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise ?? 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
                          </div>
                          <label>Scheduler</label>
@@ -5593,7 +5631,7 @@ function createUI() {
         const s = getSettings();
         const modelSelect = document.getElementById("qig-local-model");
         modelSelect.innerHTML = '<option value="">Loading...</option>';
-        const models = await fetchComfyUIModels(s.localUrl);
+        const models = await fetchComfyUIModels(s.localUrl, isComfyFluxMode(s));
         if (models.length > 0) {
             const cur = s.localModel || "";
             modelSelect.innerHTML = models.map(m =>
