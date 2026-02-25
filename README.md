@@ -15,7 +15,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🆓 **Pollinations** - Free, no API key
 - 🎨 **NovelAI** - Premium anime (nai-diffusion-4-5-curated/full) with proper sampler support
 - 🤖 **ArliAI** - Affordable API
-- ⚡ **NanoGPT** - Fast Flux models
+- ⚡ **NanoGPT** - Fast Flux models with reference images and strength control
 - 🪂 **Chutes** - Decentralized AI (FLUX models)
 - 🏛️ **CivitAI** - Community models with URN format, schedulers, multiple LoRAs
 - 🧠 **Nanobanana (Gemini)** - Google's Gemini image generation with reference images
@@ -46,7 +46,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
-- 🖼️ **Reference Images** - Upload up to 15 reference images (Nanobanana, Proxy)
+- 🖼️ **Reference Images** - Upload up to 15 reference images (NanoGPT, Nanobanana, Proxy) with strength control for img2img
 - 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
 ### Profiles & Settings

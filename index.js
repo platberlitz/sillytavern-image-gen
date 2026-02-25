@@ -71,6 +71,8 @@ const defaultSettings = {
     // NanoGPT
     nanogptKey: "",
     nanogptModel: "image-flux-schnell",
+    nanogptRefImages: [],
+    nanogptStrength: 0.75,
     // Chutes
     chutesKey: "",
     chutesModel: "stabilityai/stable-diffusion-xl-base-1.0",
@@ -286,7 +288,7 @@ const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
     arliai: ["arliKey", "arliModel"],
-    nanogpt: ["nanogptKey", "nanogptModel"],
+    nanogpt: ["nanogptKey", "nanogptModel", "nanogptRefImages", "nanogptStrength"],
     chutes: ["chutesKey", "chutesModel"],
     civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler", "civitaiLoras"],
     nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
@@ -1813,19 +1815,28 @@ async function genArliAI(prompt, negative, s, signal) {
 }
 
 async function genNanoGPT(prompt, negative, s, signal) {
+    const body = {
+        model: s.nanogptModel,
+        prompt: prompt,
+        negative_prompt: negative,
+        size: `${s.width}x${s.height}`,
+        n: 1
+    };
+    const refs = s.nanogptRefImages || [];
+    if (refs.length === 1) {
+        body.imageDataUrl = refs[0];
+        body.strength = s.nanogptStrength ?? 0.75;
+    } else if (refs.length > 1) {
+        body.imageDataUrls = refs;
+        body.strength = s.nanogptStrength ?? 0.75;
+    }
     const res = await fetch("https://nano-gpt.com/v1/images/generations", {
         method: "POST",
         headers: {
             "Authorization": `Bearer ${s.nanogptKey}`,
             "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-            model: s.nanogptModel,
-            prompt: prompt,
-            negative_prompt: negative,
-            size: `${s.width}x${s.height}`,
-            n: 1
-        }),
+        body: JSON.stringify(body),
         signal
     });
     if (!res.ok) throw new Error(`NanoGPT error: ${res.status}`);
@@ -4068,6 +4079,7 @@ window.duplicateContextualFilter = duplicateContextualFilter;
 function getCurrentRefImages(s) {
     if (s.provider === "proxy") return s.proxyRefImages || [];
     if (s.provider === "nanobanana") return s.nanobananaRefImages || [];
+    if (s.provider === "nanogpt") return s.nanogptRefImages || [];
     return [];
 }
 
@@ -4131,6 +4143,9 @@ function loadCharSettings() {
         } else if (s.provider === "nanobanana") {
             s.nanobananaRefImages = [...refs];
             renderNanobananaRefImages();
+        } else if (s.provider === "nanogpt") {
+            s.nanogptRefImages = [...refs];
+            renderNanogptRefImages();
         }
         saveSettingsDebounced();
     }
@@ -4567,7 +4582,7 @@ function refreshProviderInputs(provider) {
         pollinations: [["qig-pollinations-model", "pollinationsModel"]],
         novelai: [["qig-nai-key", "naiKey"], ["qig-nai-model", "naiModel"], ["qig-nai-proxy-url", "naiProxyUrl"], ["qig-nai-proxy-key", "naiProxyKey"]],
         arliai: [["qig-arli-key", "arliKey"], ["qig-arli-model", "arliModel"]],
-        nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"]],
+        nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"], ["qig-nanogpt-strength", "nanogptStrength"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
         nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
@@ -4678,6 +4693,7 @@ function refreshProviderInputs(provider) {
         if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
     }
     if (provider === "nanobanana") renderNanobananaRefImages();
+    if (provider === "nanogpt") renderNanogptRefImages();
 }
 
 function updateProviderUI() {
@@ -4726,6 +4742,23 @@ window.removeNanobananaRefImage = function (idx) {
     s.nanobananaRefImages.splice(idx, 1);
     saveSettingsDebounced();
     renderNanobananaRefImages();
+};
+
+function renderNanogptRefImages() {
+    const container = getOrCacheElement("qig-nanogpt-refs");
+    if (!container) return;
+    const imgs = getSettings().nanogptRefImages || [];
+    container.innerHTML = imgs.map((src, i) =>
+        `<div style="position:relative;"><img src="${escapeHtml(src || "")}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeNanogptRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+    ).join('');
+}
+
+window.removeNanogptRefImage = function (idx) {
+    const s = getSettings();
+    if (!s.nanogptRefImages) s.nanogptRefImages = [];
+    s.nanogptRefImages.splice(idx, 1);
+    saveSettingsDebounced();
+    renderNanogptRefImages();
 };
 
 function bind(id, key, isNum = false, isCheckbox = false) {
@@ -4824,6 +4857,12 @@ function createUI() {
                     <input id="qig-nanogpt-key" type="password" value="${esc(s.nanogptKey)}">
                     <label>Model</label>
                     <input id="qig-nanogpt-model" type="text" value="${esc(s.nanogptModel)}" placeholder="image-flux-schnell">
+                    <label>Strength <span id="qig-nanogpt-strength-val">${s.nanogptStrength ?? 0.75}</span></label>
+                    <input id="qig-nanogpt-strength" type="range" min="0" max="1" step="0.05" value="${s.nanogptStrength ?? 0.75}" oninput="document.getElementById('qig-nanogpt-strength-val').textContent=this.value">
+                    <label>Reference Images (up to 15)</label>
+                    <div id="qig-nanogpt-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
+                    <input type="file" id="qig-nanogpt-ref-input" accept="image/*" multiple style="display:none">
+                    <button id="qig-nanogpt-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
                 </div>
                 
                 <div id="qig-chutes-settings" class="qig-provider-section">
@@ -5590,6 +5629,7 @@ function createUI() {
     bind("qig-arli-model", "arliModel");
     bind("qig-nanogpt-key", "nanogptKey");
     bind("qig-nanogpt-model", "nanogptModel");
+    bind("qig-nanogpt-strength", "nanogptStrength", true);
     bind("qig-chutes-key", "chutesKey");
     bind("qig-chutes-model", "chutesModel");
     bind("qig-civitai-key", "civitaiKey");
@@ -6023,6 +6063,33 @@ function createUI() {
         nanoRefInput.value = "";
     };
     renderNanobananaRefImages();
+
+    // NanoGPT reference images handling
+    const nanogptRefInput = getOrCacheElement("qig-nanogpt-ref-input");
+    const nanogptRefBtn = getOrCacheElement("qig-nanogpt-ref-btn");
+    if (nanogptRefBtn) nanogptRefBtn.onclick = () => nanogptRefInput.click();
+    nanogptRefInput.onchange = async (e) => {
+        const files = Array.from(e.target.files);
+        const s = getSettings();
+        if (!s.nanogptRefImages) s.nanogptRefImages = [];
+        const remaining = 15 - s.nanogptRefImages.length;
+        const filesToProcess = files.slice(0, remaining);
+
+        const readPromises = filesToProcess.map(file =>
+            new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onload = (ev) => resolve(ev.target.result);
+                reader.readAsDataURL(file);
+            })
+        );
+
+        const results = await Promise.all(readPromises);
+        s.nanogptRefImages.push(...results);
+        saveSettingsDebounced();
+        renderNanogptRefImages();
+        nanogptRefInput.value = "";
+    };
+    renderNanogptRefImages();
 
     bind("qig-prompt", "prompt");
     bind("qig-negative", "negativePrompt");
