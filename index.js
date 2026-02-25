@@ -2010,7 +2010,8 @@ async function genLocal(prompt, negative, s, signal) {
 
         let workflowNodes;
         if (fluxMode) {
-            // Flux/UNET-only workflow: separate UNETLoader + DualCLIPLoader + VAELoader
+            // Flux/UNET-only workflow: separate UNETLoader + CLIP loader(s) + VAELoader
+            const hasDualClip = !!(s.comfyFluxClipModel2 || "").trim();
             const clipRef = clipSkip > 1 ? ["10", 0] : ["12", 0];
             workflowNodes = {
                 "3": {
@@ -2033,13 +2034,15 @@ async function genLocal(prompt, negative, s, signal) {
                 "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["13", 0] } },
                 "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } },
                 "11": { class_type: "UNETLoader", inputs: { unet_name: s.localModel || "model.safetensors" } },
-                "12": { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2 || "", type: "flux" } },
+                "12": hasDualClip
+                    ? { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2, type: "flux" } }
+                    : { class_type: "CLIPLoader", inputs: { clip_name: s.comfyFluxClipModel1, type: "flux" } },
                 "13": { class_type: "VAELoader", inputs: { vae_name: s.comfyFluxVaeModel || "ae.safetensors" } }
             };
             if (clipSkip > 1) {
                 workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["12", 0] } };
             }
-            log(`ComfyUI: Using Flux/UNET workflow (UNETLoader + DualCLIPLoader + VAELoader)`);
+            log(`ComfyUI: Using Flux/UNET workflow (UNETLoader + ${hasDualClip ? 'DualCLIPLoader' : 'CLIPLoader'} + VAELoader)`);
         } else {
             // Standard checkpoint workflow
             workflowNodes = {
@@ -4522,8 +4525,8 @@ function createUI() {
                          <div id="qig-comfy-flux-opts" style="display:${s.comfySkipNegativePrompt ? 'block' : 'none'}; margin-left:24px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
                             <div class="form-hint">UNET-only models need separate CLIP and VAE loaders. Leave blank if your checkpoint already includes CLIP+VAE (full Flux checkpoints).</div>
                             <div class="qig-row">
-                                <div><label>CLIP Model 1</label><input id="qig-comfy-flux-clip1" type="text" value="${esc(s.comfyFluxClipModel1 || "")}" placeholder="t5xxl_fp16.safetensors"><small style="opacity:0.6;font-size:10px;">T5-XXL model from models/clip/</small></div>
-                                <div><label>CLIP Model 2</label><input id="qig-comfy-flux-clip2" type="text" value="${esc(s.comfyFluxClipModel2 || "")}" placeholder="clip_l.safetensors"><small style="opacity:0.6;font-size:10px;">CLIP-L model from models/clip/</small></div>
+                                <div><label>CLIP Model 1</label><input id="qig-comfy-flux-clip1" type="text" value="${esc(s.comfyFluxClipModel1 || "")}" placeholder="t5xxl_fp16.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/</small></div>
+                                <div><label>CLIP Model 2</label><input id="qig-comfy-flux-clip2" type="text" value="${esc(s.comfyFluxClipModel2 || "")}" placeholder="clip_l.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/ (leave blank if single-CLIP)</small></div>
                             </div>
                             <label>VAE Model</label>
                             <input id="qig-comfy-flux-vae" type="text" value="${esc(s.comfyFluxVaeModel || "")}" placeholder="ae.safetensors">
