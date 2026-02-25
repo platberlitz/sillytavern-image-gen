@@ -9,7 +9,7 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret;
+let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret, getRequestHeaders;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 const defaultSettings = {
     provider: "pollinations",
@@ -444,7 +444,10 @@ async function corsFetch(url, opts = {}) {
         throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
     }
     const proxyUrl = `/proxy/${url}`;
-    const res = await fetch(proxyUrl, opts);
+    // Merge ST request headers (CSRF token) into proxy requests
+    const stHeaders = typeof getRequestHeaders === 'function' ? getRequestHeaders() : {};
+    const mergedHeaders = { ...stHeaders, ...opts.headers };
+    const res = await fetch(proxyUrl, { ...opts, headers: mergedHeaders });
     if (res.status === 404) {
         const text = await res.text();
         if (text.includes('CORS proxy is disabled')) {
@@ -6663,6 +6666,7 @@ jQuery(function () {
             getContext = extensionsModule.getContext;
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
             generateQuietPrompt = scriptModule.generateQuietPrompt;
+            getRequestHeaders = scriptModule.getRequestHeaders;
 
             try {
                 const utilsModule = await import("../../../utils.js");
