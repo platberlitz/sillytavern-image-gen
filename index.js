@@ -146,6 +146,7 @@ const defaultSettings = {
     comfyFluxClipModel1: "",
     comfyFluxClipModel2: "",
     comfyFluxVaeModel: "",
+    comfyFluxClipType: "flux",
     // Backups of localStorage stores (survive browser storage wipes)
     _backupTemplates: null,
     _backupCharSettings: null,
@@ -247,7 +248,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -2012,6 +2013,7 @@ async function genLocal(prompt, negative, s, signal) {
         if (fluxMode) {
             // Flux/UNET-only workflow: separate UNETLoader + CLIP loader(s) + VAELoader
             const hasDualClip = !!(s.comfyFluxClipModel2 || "").trim();
+            const clipType = (s.comfyFluxClipType || "flux").trim();
             const clipRef = clipSkip > 1 ? ["10", 0] : ["12", 0];
             workflowNodes = {
                 "3": {
@@ -2033,10 +2035,10 @@ async function genLocal(prompt, negative, s, signal) {
                 "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipRef } },
                 "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["13", 0] } },
                 "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } },
-                "11": { class_type: "UNETLoader", inputs: { unet_name: s.localModel || "model.safetensors" } },
+                "11": { class_type: "UNETLoader", inputs: { unet_name: s.localModel || "model.safetensors", weight_dtype: "default" } },
                 "12": hasDualClip
-                    ? { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2, type: "flux" } }
-                    : { class_type: "CLIPLoader", inputs: { clip_name: s.comfyFluxClipModel1, type: "flux" } },
+                    ? { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2, type: clipType } }
+                    : { class_type: "CLIPLoader", inputs: { clip_name: s.comfyFluxClipModel1, type: clipType } },
                 "13": { class_type: "VAELoader", inputs: { vae_name: s.comfyFluxVaeModel || "ae.safetensors" } }
             };
             if (clipSkip > 1) {
@@ -3864,7 +3866,7 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
@@ -3876,7 +3878,8 @@ function getComfyWorkflowSnapshot(s = getSettings()) {
         comfySkipNegativePrompt: !!s.comfySkipNegativePrompt,
         comfyFluxClipModel1: s.comfyFluxClipModel1 || "",
         comfyFluxClipModel2: s.comfyFluxClipModel2 || "",
-        comfyFluxVaeModel: s.comfyFluxVaeModel || ""
+        comfyFluxVaeModel: s.comfyFluxVaeModel || "",
+        comfyFluxClipType: s.comfyFluxClipType || "flux"
     };
 }
 
@@ -4259,7 +4262,8 @@ function refreshProviderInputs(provider) {
             ["qig-comfy-skip-neg", "comfySkipNegativePrompt"],
             ["qig-comfy-flux-clip1", "comfyFluxClipModel1"],
             ["qig-comfy-flux-clip2", "comfyFluxClipModel2"],
-            ["qig-comfy-flux-vae", "comfyFluxVaeModel"]
+            ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
+            ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -4528,6 +4532,9 @@ function createUI() {
                                 <div><label>CLIP Model 1</label><input id="qig-comfy-flux-clip1" type="text" value="${esc(s.comfyFluxClipModel1 || "")}" placeholder="t5xxl_fp16.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/</small></div>
                                 <div><label>CLIP Model 2</label><input id="qig-comfy-flux-clip2" type="text" value="${esc(s.comfyFluxClipModel2 || "")}" placeholder="clip_l.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/ (leave blank if single-CLIP)</small></div>
                             </div>
+                            <label>CLIP Type</label>
+                            <input id="qig-comfy-flux-clip-type" type="text" value="${esc(s.comfyFluxClipType || "flux")}" placeholder="flux">
+                            <small style="opacity:0.6;font-size:10px;">DualCLIP (2 models): flux, sdxl, sd3, hunyuan_video. SingleCLIP (1 model): flux2, sd3, stable_diffusion, qwen_image, hunyuan_image, etc.</small>
                             <label>VAE Model</label>
                             <input id="qig-comfy-flux-vae" type="text" value="${esc(s.comfyFluxVaeModel || "")}" placeholder="ae.safetensors">
                             <small style="opacity:0.6;font-size:10px;">From models/vae/. Required for UNET-only models.</small>
@@ -5071,6 +5078,7 @@ function createUI() {
     bind("qig-comfy-flux-clip1", "comfyFluxClipModel1");
     bind("qig-comfy-flux-clip2", "comfyFluxClipModel2");
     bind("qig-comfy-flux-vae", "comfyFluxVaeModel");
+    bind("qig-comfy-flux-clip-type", "comfyFluxClipType");
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
