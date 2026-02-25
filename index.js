@@ -143,6 +143,9 @@ const defaultSettings = {
     llmOverrideMaxTokens: 500,
     // ComfyUI Flux/UNET support
     comfySkipNegativePrompt: false,
+    comfyFluxClipModel1: "",
+    comfyFluxClipModel2: "",
+    comfyFluxVaeModel: "",
     // Backups of localStorage stores (survive browser storage wipes)
     _backupTemplates: null,
     _backupCharSettings: null,
@@ -244,7 +247,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -1991,9 +1994,9 @@ async function genLocal(prompt, negative, s, signal) {
                 const errMsg = executionError?.[1]?.exception_message || "Unknown execution error";
                 let hint = "";
                 if (/clip.*invalid|invalid.*clip|clip.*not.*found/i.test(errMsg)) {
-                    hint = " (Hint: model may lack a built-in CLIP encoder. Flux/UNET-only models need a custom workflow with DualCLIPLoader and VAELoader nodes. Try enabling 'Skip Negative Prompt' in ComfyUI settings, or use a custom workflow JSON exported from ComfyUI.)";
+                    hint = " (Hint: model may lack a built-in CLIP encoder. For UNET-only models, enable 'Skip Negative Prompt' and fill in the CLIP Model and VAE Model fields below it. Or use a custom workflow JSON exported from ComfyUI.)";
                 } else if (/vae.*invalid|invalid.*vae|vae.*not.*found/i.test(errMsg)) {
-                    hint = " (Hint: model may lack a built-in VAE. Flux/UNET-only models need a separate VAELoader node in a custom workflow.)";
+                    hint = " (Hint: model may lack a built-in VAE. For UNET-only models, enable 'Skip Negative Prompt' and fill in the VAE Model field below it. Or use a custom workflow JSON exported from ComfyUI.)";
                 } else if (/negative.*conditioning|conditioning.*negative/i.test(errMsg)) {
                     hint = " (Hint: this model may not support negative prompts. Try enabling 'Skip Negative Prompt' in ComfyUI settings.)";
                 }
@@ -2003,43 +2006,77 @@ async function genLocal(prompt, negative, s, signal) {
 
         // ComfyUI API - Default workflow
         const skipNeg = !!s.comfySkipNegativePrompt;
-        const workflowNodes = {
-            "3": {
-                class_type: "KSampler",
-                inputs: {
-                    seed: seed,
-                    steps: s.steps,
-                    cfg: s.cfgScale,
-                    sampler_name: samplerName,
-                    scheduler: schedulerName,
-                    denoise: denoise,
-                    model: ["4", 0],
-                    positive: ["6", 0],
-                    negative: skipNeg ? ["6", 0] : ["7", 0],
-                    latent_image: ["5", 0]
-                }
-            },
-            "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
-            "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
-            "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
-            "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-            "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
-        };
-        // Only add negative CLIPTextEncode node if not skipping
-        if (!skipNeg) {
-            workflowNodes["7"] = { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } };
-        }
+        const fluxMode = skipNeg && !!(s.comfyFluxClipModel1 || "").trim();
 
-        // Add CLIP SetLastLayer if clip_skip > 1
-        if (clipSkip > 1) {
-            workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
+        let workflowNodes;
+        if (fluxMode) {
+            // Flux/UNET-only workflow: separate UNETLoader + DualCLIPLoader + VAELoader
+            const clipRef = clipSkip > 1 ? ["10", 0] : ["12", 0];
+            workflowNodes = {
+                "3": {
+                    class_type: "KSampler",
+                    inputs: {
+                        seed: seed,
+                        steps: s.steps,
+                        cfg: s.cfgScale,
+                        sampler_name: samplerName,
+                        scheduler: schedulerName,
+                        denoise: denoise,
+                        model: ["11", 0],
+                        positive: ["6", 0],
+                        negative: ["6", 0],
+                        latent_image: ["5", 0]
+                    }
+                },
+                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
+                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipRef } },
+                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["13", 0] } },
+                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } },
+                "11": { class_type: "UNETLoader", inputs: { unet_name: s.localModel || "model.safetensors" } },
+                "12": { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2 || "", type: "flux" } },
+                "13": { class_type: "VAELoader", inputs: { vae_name: s.comfyFluxVaeModel || "ae.safetensors" } }
+            };
+            if (clipSkip > 1) {
+                workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["12", 0] } };
+            }
+            log(`ComfyUI: Using Flux/UNET workflow (UNETLoader + DualCLIPLoader + VAELoader)`);
+        } else {
+            // Standard checkpoint workflow
+            workflowNodes = {
+                "3": {
+                    class_type: "KSampler",
+                    inputs: {
+                        seed: seed,
+                        steps: s.steps,
+                        cfg: s.cfgScale,
+                        sampler_name: samplerName,
+                        scheduler: schedulerName,
+                        denoise: denoise,
+                        model: ["4", 0],
+                        positive: ["6", 0],
+                        negative: skipNeg ? ["6", 0] : ["7", 0],
+                        latent_image: ["5", 0]
+                    }
+                },
+                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
+                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
+                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
+                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
+                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
+            };
+            if (!skipNeg) {
+                workflowNodes["7"] = { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } };
+            }
+            if (clipSkip > 1) {
+                workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
+            }
         }
 
         // LoRA injection for ComfyUI default workflow
         if (s.comfyLoras && s.comfyLoras.trim()) {
             let loraNodeStart = 20;
-            let lastModelRef = ["4", 0];
-            let lastClipRef = ["4", 1];
+            let lastModelRef = fluxMode ? ["11", 0] : ["4", 0];
+            let lastClipRef = fluxMode ? ["12", 0] : ["4", 1];
             const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
             let injectedCount = 0;
             loras.forEach((l, i) => {
@@ -3824,7 +3861,7 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
@@ -3833,7 +3870,10 @@ function getComfyWorkflowSnapshot(s = getSettings()) {
         comfyClipSkip: s.comfyClipSkip ?? 1,
         comfyLoras: s.comfyLoras || "",
         comfyWorkflow: s.comfyWorkflow || "",
-        comfySkipNegativePrompt: !!s.comfySkipNegativePrompt
+        comfySkipNegativePrompt: !!s.comfySkipNegativePrompt,
+        comfyFluxClipModel1: s.comfyFluxClipModel1 || "",
+        comfyFluxClipModel2: s.comfyFluxClipModel2 || "",
+        comfyFluxVaeModel: s.comfyFluxVaeModel || ""
     };
 }
 
@@ -4213,7 +4253,10 @@ function refreshProviderInputs(provider) {
             ["qig-a1111-ipadapter-control", "a1111IpAdapterControlMode"],
             ["qig-a1111-ipadapter-start", "a1111IpAdapterStartStep"],
             ["qig-a1111-ipadapter-end", "a1111IpAdapterEndStep"],
-            ["qig-comfy-skip-neg", "comfySkipNegativePrompt"]
+            ["qig-comfy-skip-neg", "comfySkipNegativePrompt"],
+            ["qig-comfy-flux-clip1", "comfyFluxClipModel1"],
+            ["qig-comfy-flux-clip2", "comfyFluxClipModel2"],
+            ["qig-comfy-flux-vae", "comfyFluxVaeModel"]
         ],
         proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
     };
@@ -4225,6 +4268,8 @@ function refreshProviderInputs(provider) {
     if (provider === "local") {
         syncLocalTypeSections(s.localType);
         syncA1111VisibilityFromSettings(s);
+        const fluxOpts = document.getElementById("qig-comfy-flux-opts");
+        if (fluxOpts) fluxOpts.style.display = s.comfySkipNegativePrompt ? "block" : "none";
         const localDenoise = document.getElementById("qig-local-denoise-val");
         if (localDenoise) localDenoise.textContent = String(s.localDenoise ?? 0.75);
         const hiresDenoise = document.getElementById("qig-a1111-hires-denoise-val");
@@ -4474,6 +4519,16 @@ function createUI() {
                             <span>Skip Negative Prompt</span>
                             <small style="opacity:0.6;font-size:10px;">(for Flux/UNET-only models that don't use negative conditioning)</small>
                          </label>
+                         <div id="qig-comfy-flux-opts" style="display:${s.comfySkipNegativePrompt ? 'block' : 'none'}; margin-left:24px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
+                            <div class="form-hint">UNET-only models need separate CLIP and VAE loaders. Leave blank if your checkpoint already includes CLIP+VAE (full Flux checkpoints).</div>
+                            <div class="qig-row">
+                                <div><label>CLIP Model 1</label><input id="qig-comfy-flux-clip1" type="text" value="${esc(s.comfyFluxClipModel1 || "")}" placeholder="t5xxl_fp16.safetensors"><small style="opacity:0.6;font-size:10px;">T5-XXL model from models/clip/</small></div>
+                                <div><label>CLIP Model 2</label><input id="qig-comfy-flux-clip2" type="text" value="${esc(s.comfyFluxClipModel2 || "")}" placeholder="clip_l.safetensors"><small style="opacity:0.6;font-size:10px;">CLIP-L model from models/clip/</small></div>
+                            </div>
+                            <label>VAE Model</label>
+                            <input id="qig-comfy-flux-vae" type="text" value="${esc(s.comfyFluxVaeModel || "")}" placeholder="ae.safetensors">
+                            <small style="opacity:0.6;font-size:10px;">From models/vae/. Required for UNET-only models.</small>
+                         </div>
                          <label>LoRAs (filename:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
                          <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
@@ -4976,7 +5031,7 @@ function createUI() {
         const val = (e.target.value || "").toLowerCase();
         if (/flux|unet|\.gguf/.test(val) && !getSettings().comfySkipNegativePrompt) {
             toastr.warning(
-                'This looks like a Flux/UNET model. Consider enabling "Skip Negative Prompt" in ComfyUI settings, and using a custom workflow with DualCLIPLoader + VAELoader nodes.',
+                'This looks like a Flux/UNET model. Enable "Skip Negative Prompt" and set your CLIP/VAE model names for UNET-only models, or paste a custom workflow.',
                 "Flux/UNET Model Detected",
                 { timeOut: 8000 }
             );
@@ -5007,7 +5062,12 @@ function createUI() {
     document.getElementById("qig-comfy-skip-neg").onchange = (e) => {
         getSettings().comfySkipNegativePrompt = e.target.checked;
         saveSettingsDebounced();
+        const fluxOpts = document.getElementById("qig-comfy-flux-opts");
+        if (fluxOpts) fluxOpts.style.display = e.target.checked ? "block" : "none";
     };
+    bind("qig-comfy-flux-clip1", "comfyFluxClipModel1");
+    bind("qig-comfy-flux-clip2", "comfyFluxClipModel2");
+    bind("qig-comfy-flux-vae", "comfyFluxVaeModel");
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
@@ -5620,7 +5680,7 @@ async function generateImageInjectPalette() {
             toastr.info("Generation cancelled");
         } else {
             log(`Palette inject: Error: ${e.message}`);
-            toastr.error("Palette inject failed: " + e.message);
+            toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
         endGeneration();
@@ -5754,7 +5814,7 @@ async function generateImage() {
             toastr.info("Generation cancelled");
         } else {
             log(`Error: ${e.message}`);
-            toastr.error("Generation failed: " + e.message);
+            toastr.error("Generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
         s.seed = originalSeed;
@@ -5990,7 +6050,7 @@ async function processInjectMessage(messageText, messageIndex) {
                     break; // Exit the entire match loop on cancel
                 } else {
                     log(`Inject: Generation error: ${e.message}`);
-                    toastr.error("Inject generation failed: " + e.message);
+                    toastr.error("Inject generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
                 }
             } finally {
                 s.seed = originalSeed;
