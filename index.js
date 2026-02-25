@@ -429,7 +429,11 @@ function log(msg) {
 // CORS-aware fetch: tries direct, falls back to ST's /proxy/ endpoint
 let _corsProxyState = 0; // 0=unknown, 1=direct works, 2=proxy works, -1=proxy disabled
 async function corsFetch(url, opts = {}) {
-    if (_corsProxyState !== 2) {
+    const crossOrigin = (() => {
+        try { return new URL(url).origin !== location.origin; } catch { return true; }
+    })();
+    // Try direct: same-origin always, cross-origin only if previously confirmed
+    if (_corsProxyState === 1 || (_corsProxyState === 0 && !crossOrigin)) {
         try {
             const res = await fetch(url, opts);
             if (_corsProxyState === 0) _corsProxyState = 1;
