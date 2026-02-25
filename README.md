@@ -24,7 +24,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - ⚡ **Fal.ai** - Fast Flux models
 - 🤝 **Together AI** - Open source models (SDXL, etc.)
 - 🖥️ **Local** - A1111/ComfyUI with comprehensive parameter coverage (22 samplers, schedulers, ADetailer, ControlNet, VAE, Hires Fix, img2img, upscale)
-- 🔌 **Reverse Proxy** - PixAI, custom endpoints with multimodal support
+- 🔌 **Reverse Proxy** - PixAI, custom endpoints with multimodal support, ComfyUI Proxy mode
 
 ### Generation
 - 🖼️ **40+ Style Presets** - Anime, Realistic, Cyberpunk, Ghibli, etc.
@@ -537,6 +537,10 @@ When detected, these are:
 
 - [SD Proxy](https://github.com/platberlitz/sd-proxy) - Full-featured image generation proxy
 - [PixAI Proxy](https://github.com/platberlitz/pixai-proxy) - Use PixAI with this extension
+
+## Credits
+
+- **Veda** — ComfyUI Proxy method
 
 ## License
 

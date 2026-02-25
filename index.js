@@ -56,6 +56,10 @@ const defaultSettings = {
     proxySeed: -1,
     proxyRefImages: [],
     proxyExtraInstructions: "",
+    proxyComfyMode: false,
+    proxyComfyTimeout: 300,
+    proxyComfyNodeId: "",
+    proxyComfyWorkflow: "",
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-4-5-curated",
@@ -291,7 +295,7 @@ const PROVIDER_KEYS = {
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
 
 const PROVIDERS = {
@@ -2552,6 +2556,53 @@ async function genLocal(prompt, negative, s, signal) {
 }
 
 async function genProxy(prompt, negative, s, signal) {
+    // ComfyUI Proxy mode — simple GET /prompt/{text}?token=xxx → PNG
+    if (s.proxyComfyMode) {
+        const baseUrl = s.proxyUrl.replace(/\/$/, "");
+        const params = new URLSearchParams();
+        if (s.proxyKey) params.set("token", s.proxyKey);
+        if (s.proxyComfyNodeId) params.set("node_id", s.proxyComfyNodeId);
+        const qs = params.toString() ? `?${params.toString()}` : "";
+
+        // If workflow JSON is provided, use POST with body
+        const hasWorkflow = s.proxyComfyWorkflow && s.proxyComfyWorkflow.trim();
+        const url = `${baseUrl}/prompt/${encodeURIComponent(prompt)}${qs}`;
+        log(`ComfyUI Proxy: ${url.substring(0, 80)}...`);
+
+        const controller = new AbortController();
+        let timedOut = false;
+        const timeout = (s.proxyComfyTimeout || 300) * 1000;
+        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
+        if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+
+        const fetchOpts = { signal: controller.signal };
+        if (hasWorkflow) {
+            fetchOpts.method = "POST";
+            fetchOpts.headers = { "Content-Type": "application/json" };
+            fetchOpts.body = s.proxyComfyWorkflow.trim();
+        }
+
+        let res;
+        try {
+            res = await fetch(url, fetchOpts);
+        } catch (e) {
+            if (e.name === "AbortError" && timedOut && !signal?.aborted) {
+                throw new Error(`ComfyUI Proxy timed out after ${s.proxyComfyTimeout}s`);
+            }
+            throw e;
+        } finally {
+            clearTimeout(timeoutId);
+        }
+        if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            throw new Error(`ComfyUI Proxy error ${res.status}: ${errText || res.statusText}`);
+        }
+        const blob = new Blob([await res.arrayBuffer()], { type: res.headers.get("content-type") || "image/png" });
+        const blobUrl = URL.createObjectURL(blob);
+        blobUrls.add(blobUrl);
+        return blobUrl;
+    }
+
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
@@ -4558,7 +4609,7 @@ function refreshProviderInputs(provider) {
             ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
             ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
-        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"]]
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -4581,7 +4632,13 @@ function refreshProviderInputs(provider) {
     }
 
     // Update reference images display
-    if (provider === "proxy") renderRefImages();
+    if (provider === "proxy") {
+        renderRefImages();
+        const comfyOpts = document.getElementById("qig-proxy-comfy-opts");
+        const stdOpts = document.getElementById("qig-proxy-standard-opts");
+        if (comfyOpts) comfyOpts.style.display = s.proxyComfyMode ? "block" : "none";
+        if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
+    }
     if (provider === "nanobanana") renderNanobananaRefImages();
 }
 
@@ -5138,6 +5195,21 @@ function createUI() {
                     <input id="qig-proxy-url" type="text" value="${esc(s.proxyUrl)}" placeholder="https://proxy.com/v1">
                     <label>API Key (optional)</label>
                     <input id="qig-proxy-key" type="password" value="${esc(s.proxyKey)}">
+                    <label class="checkbox_label">
+                        <input id="qig-proxy-comfy-mode" type="checkbox" ${s.proxyComfyMode ? "checked" : ""}>
+                        <span>ComfyUI Proxy Mode</span>
+                    </label>
+                    <div id="qig-proxy-comfy-opts" style="display:${s.proxyComfyMode ? "block" : "none"}">
+                        <small style="opacity:0.6;font-size:10px;">Connects to a ComfyUI proxy server (GET /prompt/{text}?token=key → PNG). URL and API Key above are reused as the proxy address and token.</small>
+                        <label>Timeout (seconds)</label>
+                        <input id="qig-proxy-comfy-timeout" type="number" value="${esc(s.proxyComfyTimeout || 300)}" min="10" max="600">
+                        <label>Prompt Node ID (optional)</label>
+                        <input id="qig-proxy-comfy-node-id" type="text" value="${esc(s.proxyComfyNodeId || "")}" placeholder="e.g. 972">
+                        <small style="opacity:0.6;font-size:10px;">Sent as query param if your proxy supports it</small>
+                        <label>Workflow JSON (optional)</label>
+                        <textarea id="qig-proxy-comfy-workflow" rows="3" placeholder="Paste workflow_api.json or leave empty to use server default">${esc(s.proxyComfyWorkflow || "")}</textarea>
+                    </div>
+                    <div id="qig-proxy-standard-opts" style="display:${s.proxyComfyMode ? "none" : "block"}">
                     <label>Model</label>
                     <input id="qig-proxy-model" type="text" value="${esc(s.proxyModel)}" placeholder="PixAI model ID">
                     <label>LoRAs (id:weight, comma-separated)</label>
@@ -5167,6 +5239,7 @@ function createUI() {
                     <div id="qig-proxy-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-proxy-ref-input" accept="image/*" multiple style="display:none">
                     <button id="qig-proxy-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
+                    </div>
                 </div>
                 
                 <hr style="margin:8px 0;opacity:0.2;">
@@ -5845,6 +5918,19 @@ function createUI() {
     bind("qig-proxy-seed", "proxySeed", true);
     bindCheckbox("qig-proxy-facefix", "proxyFacefix");
     bind("qig-proxy-extra", "proxyExtraInstructions");
+    bind("qig-proxy-comfy-timeout", "proxyComfyTimeout", true);
+    bind("qig-proxy-comfy-node-id", "proxyComfyNodeId");
+    bind("qig-proxy-comfy-workflow", "proxyComfyWorkflow");
+    const comfyModeEl = getOrCacheElement("qig-proxy-comfy-mode");
+    if (comfyModeEl) comfyModeEl.onchange = (e) => {
+        const s = getSettings();
+        s.proxyComfyMode = e.target.checked;
+        saveSettingsDebounced();
+        const comfyOpts = document.getElementById("qig-proxy-comfy-opts");
+        const stdOpts = document.getElementById("qig-proxy-standard-opts");
+        if (comfyOpts) comfyOpts.style.display = s.proxyComfyMode ? "block" : "none";
+        if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
+    };
 
     // Reference images handling
     const refInput = getOrCacheElement("qig-proxy-ref-input");
