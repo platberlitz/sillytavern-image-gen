@@ -102,16 +102,44 @@ const defaultSettings = {
     // A1111 specific
     a1111Model: "",
     a1111ClipSkip: 1,
+    a1111Scheduler: "Automatic",
+    a1111RestoreFaces: false,
+    a1111Tiling: false,
+    a1111Subseed: -1,
+    a1111SubseedStrength: 0,
     a1111Adetailer: false,
     a1111AdetailerModel: "face_yolov8n.pt",
     a1111AdetailerPrompt: "",
     a1111AdetailerNegative: "",
+    a1111AdetailerDenoise: 0.4,
+    a1111AdetailerConfidence: 0.3,
+    a1111AdetailerMaskBlur: 4,
+    a1111AdetailerDilateErode: 4,
+    a1111AdetailerInpaintOnlyMasked: true,
+    a1111AdetailerInpaintPadding: 32,
+    a1111Adetailer2: false,
+    a1111Adetailer2Model: "hand_yolov8n.pt",
+    a1111Adetailer2Prompt: "",
+    a1111Adetailer2Negative: "",
+    a1111Adetailer2Denoise: 0.4,
+    a1111Adetailer2Confidence: 0.3,
+    a1111Adetailer2MaskBlur: 4,
+    a1111Adetailer2DilateErode: 4,
+    a1111Adetailer2InpaintOnlyMasked: true,
+    a1111Adetailer2InpaintPadding: 32,
     a1111Loras: "",
+    a1111Vae: "",
     a1111HiresFix: false,
     a1111HiresUpscaler: "Latent",
     a1111HiresScale: 2,
     a1111HiresSteps: 0,
     a1111HiresDenoise: 0.55,
+    a1111HiresSampler: "",
+    a1111HiresScheduler: "",
+    a1111HiresPrompt: "",
+    a1111HiresNegative: "",
+    a1111HiresResizeX: 0,
+    a1111HiresResizeY: 0,
     a1111IpAdapter: false,
     a1111IpAdapterMode: "ip-adapter-faceid-portrait_sd15",
     a1111IpAdapterWeight: 0.7,
@@ -120,11 +148,25 @@ const defaultSettings = {
     a1111IpAdapterControlMode: "Balanced",
     a1111IpAdapterStartStep: 0,
     a1111IpAdapterEndStep: 1,
+    // A1111 Generic ControlNet
+    a1111ControlNet: false,
+    a1111ControlNetModel: "",
+    a1111ControlNetModule: "none",
+    a1111ControlNetWeight: 1.0,
+    a1111ControlNetResizeMode: "Crop and Resize",
+    a1111ControlNetControlMode: "Balanced",
+    a1111ControlNetPixelPerfect: true,
+    a1111ControlNetGuidanceStart: 0,
+    a1111ControlNetGuidanceEnd: 1,
+    a1111ControlNetImage: "",
     a1111SaveToWebUI: true,
     // ComfyUI specific
     comfyWorkflow: "",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
+    comfyScheduler: "normal",
+    comfyUpscale: false,
+    comfyUpscaleModel: "RealESRGAN_x4plus.pth",
     comfyLoras: "",
     // ST Style integration
     useSTStyle: true,
@@ -248,7 +290,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111Loras", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages"]
 };
 
@@ -337,7 +379,45 @@ const PROVIDER_MODELS = {
     ]
 };
 
-const SAMPLERS = ["euler_a", "euler", "dpm++_2m", "dpm++_sde", "ddim", "lms", "heun"];
+const SAMPLERS = [
+    // Euler family
+    "euler_a", "euler",
+    // DPM++ family
+    "dpm++_2m", "dpm++_sde", "dpm++_2m_sde", "dpm++_3m_sde", "dpm++_2s_ancestral",
+    // DPM family
+    "dpm_2", "dpm_2_ancestral", "dpm_fast", "dpm_adaptive",
+    // Classic
+    "ddim", "ddpm", "lms", "heun", "heunpp2", "plms",
+    // Unified Predictor-Corrector
+    "uni_pc", "uni_pc_bh2",
+    // Specialty
+    "lcm", "deis", "restart"
+];
+
+// Display names for samplers (used in HTML select and A1111 API)
+const SAMPLER_DISPLAY_NAMES = {
+    "euler_a": "Euler a", "euler": "Euler",
+    "dpm++_2m": "DPM++ 2M", "dpm++_sde": "DPM++ SDE", "dpm++_2m_sde": "DPM++ 2M SDE",
+    "dpm++_3m_sde": "DPM++ 3M SDE", "dpm++_2s_ancestral": "DPM++ 2S a",
+    "dpm_2": "DPM2", "dpm_2_ancestral": "DPM2 a", "dpm_fast": "DPM fast", "dpm_adaptive": "DPM adaptive",
+    "ddim": "DDIM", "ddpm": "DDPM", "lms": "LMS", "heun": "Heun", "heunpp2": "Heun++ 2", "plms": "PLMS",
+    "uni_pc": "UniPC", "uni_pc_bh2": "UniPC BH2",
+    "lcm": "LCM", "deis": "DEIS", "restart": "Restart"
+};
+
+// Sampler grouping for <optgroup> display
+const SAMPLER_GROUPS = {
+    "Euler": ["euler_a", "euler"],
+    "DPM++": ["dpm++_2m", "dpm++_sde", "dpm++_2m_sde", "dpm++_3m_sde", "dpm++_2s_ancestral"],
+    "DPM": ["dpm_2", "dpm_2_ancestral", "dpm_fast", "dpm_adaptive"],
+    "Classic": ["ddim", "ddpm", "lms", "heun", "heunpp2", "plms"],
+    "UniPC": ["uni_pc", "uni_pc_bh2"],
+    "Specialty": ["lcm", "deis", "restart"]
+};
+
+const A1111_SCHEDULERS = ["Automatic", "Uniform", "Karras", "Exponential", "Polyexponential", "SGM Uniform", "Simple", "Normal", "DDIM", "Beta"];
+
+const COMFY_SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
 
 const logs = [];
 function log(msg) {
@@ -480,6 +560,30 @@ async function fetchA1111Upscalers(url) {
         return ["Latent", "Latent (antialiased)", "Latent (bicubic)",
                 "Latent (bicubic antialiased)", "Latent (nearest)",
                 "Latent (nearest-exact)", "None"];
+    }
+}
+
+async function fetchA1111VAEs(url) {
+    try {
+        const res = await corsFetch(`${url.replace(/\/$/, "")}/sdapi/v1/sd-vae`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        return (await res.json()).map(v => v.model_name);
+    } catch (e) {
+        log("Failed to fetch VAE list: " + e.message);
+        return [];
+    }
+}
+
+async function fetchComfyUIModels(url) {
+    try {
+        const res = await corsFetch(`${url.replace(/\/$/, "")}/object_info/CheckpointLoaderSimple`);
+        if (!res.ok) throw new Error(`${res.status}`);
+        const data = await res.json();
+        const ckpts = data?.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0];
+        return Array.isArray(ckpts) ? ckpts : [];
+    } catch (e) {
+        log("Failed to fetch ComfyUI models: " + e.message);
+        return [];
     }
 }
 
@@ -1358,13 +1462,16 @@ async function genNovelAI(prompt, negative, s, signal) {
     const isV4 = s.naiModel.includes("-4");
     // Map SillyTavern sampler names to NovelAI API format
     const samplerMap = {
-        "euler_a": "k_euler_ancestral",
-        "euler": "k_euler",
-        "dpm++_2m": "k_dpmpp_2m",
-        "dpm++_sde": "k_dpmpp_sde",
-        "ddim": "ddim",
-        "lms": "k_lms",
-        "heun": "k_heun"
+        "euler_a": "k_euler_ancestral", "euler": "k_euler",
+        "dpm++_2m": "k_dpmpp_2m", "dpm++_sde": "k_dpmpp_sde",
+        "dpm++_2m_sde": "k_dpmpp_2m", "dpm++_3m_sde": "k_dpmpp_2m",
+        "dpm++_2s_ancestral": "k_dpmpp_2s_ancestral",
+        "dpm_2": "k_dpm_2", "dpm_2_ancestral": "k_dpm_2_ancestral",
+        "dpm_fast": "k_dpm_fast", "dpm_adaptive": "k_dpm_adaptive",
+        "ddim": "ddim", "ddpm": "k_euler", "lms": "k_lms",
+        "heun": "k_heun", "heunpp2": "k_heun",
+        "plms": "k_euler", "uni_pc": "k_euler", "uni_pc_bh2": "k_euler",
+        "lcm": "k_euler", "deis": "k_euler", "restart": "k_euler"
     };
     const isV3OrNewer = s.naiModel.includes("diffusion-3") || s.naiModel.includes("diffusion-4");
     const sampler = (s.sampler === "ddim" && isV3OrNewer)
@@ -1879,29 +1986,20 @@ async function genLocal(prompt, negative, s, signal) {
     if (s.localType === "comfyui") {
         // Map sampler names to ComfyUI format
         const comfySamplerMap = {
-            "euler_a": "euler_ancestral",
-            "euler": "euler",
-            "dpm++_2m": "dpmpp_2m",
-            "dpm++_sde": "dpmpp_sde",
-            "dpmpp_2m": "dpmpp_2m",
-            "dpmpp_sde": "dpmpp_sde",
-            "ddim": "ddim",
-            "lms": "lms",
-            "heun": "heun",
-            "uni_pc": "uni_pc",
-            "dpm_2": "dpm_2",
-            "dpm_2_ancestral": "dpm_2_ancestral"
-        };
-        const comfySchedulerMap = {
-            "euler_a": "normal",
-            "dpm++_2m": "karras",
-            "dpmpp_2m": "karras",
-            "dpm++_sde": "karras",
-            "dpmpp_sde": "karras"
+            "euler_a": "euler_ancestral", "euler": "euler",
+            "dpm++_2m": "dpmpp_2m", "dpm++_sde": "dpmpp_sde", "dpm++_2m_sde": "dpmpp_2m_sde",
+            "dpm++_3m_sde": "dpmpp_3m_sde", "dpm++_2s_ancestral": "dpmpp_2s_ancestral",
+            "dpmpp_2m": "dpmpp_2m", "dpmpp_sde": "dpmpp_sde",
+            "dpm_2": "dpm_2", "dpm_2_ancestral": "dpm_2_ancestral",
+            "dpm_fast": "dpm_fast", "dpm_adaptive": "dpm_adaptive",
+            "ddim": "ddim", "ddpm": "ddpm", "lms": "lms",
+            "heun": "heun", "heunpp2": "heunpp2", "plms": "euler",
+            "uni_pc": "uni_pc", "uni_pc_bh2": "uni_pc_bh2",
+            "lcm": "lcm", "deis": "deis", "restart": "restart"
         };
 
         const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/\+\+/g, "pp");
-        const schedulerName = comfySchedulerMap[s.sampler] || "normal";
+        const schedulerName = s.comfyScheduler || "normal";
         const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
         const denoise = parseFloat(s.comfyDenoise) || 1.0;
         const clipSkip = parseInt(s.comfyClipSkip) || 1;
@@ -2118,7 +2216,62 @@ async function genLocal(prompt, negative, s, signal) {
             log(`ComfyUI: Injected ${injectedCount} LoRA(s)`);
         }
 
-        log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}`);
+        // img2img: swap EmptyLatentImage for LoadImage + VAEEncode when reference image present
+        if (s.localRefImage && denoise < 1.0) {
+            // Upload image to ComfyUI
+            const imgData = s.localRefImage.replace(/^data:image\/.+;base64,/, '');
+            const blob = await (await fetch(`data:image/png;base64,${imgData}`)).blob();
+            const formData = new FormData();
+            formData.append("image", blob, "qig_ref.png");
+            formData.append("overwrite", "true");
+            try {
+                const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
+                    method: "POST",
+                    body: formData,
+                    signal
+                });
+                if (uploadRes.ok) {
+                    const uploadData = await uploadRes.json();
+                    const uploadedName = uploadData.name || "qig_ref.png";
+
+                    // Replace EmptyLatentImage (node 5) with LoadImage
+                    workflowNodes["5"] = {
+                        class_type: "LoadImage",
+                        inputs: { image: uploadedName }
+                    };
+                    // Add VAEEncode node (node 15) to encode the loaded image to latent
+                    const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
+                    workflowNodes["15"] = {
+                        class_type: "VAEEncode",
+                        inputs: { pixels: ["5", 0], vae: vaeRef }
+                    };
+                    // Rewire KSampler latent_image to VAEEncode output
+                    workflowNodes["3"].inputs.latent_image = ["15", 0];
+                    log(`ComfyUI: img2img mode — uploaded reference image as "${uploadedName}", denoise=${denoise}`);
+                } else {
+                    log(`ComfyUI: Failed to upload reference image (${uploadRes.status}), falling back to txt2img`);
+                }
+            } catch (uploadErr) {
+                log(`ComfyUI: Image upload error: ${uploadErr.message}, falling back to txt2img`);
+            }
+        }
+
+        // Upscale: inject UpscaleModelLoader + ImageUpscaleWithModel between VAEDecode and SaveImage
+        if (s.comfyUpscale && s.comfyUpscaleModel) {
+            workflowNodes["30"] = {
+                class_type: "UpscaleModelLoader",
+                inputs: { model_name: s.comfyUpscaleModel }
+            };
+            workflowNodes["31"] = {
+                class_type: "ImageUpscaleWithModel",
+                inputs: { upscale_model: ["30", 0], image: ["8", 0] }
+            };
+            // Rewire SaveImage to take upscaled output instead of VAEDecode
+            workflowNodes["9"].inputs.images = ["31", 0];
+            log(`ComfyUI: Upscale enabled with model=${s.comfyUpscaleModel}`);
+        }
+
+        log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}${s.localRefImage && denoise < 1.0 ? ', mode=img2img' : ''}${s.comfyUpscale ? ', upscale=' + s.comfyUpscaleModel : ''}`);
 
         const res = await corsFetch(`${baseUrl}/prompt`, {
             method: "POST",
@@ -2170,9 +2323,21 @@ async function genLocal(prompt, negative, s, signal) {
         height: s.height,
         steps: s.steps,
         cfg_scale: s.cfgScale,
-        sampler_name: s.sampler,
+        sampler_name: SAMPLER_DISPLAY_NAMES[s.sampler] || s.sampler,
+        scheduler: s.a1111Scheduler || "Automatic",
         seed: s.seed
     };
+
+    // Restore Faces & Tiling
+    if (s.a1111RestoreFaces) payload.restore_faces = true;
+    if (s.a1111Tiling) payload.tiling = true;
+
+    // Variation Seed / Subseed
+    const subseedStrength = parseFloat(s.a1111SubseedStrength) || 0;
+    if (subseedStrength > 0) {
+        payload.subseed = s.a1111Subseed ?? -1;
+        payload.subseed_strength = subseedStrength;
+    }
 
     // LoRA injection via A1111 prompt syntax
     if (s.a1111Loras && s.a1111Loras.trim()) {
@@ -2200,6 +2365,12 @@ async function genLocal(prompt, negative, s, signal) {
         payload.override_settings.CLIP_stop_at_last_layers = clipSkip;
     }
 
+    // VAE override
+    if (s.a1111Vae) {
+        payload.override_settings = payload.override_settings || {};
+        payload.override_settings.sd_vae = s.a1111Vae;
+    }
+
     // Hires Fix (txt2img only)
     if (s.a1111HiresFix && !isImg2Img) {
         payload.enable_hr = true;
@@ -2207,19 +2378,53 @@ async function genLocal(prompt, negative, s, signal) {
         payload.hr_scale = parseFloat(s.a1111HiresScale) || 2;
         payload.hr_second_pass_steps = parseInt(s.a1111HiresSteps) || 0;
         payload.denoising_strength = parseFloat(s.a1111HiresDenoise) || 0.55;
-        log(`A1111: Hires Fix: upscaler=${payload.hr_upscaler}, scale=${payload.hr_scale}, denoise=${payload.denoising_strength}`);
+        if (s.a1111HiresSampler) payload.hr_sampler_name = s.a1111HiresSampler;
+        if (s.a1111HiresScheduler) payload.hr_scheduler = s.a1111HiresScheduler;
+        if (s.a1111HiresPrompt) payload.hr_prompt = s.a1111HiresPrompt;
+        if (s.a1111HiresNegative) payload.hr_negative_prompt = s.a1111HiresNegative;
+        const hiresResizeX = parseInt(s.a1111HiresResizeX) || 0;
+        const hiresResizeY = parseInt(s.a1111HiresResizeY) || 0;
+        if (hiresResizeX > 0) payload.hr_resize_x = hiresResizeX;
+        if (hiresResizeY > 0) payload.hr_resize_y = hiresResizeY;
+        log(`A1111: Hires Fix: upscaler=${payload.hr_upscaler}, scale=${payload.hr_scale}, denoise=${payload.denoising_strength}${payload.hr_sampler_name ? ', sampler=' + payload.hr_sampler_name : ''}${payload.hr_scheduler ? ', scheduler=' + payload.hr_scheduler : ''}${hiresResizeX ? ', resize=' + hiresResizeX + 'x' + hiresResizeY : ''}`);
     }
 
     // ADetailer
     if (s.a1111Adetailer) {
+        const buildADetailerUnit = (model, prompt, neg, denoise, confidence, maskBlur, dilateErode, inpaintOnly, inpaintPadding) => ({
+            ad_model: model,
+            ad_prompt: prompt || "",
+            ad_negative_prompt: neg || "",
+            ad_denoising_strength: parseFloat(denoise) ?? 0.4,
+            ad_confidence: parseFloat(confidence) ?? 0.3,
+            ad_mask_blur: parseInt(maskBlur) ?? 4,
+            ad_dilate_erode: parseInt(dilateErode) ?? 4,
+            ad_inpaint_only_masked: inpaintOnly ?? true,
+            ad_inpaint_only_masked_padding: parseInt(inpaintPadding) ?? 32
+        });
+
         payload.alwayson_scripts = payload.alwayson_scripts || {};
-        payload.alwayson_scripts.ADetailer = {
-            args: [true, {
-                ad_model: s.a1111AdetailerModel || "face_yolov8n.pt",
-                ad_prompt: s.a1111AdetailerPrompt || "",
-                ad_negative_prompt: s.a1111AdetailerNegative || ""
-            }]
-        };
+        const adUnit1 = buildADetailerUnit(
+            s.a1111AdetailerModel || "face_yolov8n.pt",
+            s.a1111AdetailerPrompt, s.a1111AdetailerNegative,
+            s.a1111AdetailerDenoise, s.a1111AdetailerConfidence,
+            s.a1111AdetailerMaskBlur, s.a1111AdetailerDilateErode,
+            s.a1111AdetailerInpaintOnlyMasked, s.a1111AdetailerInpaintPadding
+        );
+        const adArgs = [true, adUnit1];
+
+        if (s.a1111Adetailer2) {
+            const adUnit2 = buildADetailerUnit(
+                s.a1111Adetailer2Model || "hand_yolov8n.pt",
+                s.a1111Adetailer2Prompt, s.a1111Adetailer2Negative,
+                s.a1111Adetailer2Denoise, s.a1111Adetailer2Confidence,
+                s.a1111Adetailer2MaskBlur, s.a1111Adetailer2DilateErode,
+                s.a1111Adetailer2InpaintOnlyMasked, s.a1111Adetailer2InpaintPadding
+            );
+            adArgs.push(adUnit2);
+        }
+
+        payload.alwayson_scripts.ADetailer = { args: adArgs };
     }
 
     // Save to WebUI output folder
@@ -2270,7 +2475,40 @@ async function genLocal(prompt, negative, s, signal) {
         log(`A1111/Forge: Using IP-Adapter Face with preprocessor=${ipAdapterPreprocessor}, model=${ipAdapterModel}, weight=${s.a1111IpAdapterWeight}`);
     }
 
-    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, loras=${s.a1111Loras || 'none'}, hires=${s.a1111HiresFix && !isImg2Img ? 'on' : 'off'}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}`);
+    // Generic ControlNet
+    if (s.a1111ControlNet && s.a1111ControlNetModel) {
+        const cnUnit = {
+            enabled: true,
+            module: s.a1111ControlNetModule || "none",
+            model: s.a1111ControlNetModel,
+            weight: parseFloat(s.a1111ControlNetWeight) ?? 1.0,
+            resize_mode: s.a1111ControlNetResizeMode || "Crop and Resize",
+            control_mode: s.a1111ControlNetControlMode || "Balanced",
+            pixel_perfect: s.a1111ControlNetPixelPerfect ?? true,
+            guidance_start: parseFloat(s.a1111ControlNetGuidanceStart) || 0,
+            guidance_end: parseFloat(s.a1111ControlNetGuidanceEnd) || 1
+        };
+        if (s.a1111ControlNetImage) {
+            const cnImageData = s.a1111ControlNetImage.replace(/^data:image\/.+;base64,/, '');
+            cnUnit.image = cnImageData;
+            cnUnit.input_image = cnImageData;
+        }
+
+        payload.alwayson_scripts = payload.alwayson_scripts || {};
+        if (payload.alwayson_scripts.ControlNet) {
+            // IP-Adapter already registered a unit — append this as a second unit
+            payload.alwayson_scripts.ControlNet.args.push(cnUnit);
+            if (payload.alwayson_scripts["sd_forge_controlnet"]) {
+                payload.alwayson_scripts["sd_forge_controlnet"].args.push(cnUnit);
+            }
+        } else {
+            payload.alwayson_scripts.ControlNet = { args: [cnUnit] };
+            payload.alwayson_scripts["sd_forge_controlnet"] = { args: [cnUnit] };
+        }
+        log(`A1111: Generic ControlNet: model=${s.a1111ControlNetModel}, module=${cnUnit.module}, weight=${cnUnit.weight}, image=${s.a1111ControlNetImage ? 'yes' : 'no'}`);
+    }
+
+    log(`A1111: steps=${s.steps}, cfg=${s.cfgScale}, clip_skip=${clipSkip}, loras=${s.a1111Loras || 'none'}, hires=${s.a1111HiresFix && !isImg2Img ? 'on' : 'off'}, adetailer=${s.a1111Adetailer ? 'on' : 'off'}, ip-adapter=${s.a1111IpAdapter && s.localRefImage ? 'on' : 'off'}, controlnet=${s.a1111ControlNet ? 'on' : 'off'}`);
 
     // Start progress polling
     let progressInterval = null;
@@ -3866,13 +4104,16 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
         localModel: s.localModel || "",
         comfyDenoise: s.comfyDenoise ?? 1.0,
         comfyClipSkip: s.comfyClipSkip ?? 1,
+        comfyScheduler: s.comfyScheduler || "normal",
+        comfyUpscale: !!s.comfyUpscale,
+        comfyUpscaleModel: s.comfyUpscaleModel || "RealESRGAN_x4plus.pth",
         comfyLoras: s.comfyLoras || "",
         comfyWorkflow: s.comfyWorkflow || "",
         comfySkipNegativePrompt: !!s.comfySkipNegativePrompt,
@@ -3997,7 +4238,7 @@ function deleteSelectedComfyWorkflowPreset() {
 }
 
 // === Generation Presets ===
-const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds"];
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength"];
 
 function savePreset() {
     const name = prompt("Preset name:");
@@ -4215,8 +4456,12 @@ function syncA1111VisibilityFromSettings(s) {
     if (hiresOpts) hiresOpts.style.display = s.a1111HiresFix ? "block" : "none";
     const adetailerOpts = document.getElementById("qig-a1111-adetailer-opts");
     if (adetailerOpts) adetailerOpts.style.display = s.a1111Adetailer ? "block" : "none";
+    const ad2Opts = document.getElementById("qig-a1111-ad2-opts");
+    if (ad2Opts) ad2Opts.style.display = s.a1111Adetailer2 ? "block" : "none";
     const ipadapterOpts = document.getElementById("qig-a1111-ipadapter-opts");
     if (ipadapterOpts) ipadapterOpts.style.display = s.a1111IpAdapter ? "block" : "none";
+    const controlnetOpts = document.getElementById("qig-a1111-controlnet-opts");
+    if (controlnetOpts) controlnetOpts.style.display = s.a1111ControlNet ? "block" : "none";
 }
 
 function refreshProviderInputs(provider) {
@@ -4236,20 +4481,51 @@ function refreshProviderInputs(provider) {
             ["qig-local-denoise", "localDenoise"],
             ["qig-comfy-denoise", "comfyDenoise"],
             ["qig-comfy-clip", "comfyClipSkip"],
+            ["qig-comfy-scheduler", "comfyScheduler"],
+            ["qig-comfy-upscale", "comfyUpscale"],
+            ["qig-comfy-upscale-model", "comfyUpscaleModel"],
             ["qig-comfy-workflow", "comfyWorkflow"],
             ["qig-comfy-loras", "comfyLoras"],
             ["qig-a1111-model", "a1111Model"],
             ["qig-a1111-clip", "a1111ClipSkip"],
+            ["qig-a1111-scheduler", "a1111Scheduler"],
+            ["qig-a1111-restore-faces", "a1111RestoreFaces"],
+            ["qig-a1111-tiling", "a1111Tiling"],
+            ["qig-a1111-subseed", "a1111Subseed"],
+            ["qig-a1111-subseed-strength", "a1111SubseedStrength"],
             ["qig-a1111-loras", "a1111Loras"],
+            ["qig-a1111-vae", "a1111Vae"],
             ["qig-a1111-hires", "a1111HiresFix"],
             ["qig-a1111-hires-upscaler", "a1111HiresUpscaler"],
             ["qig-a1111-hires-scale", "a1111HiresScale"],
             ["qig-a1111-hires-steps", "a1111HiresSteps"],
             ["qig-a1111-hires-denoise", "a1111HiresDenoise"],
+            ["qig-a1111-hires-sampler", "a1111HiresSampler"],
+            ["qig-a1111-hires-scheduler", "a1111HiresScheduler"],
+            ["qig-a1111-hires-prompt", "a1111HiresPrompt"],
+            ["qig-a1111-hires-negative", "a1111HiresNegative"],
+            ["qig-a1111-hires-resize-x", "a1111HiresResizeX"],
+            ["qig-a1111-hires-resize-y", "a1111HiresResizeY"],
             ["qig-a1111-adetailer", "a1111Adetailer"],
             ["qig-a1111-adetailer-model", "a1111AdetailerModel"],
             ["qig-a1111-ad-prompt", "a1111AdetailerPrompt"],
             ["qig-a1111-ad-negative", "a1111AdetailerNegative"],
+            ["qig-a1111-ad-denoise", "a1111AdetailerDenoise"],
+            ["qig-a1111-ad-confidence", "a1111AdetailerConfidence"],
+            ["qig-a1111-ad-mask-blur", "a1111AdetailerMaskBlur"],
+            ["qig-a1111-ad-dilate", "a1111AdetailerDilateErode"],
+            ["qig-a1111-ad-inpaint-only", "a1111AdetailerInpaintOnlyMasked"],
+            ["qig-a1111-ad-inpaint-padding", "a1111AdetailerInpaintPadding"],
+            ["qig-a1111-ad2-enable", "a1111Adetailer2"],
+            ["qig-a1111-ad2-model", "a1111Adetailer2Model"],
+            ["qig-a1111-ad2-prompt", "a1111Adetailer2Prompt"],
+            ["qig-a1111-ad2-negative", "a1111Adetailer2Negative"],
+            ["qig-a1111-ad2-denoise", "a1111Adetailer2Denoise"],
+            ["qig-a1111-ad2-confidence", "a1111Adetailer2Confidence"],
+            ["qig-a1111-ad2-mask-blur", "a1111Adetailer2MaskBlur"],
+            ["qig-a1111-ad2-dilate", "a1111Adetailer2DilateErode"],
+            ["qig-a1111-ad2-inpaint-only", "a1111Adetailer2InpaintOnlyMasked"],
+            ["qig-a1111-ad2-inpaint-padding", "a1111Adetailer2InpaintPadding"],
             ["qig-a1111-save-webui", "a1111SaveToWebUI"],
             ["qig-a1111-ipadapter", "a1111IpAdapter"],
             ["qig-a1111-ipadapter-mode", "a1111IpAdapterMode"],
@@ -4259,6 +4535,15 @@ function refreshProviderInputs(provider) {
             ["qig-a1111-ipadapter-control", "a1111IpAdapterControlMode"],
             ["qig-a1111-ipadapter-start", "a1111IpAdapterStartStep"],
             ["qig-a1111-ipadapter-end", "a1111IpAdapterEndStep"],
+            ["qig-a1111-controlnet", "a1111ControlNet"],
+            ["qig-a1111-cn-model", "a1111ControlNetModel"],
+            ["qig-a1111-cn-module", "a1111ControlNetModule"],
+            ["qig-a1111-cn-weight", "a1111ControlNetWeight"],
+            ["qig-a1111-cn-pixel", "a1111ControlNetPixelPerfect"],
+            ["qig-a1111-cn-resize", "a1111ControlNetResizeMode"],
+            ["qig-a1111-cn-control", "a1111ControlNetControlMode"],
+            ["qig-a1111-cn-start", "a1111ControlNetGuidanceStart"],
+            ["qig-a1111-cn-end", "a1111ControlNetGuidanceEnd"],
             ["qig-comfy-skip-neg", "comfySkipNegativePrompt"],
             ["qig-comfy-flux-clip1", "comfyFluxClipModel1"],
             ["qig-comfy-flux-clip2", "comfyFluxClipModel2"],
@@ -4277,6 +4562,8 @@ function refreshProviderInputs(provider) {
         syncA1111VisibilityFromSettings(s);
         const fluxOpts = document.getElementById("qig-comfy-flux-opts");
         if (fluxOpts) fluxOpts.style.display = s.comfySkipNegativePrompt ? "block" : "none";
+        const upscaleOpts = document.getElementById("qig-comfy-upscale-opts");
+        if (upscaleOpts) upscaleOpts.style.display = s.comfyUpscale ? "block" : "none";
         const localDenoise = document.getElementById("qig-local-denoise-val");
         if (localDenoise) localDenoise.textContent = String(s.localDenoise ?? 0.75);
         const hiresDenoise = document.getElementById("qig-a1111-hires-denoise-val");
@@ -4369,7 +4656,9 @@ function createUI() {
     clearCache();
     const s = getSettings();
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
-    const samplerOpts = SAMPLERS.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${x}</option>`).join("");
+    const samplerOpts = Object.entries(SAMPLER_GROUPS).map(([group, ids]) =>
+        `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
+    ).join("");
     const comfyWorkflowPresetOpts = [
         `<option value="">-- Select Workflow Preset --</option>`,
         ...comfyWorkflows.map(w => `<option value="${esc(w.id || "")}" ${w.id === selectedComfyWorkflowId ? "selected" : ""}>${esc(w.name || "(unnamed)")}</option>`)
@@ -4514,12 +4803,30 @@ function createUI() {
                         <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
                     </select>
                     <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
-                         <label>Checkpoint Name</label>
-                         <input id="qig-local-model" type="text" value="${esc(s.localModel)}" placeholder="model.safetensors">
-                         <div class="form-hint">Must match exactly with your ComfyUI checkpoints folder</div>
+                         <label>Checkpoint</label>
+                         <div style="display:flex;gap:4px;align-items:center;">
+                             <select id="qig-local-model" style="flex:1;">
+                                 <option value="${esc(s.localModel)}" selected>${esc(s.localModel || "-- Click Refresh --")}</option>
+                             </select>
+                             <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh checkpoint list">🔄</button>
+                         </div>
+                         <div class="form-hint">Click Refresh to load checkpoints from ComfyUI, or type a name manually</div>
                          <div class="qig-row">
-                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise || 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">How much to change from the original — 1.0 = full generation</small></div>
+                            <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise || 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
+                         </div>
+                         <label>Scheduler</label>
+                         <select id="qig-comfy-scheduler">${COMFY_SCHEDULERS.map(x => `<option value="${x}" ${s.comfyScheduler === x ? "selected" : ""}>${x}</option>`).join("")}</select>
+                         <small style="opacity:0.6;font-size:10px;">Noise schedule for the sampler — karras is popular for DPM++, normal for others</small>
+                         <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
+                            <input id="qig-comfy-upscale" type="checkbox" ${s.comfyUpscale ? "checked" : ""}>
+                            <span>Upscale Output</span>
+                            <small style="opacity:0.6;font-size:10px;">(run upscale model after generation)</small>
+                         </label>
+                         <div id="qig-comfy-upscale-opts" style="display:${s.comfyUpscale ? 'block' : 'none'}; margin-left:24px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
+                             <label>Upscale Model</label>
+                             <input id="qig-comfy-upscale-model" type="text" value="${esc(s.comfyUpscaleModel || "RealESRGAN_x4plus.pth")}" placeholder="RealESRGAN_x4plus.pth">
+                             <small style="opacity:0.6;font-size:10px;">Must match filename in ComfyUI models/upscale_models/</small>
                          </div>
                          <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
                             <input id="qig-comfy-skip-neg" type="checkbox" ${s.comfySkipNegativePrompt ? "checked" : ""}>
@@ -4566,8 +4873,28 @@ function createUI() {
                          <label>LoRAs (name:weight, comma-separated)</label>
                          <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                          <input id="qig-a1111-loras" type="text" value="${esc(s.a1111Loras || "")}" placeholder="my_lora:0.8, detail_lora:0.6">
+                         <label>VAE</label>
+                         <select id="qig-a1111-vae">
+                             <option value="" ${!s.a1111Vae ? "selected" : ""}>Automatic</option>
+                         </select>
+                         <small style="opacity:0.6;font-size:10px;">Override model's built-in VAE. Click Refresh to populate list.</small>
                          <div class="qig-row" style="margin-top:8px;">
                             <div><label>CLIP Skip</label><input id="qig-a1111-clip" type="number" value="${esc(s.a1111ClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
+                            <div><label>Scheduler</label><select id="qig-a1111-scheduler">${A1111_SCHEDULERS.map(x => `<option value="${x}" ${s.a1111Scheduler === x ? "selected" : ""}>${x}</option>`).join("")}</select><small style="opacity:0.6;font-size:10px;">Noise schedule (A1111 1.6+)</small></div>
+                         </div>
+                         <div class="qig-row" style="margin-top:4px;">
+                            <label class="checkbox_label" style="flex:1;">
+                                <input id="qig-a1111-restore-faces" type="checkbox" ${s.a1111RestoreFaces ? "checked" : ""}>
+                                <span>Restore Faces</span>
+                            </label>
+                            <label class="checkbox_label" style="flex:1;">
+                                <input id="qig-a1111-tiling" type="checkbox" ${s.a1111Tiling ? "checked" : ""}>
+                                <span>Tiling</span>
+                            </label>
+                         </div>
+                         <div class="qig-row" style="margin-top:4px;">
+                             <div><label>Variation Seed</label><input id="qig-a1111-subseed" type="number" value="${esc(s.a1111Subseed ?? -1)}"><small style="opacity:0.6;font-size:10px;">-1 = random. Blends with main seed</small></div>
+                             <div><label>Variation Strength</label><input id="qig-a1111-subseed-strength" type="number" value="${esc(s.a1111SubseedStrength ?? 0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">0 = no effect, 1 = full variation</small></div>
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-hires" type="checkbox" ${s.a1111HiresFix ? "checked" : ""}>
@@ -4584,6 +4911,18 @@ function createUI() {
                              </div>
                              <label>Denoise: <span id="qig-a1111-hires-denoise-val">${s.a1111HiresDenoise || 0.55}</span></label>
                              <input id="qig-a1111-hires-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.a1111HiresDenoise || 0.55)}">
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Hires Sampler</label><select id="qig-a1111-hires-sampler"><option value="" ${!s.a1111HiresSampler ? "selected" : ""}>Same as first pass</option>${Object.entries(SAMPLER_DISPLAY_NAMES).map(([k,v]) => `<option value="${v}" ${s.a1111HiresSampler === v ? "selected" : ""}>${v}</option>`).join("")}</select></div>
+                                 <div><label>Hires Scheduler</label><select id="qig-a1111-hires-scheduler"><option value="" ${!s.a1111HiresScheduler ? "selected" : ""}>Same as first pass</option>${A1111_SCHEDULERS.map(x => `<option value="${x}" ${s.a1111HiresScheduler === x ? "selected" : ""}>${x}</option>`).join("")}</select></div>
+                             </div>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Resize W (0=use scale)</label><input id="qig-a1111-hires-resize-x" type="number" value="${esc(s.a1111HiresResizeX || 0)}" min="0" max="4096" step="8"></div>
+                                 <div><label>Resize H (0=use scale)</label><input id="qig-a1111-hires-resize-y" type="number" value="${esc(s.a1111HiresResizeY || 0)}" min="0" max="4096" step="8"></div>
+                             </div>
+                             <label>Hires Prompt (optional)</label>
+                             <input id="qig-a1111-hires-prompt" type="text" value="${esc(s.a1111HiresPrompt || "")}" placeholder="Leave empty to use main prompt">
+                             <label>Hires Negative (optional)</label>
+                             <input id="qig-a1111-hires-negative" type="text" value="${esc(s.a1111HiresNegative || "")}" placeholder="Leave empty to use main negative">
                          </div>
                          <label class="checkbox_label">
                              <input id="qig-a1111-adetailer" type="checkbox" ${s.a1111Adetailer ? "checked" : ""}>
@@ -4603,6 +4942,56 @@ function createUI() {
                              <input id="qig-a1111-ad-prompt" type="text" value="${esc(s.a1111AdetailerPrompt || "")}" placeholder="Leave empty to use main prompt">
                              <label>ADetailer Negative (optional)</label>
                              <input id="qig-a1111-ad-negative" type="text" value="${esc(s.a1111AdetailerNegative || "")}" placeholder="Leave empty to use main negative">
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Denoise</label><input id="qig-a1111-ad-denoise" type="number" value="${esc(s.a1111AdetailerDenoise ?? 0.4)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">Inpaint strength for detected regions</small></div>
+                                 <div><label>Confidence</label><input id="qig-a1111-ad-confidence" type="number" value="${esc(s.a1111AdetailerConfidence ?? 0.3)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">Detection threshold (lower = more detections)</small></div>
+                             </div>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Mask Blur</label><input id="qig-a1111-ad-mask-blur" type="number" value="${esc(s.a1111AdetailerMaskBlur ?? 4)}" min="0" max="64" step="1"></div>
+                                 <div><label>Dilate/Erode</label><input id="qig-a1111-ad-dilate" type="number" value="${esc(s.a1111AdetailerDilateErode ?? 4)}" min="-128" max="128" step="1"><small style="opacity:0.6;font-size:10px;">Positive = expand mask, negative = shrink</small></div>
+                             </div>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Inpaint Padding</label><input id="qig-a1111-ad-inpaint-padding" type="number" value="${esc(s.a1111AdetailerInpaintPadding ?? 32)}" min="0" max="256" step="4"></div>
+                                 <label class="checkbox_label" style="flex:1;margin-top:auto;">
+                                     <input id="qig-a1111-ad-inpaint-only" type="checkbox" ${s.a1111AdetailerInpaintOnlyMasked ? "checked" : ""}>
+                                     <span>Inpaint Only Masked</span>
+                                 </label>
+                             </div>
+                             <hr style="margin:8px 0;opacity:0.15;">
+                             <label class="checkbox_label">
+                                 <input id="qig-a1111-ad2-enable" type="checkbox" ${s.a1111Adetailer2 ? "checked" : ""}>
+                                 <span>ADetailer Unit 2 (e.g. hands)</span>
+                             </label>
+                             <div id="qig-a1111-ad2-opts" style="display:${s.a1111Adetailer2 ? 'block' : 'none'}; margin-left:12px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
+                                 <label>Model</label>
+                                 <select id="qig-a1111-ad2-model">
+                                     <option value="face_yolov8n.pt" ${s.a1111Adetailer2Model === "face_yolov8n.pt" ? "selected" : ""}>Face YOLOv8n</option>
+                                     <option value="face_yolov8s.pt" ${s.a1111Adetailer2Model === "face_yolov8s.pt" ? "selected" : ""}>Face YOLOv8s</option>
+                                     <option value="hand_yolov8n.pt" ${s.a1111Adetailer2Model === "hand_yolov8n.pt" ? "selected" : ""}>Hand YOLOv8n</option>
+                                     <option value="person_yolov8n-seg.pt" ${s.a1111Adetailer2Model === "person_yolov8n-seg.pt" ? "selected" : ""}>Person YOLOv8n</option>
+                                     <option value="mediapipe_face_full" ${s.a1111Adetailer2Model === "mediapipe_face_full" ? "selected" : ""}>MediaPipe Face Full</option>
+                                     <option value="mediapipe_face_short" ${s.a1111Adetailer2Model === "mediapipe_face_short" ? "selected" : ""}>MediaPipe Face Short</option>
+                                 </select>
+                                 <label>Prompt (optional)</label>
+                                 <input id="qig-a1111-ad2-prompt" type="text" value="${esc(s.a1111Adetailer2Prompt || "")}" placeholder="Leave empty to use main prompt">
+                                 <label>Negative (optional)</label>
+                                 <input id="qig-a1111-ad2-negative" type="text" value="${esc(s.a1111Adetailer2Negative || "")}" placeholder="Leave empty to use main negative">
+                                 <div class="qig-row" style="margin-top:4px;">
+                                     <div><label>Denoise</label><input id="qig-a1111-ad2-denoise" type="number" value="${esc(s.a1111Adetailer2Denoise ?? 0.4)}" min="0" max="1" step="0.05"></div>
+                                     <div><label>Confidence</label><input id="qig-a1111-ad2-confidence" type="number" value="${esc(s.a1111Adetailer2Confidence ?? 0.3)}" min="0" max="1" step="0.05"></div>
+                                 </div>
+                                 <div class="qig-row" style="margin-top:4px;">
+                                     <div><label>Mask Blur</label><input id="qig-a1111-ad2-mask-blur" type="number" value="${esc(s.a1111Adetailer2MaskBlur ?? 4)}" min="0" max="64" step="1"></div>
+                                     <div><label>Dilate/Erode</label><input id="qig-a1111-ad2-dilate" type="number" value="${esc(s.a1111Adetailer2DilateErode ?? 4)}" min="-128" max="128" step="1"></div>
+                                 </div>
+                                 <div class="qig-row" style="margin-top:4px;">
+                                     <div><label>Inpaint Padding</label><input id="qig-a1111-ad2-inpaint-padding" type="number" value="${esc(s.a1111Adetailer2InpaintPadding ?? 32)}" min="0" max="256" step="4"></div>
+                                     <label class="checkbox_label" style="flex:1;margin-top:auto;">
+                                         <input id="qig-a1111-ad2-inpaint-only" type="checkbox" ${s.a1111Adetailer2InpaintOnlyMasked ? "checked" : ""}>
+                                         <span>Inpaint Only Masked</span>
+                                     </label>
+                                 </div>
+                             </div>
                          </div>
                          <label class="checkbox_label" style="margin-top:8px;">
                              <input id="qig-a1111-save-webui" type="checkbox" ${s.a1111SaveToWebUI ? "checked" : ""}>
@@ -4656,6 +5045,69 @@ function createUI() {
                                  <div><label>End Step</label><input id="qig-a1111-ipadapter-end" type="number" min="0" max="1" step="0.05" value="${esc(s.a1111IpAdapterEndStep ?? 1)}"></div>
                              </div>
                              <div class="form-hint">Requires ControlNet + IP-Adapter extension with FaceID models</div>
+                         </div>
+                         <label class="checkbox_label" style="margin-top:8px;">
+                             <input id="qig-a1111-controlnet" type="checkbox" ${s.a1111ControlNet ? "checked" : ""}>
+                             <span>ControlNet (structural guidance from a control image)</span>
+                         </label>
+                         <div id="qig-a1111-controlnet-opts" style="display:${s.a1111ControlNet ? 'block' : 'none'}">
+                             <label>ControlNet Model</label>
+                             <select id="qig-a1111-cn-model">
+                                 <option value="">-- Click Refresh to load models --</option>
+                             </select>
+                             <label>Preprocessor</label>
+                             <select id="qig-a1111-cn-module">
+                                 <option value="none" ${s.a1111ControlNetModule === "none" ? "selected" : ""}>none</option>
+                                 <option value="canny" ${s.a1111ControlNetModule === "canny" ? "selected" : ""}>canny</option>
+                                 <option value="depth_midas" ${s.a1111ControlNetModule === "depth_midas" ? "selected" : ""}>depth_midas</option>
+                                 <option value="depth_zoe" ${s.a1111ControlNetModule === "depth_zoe" ? "selected" : ""}>depth_zoe</option>
+                                 <option value="openpose" ${s.a1111ControlNetModule === "openpose" ? "selected" : ""}>openpose</option>
+                                 <option value="openpose_full" ${s.a1111ControlNetModule === "openpose_full" ? "selected" : ""}>openpose_full</option>
+                                 <option value="lineart" ${s.a1111ControlNetModule === "lineart" ? "selected" : ""}>lineart</option>
+                                 <option value="lineart_anime" ${s.a1111ControlNetModule === "lineart_anime" ? "selected" : ""}>lineart_anime</option>
+                                 <option value="softedge_pidinet" ${s.a1111ControlNetModule === "softedge_pidinet" ? "selected" : ""}>softedge_pidinet</option>
+                                 <option value="scribble_pidinet" ${s.a1111ControlNetModule === "scribble_pidinet" ? "selected" : ""}>scribble_pidinet</option>
+                                 <option value="normal_bae" ${s.a1111ControlNetModule === "normal_bae" ? "selected" : ""}>normal_bae</option>
+                                 <option value="shuffle" ${s.a1111ControlNetModule === "shuffle" ? "selected" : ""}>shuffle</option>
+                                 <option value="tile_resample" ${s.a1111ControlNetModule === "tile_resample" ? "selected" : ""}>tile_resample</option>
+                                 <option value="inpaint_only" ${s.a1111ControlNetModule === "inpaint_only" ? "selected" : ""}>inpaint_only</option>
+                             </select>
+                             <label>Weight: <span id="qig-a1111-cn-weight-val">${s.a1111ControlNetWeight ?? 1.0}</span></label>
+                             <input id="qig-a1111-cn-weight" type="range" min="0" max="2" step="0.05" value="${esc(s.a1111ControlNetWeight ?? 1.0)}">
+                             <label class="checkbox_label" style="margin-top:4px;">
+                                 <input id="qig-a1111-cn-pixel" type="checkbox" ${s.a1111ControlNetPixelPerfect ? "checked" : ""}>
+                                 <span>Pixel Perfect</span>
+                             </label>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div>
+                                     <label>Control Mode</label>
+                                     <select id="qig-a1111-cn-control">
+                                         <option value="Balanced" ${s.a1111ControlNetControlMode === "Balanced" ? "selected" : ""}>Balanced</option>
+                                         <option value="My prompt is more important" ${s.a1111ControlNetControlMode === "My prompt is more important" ? "selected" : ""}>Prompt Priority</option>
+                                         <option value="ControlNet is more important" ${s.a1111ControlNetControlMode === "ControlNet is more important" ? "selected" : ""}>ControlNet Priority</option>
+                                     </select>
+                                 </div>
+                                 <div>
+                                     <label>Resize Mode</label>
+                                     <select id="qig-a1111-cn-resize">
+                                         <option value="Just Resize" ${s.a1111ControlNetResizeMode === "Just Resize" ? "selected" : ""}>Just Resize</option>
+                                         <option value="Crop and Resize" ${s.a1111ControlNetResizeMode === "Crop and Resize" ? "selected" : ""}>Crop & Resize</option>
+                                         <option value="Resize and Fill" ${s.a1111ControlNetResizeMode === "Resize and Fill" ? "selected" : ""}>Resize & Fill</option>
+                                     </select>
+                                 </div>
+                             </div>
+                             <div class="qig-row" style="margin-top:4px;">
+                                 <div><label>Guidance Start</label><input id="qig-a1111-cn-start" type="number" min="0" max="1" step="0.05" value="${esc(s.a1111ControlNetGuidanceStart ?? 0)}"></div>
+                                 <div><label>Guidance End</label><input id="qig-a1111-cn-end" type="number" min="0" max="1" step="0.05" value="${esc(s.a1111ControlNetGuidanceEnd ?? 1)}"></div>
+                             </div>
+                             <label>Control Image</label>
+                             <div style="display:flex;gap:4px;align-items:center;">
+                                 <img id="qig-a1111-cn-preview" src="${esc(s.a1111ControlNetImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.a1111ControlNetImage ? 'block' : 'none'};background:#333;">
+                                 <button id="qig-a1111-cn-upload-btn" class="menu_button" style="flex:1;">📎 Upload Control Image</button>
+                                 <button id="qig-a1111-cn-clear-btn" class="menu_button" style="width:30px;color:#e94560;display:${s.a1111ControlNetImage ? 'block' : 'none'};">×</button>
+                             </div>
+                             <input type="file" id="qig-a1111-cn-upload" accept="image/*" style="display:none">
+                             <div class="form-hint">Upload a preprocessed control image (edge map, depth map, pose, etc.) or let the preprocessor extract it</div>
                          </div>
                          <hr style="margin:8px 0;opacity:0.2;">
                          <label>Reference Image</label>
@@ -5055,6 +5507,26 @@ function createUI() {
     document.getElementById("qig-comfy-workflow-save-as").onclick = saveComfyWorkflowPresetAs;
     document.getElementById("qig-comfy-workflow-update").onclick = updateSelectedComfyWorkflowPreset;
     document.getElementById("qig-comfy-workflow-del").onclick = deleteSelectedComfyWorkflowPreset;
+    // ComfyUI model refresh
+    document.getElementById("qig-comfy-model-refresh").onclick = async () => {
+        const s = getSettings();
+        const modelSelect = document.getElementById("qig-local-model");
+        modelSelect.innerHTML = '<option value="">Loading...</option>';
+        const models = await fetchComfyUIModels(s.localUrl);
+        if (models.length > 0) {
+            const cur = s.localModel || "";
+            modelSelect.innerHTML = models.map(m =>
+                `<option value="${m}" ${m === cur ? "selected" : ""}>${m}</option>`
+            ).join("");
+            if (!cur && models.length > 0) {
+                s.localModel = models[0];
+                modelSelect.value = models[0];
+                saveSettingsDebounced();
+            }
+        } else {
+            modelSelect.innerHTML = '<option value="">-- Failed to load (check if ComfyUI running) --</option>';
+        }
+    };
     document.getElementById("qig-local-type").onchange = (e) => {
         getSettings().localType = e.target.value;
         syncLocalTypeSections(e.target.value);
@@ -5067,6 +5539,14 @@ function createUI() {
     // ComfyUI specific bindings
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
+    bind("qig-comfy-scheduler", "comfyScheduler");
+    bindCheckbox("qig-comfy-upscale", "comfyUpscale");
+    bind("qig-comfy-upscale-model", "comfyUpscaleModel");
+    document.getElementById("qig-comfy-upscale").onchange = (e) => {
+        getSettings().comfyUpscale = e.target.checked;
+        saveSettingsDebounced();
+        document.getElementById("qig-comfy-upscale-opts").style.display = e.target.checked ? "block" : "none";
+    };
     bind("qig-comfy-workflow", "comfyWorkflow");
     bind("qig-comfy-loras", "comfyLoras");
     document.getElementById("qig-comfy-skip-neg").onchange = (e) => {
@@ -5082,12 +5562,24 @@ function createUI() {
 
     // A1111 specific bindings
     bind("qig-a1111-clip", "a1111ClipSkip", true);
+    bind("qig-a1111-scheduler", "a1111Scheduler");
+    bindCheckbox("qig-a1111-restore-faces", "a1111RestoreFaces");
+    bindCheckbox("qig-a1111-tiling", "a1111Tiling");
+    bind("qig-a1111-subseed", "a1111Subseed", true);
+    bind("qig-a1111-subseed-strength", "a1111SubseedStrength", true);
     bind("qig-a1111-loras", "a1111Loras");
+    bind("qig-a1111-vae", "a1111Vae");
 
     // Hires Fix bindings
     bindCheckbox("qig-a1111-hires", "a1111HiresFix");
     bind("qig-a1111-hires-upscaler", "a1111HiresUpscaler");
     bind("qig-a1111-hires-steps", "a1111HiresSteps", true);
+    bind("qig-a1111-hires-sampler", "a1111HiresSampler");
+    bind("qig-a1111-hires-scheduler", "a1111HiresScheduler");
+    bind("qig-a1111-hires-prompt", "a1111HiresPrompt");
+    bind("qig-a1111-hires-negative", "a1111HiresNegative");
+    bind("qig-a1111-hires-resize-x", "a1111HiresResizeX", true);
+    bind("qig-a1111-hires-resize-y", "a1111HiresResizeY", true);
     document.getElementById("qig-a1111-hires-scale").onchange = (e) => {
         getSettings().a1111HiresScale = parseFloat(e.target.value);
         saveSettingsDebounced();
@@ -5109,10 +5601,32 @@ function createUI() {
     bind("qig-a1111-adetailer-model", "a1111AdetailerModel");
     bind("qig-a1111-ad-prompt", "a1111AdetailerPrompt");
     bind("qig-a1111-ad-negative", "a1111AdetailerNegative");
+    bind("qig-a1111-ad-denoise", "a1111AdetailerDenoise", true);
+    bind("qig-a1111-ad-confidence", "a1111AdetailerConfidence", true);
+    bind("qig-a1111-ad-mask-blur", "a1111AdetailerMaskBlur", true);
+    bind("qig-a1111-ad-dilate", "a1111AdetailerDilateErode", true);
+    bindCheckbox("qig-a1111-ad-inpaint-only", "a1111AdetailerInpaintOnlyMasked");
+    bind("qig-a1111-ad-inpaint-padding", "a1111AdetailerInpaintPadding", true);
     document.getElementById("qig-a1111-adetailer").onchange = (e) => {
         getSettings().a1111Adetailer = e.target.checked;
         saveSettingsDebounced();
         document.getElementById("qig-a1111-adetailer-opts").style.display = e.target.checked ? "block" : "none";
+    };
+
+    // ADetailer Unit 2 bindings
+    bind("qig-a1111-ad2-model", "a1111Adetailer2Model");
+    bind("qig-a1111-ad2-prompt", "a1111Adetailer2Prompt");
+    bind("qig-a1111-ad2-negative", "a1111Adetailer2Negative");
+    bind("qig-a1111-ad2-denoise", "a1111Adetailer2Denoise", true);
+    bind("qig-a1111-ad2-confidence", "a1111Adetailer2Confidence", true);
+    bind("qig-a1111-ad2-mask-blur", "a1111Adetailer2MaskBlur", true);
+    bind("qig-a1111-ad2-dilate", "a1111Adetailer2DilateErode", true);
+    bindCheckbox("qig-a1111-ad2-inpaint-only", "a1111Adetailer2InpaintOnlyMasked");
+    bind("qig-a1111-ad2-inpaint-padding", "a1111Adetailer2InpaintPadding", true);
+    document.getElementById("qig-a1111-ad2-enable").onchange = (e) => {
+        getSettings().a1111Adetailer2 = e.target.checked;
+        saveSettingsDebounced();
+        document.getElementById("qig-a1111-ad2-opts").style.display = e.target.checked ? "block" : "none";
     };
 
     // Save to WebUI binding
@@ -5134,6 +5648,48 @@ function createUI() {
     bind("qig-a1111-ipadapter-control", "a1111IpAdapterControlMode");
     bind("qig-a1111-ipadapter-start", "a1111IpAdapterStartStep", true);
     bind("qig-a1111-ipadapter-end", "a1111IpAdapterEndStep", true);
+
+    // Generic ControlNet bindings
+    bind("qig-a1111-cn-model", "a1111ControlNetModel");
+    bind("qig-a1111-cn-module", "a1111ControlNetModule");
+    bind("qig-a1111-cn-weight", "a1111ControlNetWeight", true);
+    bindCheckbox("qig-a1111-cn-pixel", "a1111ControlNetPixelPerfect");
+    bind("qig-a1111-cn-resize", "a1111ControlNetResizeMode");
+    bind("qig-a1111-cn-control", "a1111ControlNetControlMode");
+    bind("qig-a1111-cn-start", "a1111ControlNetGuidanceStart", true);
+    bind("qig-a1111-cn-end", "a1111ControlNetGuidanceEnd", true);
+    document.getElementById("qig-a1111-controlnet").onchange = (e) => {
+        getSettings().a1111ControlNet = e.target.checked;
+        saveSettingsDebounced();
+        document.getElementById("qig-a1111-controlnet-opts").style.display = e.target.checked ? "block" : "none";
+    };
+    document.getElementById("qig-a1111-cn-weight").oninput = (e) => {
+        document.getElementById("qig-a1111-cn-weight-val").textContent = e.target.value;
+    };
+    // ControlNet image upload
+    const cnUploadInput = document.getElementById("qig-a1111-cn-upload");
+    document.getElementById("qig-a1111-cn-upload-btn").onclick = () => cnUploadInput.click();
+    document.getElementById("qig-a1111-cn-clear-btn").onclick = () => {
+        getSettings().a1111ControlNetImage = "";
+        saveSettingsDebounced();
+        document.getElementById("qig-a1111-cn-preview").style.display = "none";
+        document.getElementById("qig-a1111-cn-clear-btn").style.display = "none";
+    };
+    cnUploadInput.onchange = (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+            getSettings().a1111ControlNetImage = ev.target.result;
+            saveSettingsDebounced();
+            const preview = document.getElementById("qig-a1111-cn-preview");
+            preview.src = ev.target.result;
+            preview.style.display = "block";
+            document.getElementById("qig-a1111-cn-clear-btn").style.display = "block";
+        };
+        reader.readAsDataURL(file);
+        e.target.value = "";
+    };
 
     // A1111 Model dropdown
     const a1111ModelSelect = document.getElementById("qig-a1111-model");
@@ -5199,6 +5755,25 @@ function createUI() {
             upscalerSelect.innerHTML = upscalers.map(u =>
                 `<option value="${u}" ${u === cur ? 'selected' : ''}>${u}</option>`
             ).join('');
+        }
+
+        // Fetch VAEs
+        const vaes = await fetchA1111VAEs(s.localUrl);
+        const vaeSelect = document.getElementById("qig-a1111-vae");
+        if (vaeSelect) {
+            const curVae = s.a1111Vae || "";
+            vaeSelect.innerHTML = `<option value="" ${!curVae ? "selected" : ""}>Automatic</option>` +
+                vaes.map(v => `<option value="${v}" ${v === curVae ? "selected" : ""}>${v}</option>`).join("");
+        }
+
+        // Populate generic ControlNet model list (all models, not just IP-Adapter)
+        const genericCnSelect = document.getElementById("qig-a1111-cn-model");
+        if (genericCnSelect && cnModels.length > 0) {
+            const curCn = s.a1111ControlNetModel || "";
+            genericCnSelect.innerHTML = `<option value="">-- Select Model --</option>` +
+                cnModels.map(m => `<option value="${m}" ${m === curCn ? "selected" : ""}>${m}</option>`).join("");
+        } else if (genericCnSelect) {
+            genericCnSelect.innerHTML = '<option value="">-- No ControlNet models found --</option>';
         }
     }
 
@@ -6184,6 +6759,7 @@ function getMetadataSettings(s) {
     return {
         steps: s.steps,
         sampler: s.sampler,
+        scheduler: s.provider === "local" && s.localType === "a1111" ? s.a1111Scheduler : undefined,
         cfgScale: s.cfgScale,
         seed: s.seed,
         width: s.width,
@@ -6303,7 +6879,8 @@ function buildMetadataString(prompt, negative, settings) {
     if (negative) parts.push(`Negative prompt: ${negative}`);
     const params = [];
     if (settings.steps) params.push(`Steps: ${settings.steps}`);
-    if (settings.sampler) params.push(`Sampler: ${settings.sampler}`);
+    if (settings.sampler) params.push(`Sampler: ${SAMPLER_DISPLAY_NAMES[settings.sampler] || settings.sampler}`);
+    if (settings.scheduler && settings.scheduler !== "Automatic") params.push(`Scheduler: ${settings.scheduler}`);
     if (settings.cfgScale) params.push(`CFG scale: ${settings.cfgScale}`);
     if (settings.seed !== undefined) params.push(`Seed: ${settings.seed}`);
     if (settings.width && settings.height) params.push(`Size: ${settings.width}x${settings.height}`);
@@ -6473,6 +7050,7 @@ function parseGenerationParameters(text) {
 
     const steps = getParam("Steps");
     const sampler = getParam("Sampler");
+    const scheduler = getParam("Scheduler");
     const cfg = getParam("CFG scale");
     const seed = getParam("Seed");
     const size = getParam("Size");
@@ -6480,6 +7058,7 @@ function parseGenerationParameters(text) {
 
     if (steps) result.steps = parseInt(steps);
     if (sampler) result.sampler = sampler;
+    if (scheduler) result.scheduler = scheduler;
     if (cfg) result.cfgScale = parseFloat(cfg);
     if (seed) result.seed = parseInt(seed);
     if (size) {
@@ -6557,23 +7136,21 @@ async function handleMetadataDrop(e) {
             // Try to map sampler (approximate match)
             if (params.sampler) {
                 const samplerMap = {
-                    "Euler a": "euler_a",
-                    "Euler": "euler",
-                    "DPM++ 2M Karras": "dpm++_2m",
-                    "DPM++ 2M": "dpm++_2m",
-                    "DPM++ SDE Karras": "dpm++_sde",
-                    "DPM++ SDE": "dpm++_sde",
-                    "DPM++ 2M SDE Karras": "dpm++_2m",
-                    "DPM++ 2M SDE": "dpm++_2m",
-                    "DDIM": "ddim",
-                    "LMS": "lms",
-                    "LMS Karras": "lms",
-                    "Heun": "heun",
-                    "DPM2": "dpm_2",
-                    "DPM2 a": "dpm_2_ancestral",
-                    "DPM2 Karras": "dpm_2",
-                    "DPM2 a Karras": "dpm_2_ancestral",
-                    "UniPC": "uni_pc",
+                    "Euler a": "euler_a", "Euler": "euler",
+                    "DPM++ 2M Karras": "dpm++_2m", "DPM++ 2M": "dpm++_2m",
+                    "DPM++ SDE Karras": "dpm++_sde", "DPM++ SDE": "dpm++_sde",
+                    "DPM++ 2M SDE Karras": "dpm++_2m_sde", "DPM++ 2M SDE": "dpm++_2m_sde",
+                    "DPM++ 3M SDE Karras": "dpm++_3m_sde", "DPM++ 3M SDE": "dpm++_3m_sde",
+                    "DPM++ 2S a Karras": "dpm++_2s_ancestral", "DPM++ 2S a": "dpm++_2s_ancestral",
+                    "DPM2": "dpm_2", "DPM2 a": "dpm_2_ancestral",
+                    "DPM2 Karras": "dpm_2", "DPM2 a Karras": "dpm_2_ancestral",
+                    "DPM fast": "dpm_fast", "DPM adaptive": "dpm_adaptive",
+                    "DDIM": "ddim", "DDPM": "ddpm",
+                    "LMS": "lms", "LMS Karras": "lms",
+                    "Heun": "heun", "Heun++ 2": "heunpp2",
+                    "PLMS": "plms",
+                    "UniPC": "uni_pc", "UniPC BH2": "uni_pc_bh2",
+                    "LCM": "lcm", "DEIS": "deis", "Restart": "restart"
                 };
                 const mapped = samplerMap[params.sampler];
                 if (mapped) {
@@ -6585,6 +7162,12 @@ async function handleMetadataDrop(e) {
                         toastr.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`);
                     }
                 }
+            }
+            // Apply scheduler from metadata
+            if (params.scheduler) {
+                s.a1111Scheduler = params.scheduler;
+                const el = document.getElementById("qig-a1111-scheduler");
+                if (el) el.value = s.a1111Scheduler;
             }
 
             saveSettingsDebounced();

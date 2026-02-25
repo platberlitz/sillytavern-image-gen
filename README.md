@@ -23,7 +23,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🚀 **Replicate** - Run AI models in the cloud (SDXL, etc.)
 - ⚡ **Fal.ai** - Fast Flux models
 - 🤝 **Together AI** - Open source models (SDXL, etc.)
-- 🖥️ **Local** - A1111/ComfyUI
+- 🖥️ **Local** - A1111/ComfyUI with comprehensive parameter coverage (22 samplers, schedulers, ADetailer, ControlNet, VAE, Hires Fix, img2img, upscale)
 - 🔌 **Reverse Proxy** - PixAI, custom endpoints with multimodal support
 
 ### Generation
@@ -69,14 +69,22 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Save to ST Server** - Optional auto-save for every generated image (persists across sessions)
 
 ### Advanced Features
-- 🎯 **Sampler Support** - Full sampler selection for NovelAI (DDIM, Euler, DPM++, etc.)
+- 🎯 **22 Samplers** - Euler, DPM++, DPM, Heun, UniPC, LCM, DEIS, Restart, and more — grouped by family in the UI
+- 📅 **Scheduler Control** - A1111 (Automatic, Karras, Exponential, SGM Uniform, etc.) and ComfyUI (normal, karras, exponential, sgm_uniform, etc.) schedulers
 - 🎭 **LoRA Support** - Multiple LoRAs with weights (Proxy, Local/A1111, CivitAI)
-- 👤 **Face Fix** - ADetailer with custom prompt/negative (Proxy, Local/A1111)
-- 🔍 **Hires Fix** - Upscale generation with configurable upscaler, scale, and denoise (A1111)
+- 👤 **ADetailer** - Face/hand fix with 2 independent units, denoise, confidence, mask blur, dilate/erode, inpaint padding, inpaint-only-masked (A1111)
+- 🎮 **ControlNet** - Full generic ControlNet support with preprocessor selection, weight, guidance range, pixel perfect, control/resize modes, and image upload — coexists with IP-Adapter (A1111)
+- 🔍 **Hires Fix** - Upscale with configurable upscaler, scale, denoise, separate sampler/scheduler, resize dimensions, and hires-specific prompt/negative (A1111)
+- 🧪 **VAE Selection** - Choose from available VAEs or use Automatic (A1111)
+- 🔄 **Restore Faces & Tiling** - Quick toggles for built-in A1111 postprocessing
+- 🎲 **Variation Seed** - Subseed and subseed strength for controlled prompt variations (A1111)
+- 🖼️ **ComfyUI img2img** - Upload reference image + set denoise < 1.0 for automatic img2img workflow (no custom JSON needed)
+- ⬆️ **ComfyUI Upscale** - Built-in upscale workflow using model-based upscalers (RealESRGAN, etc.)
+- 📋 **ComfyUI Model Fetching** - Browse and select checkpoints from your ComfyUI server instead of typing names
 - 📊 **Generation Progress** - Live progress percentage, step count, and ETA (A1111/ComfyUI)
-- 🖼️ **PNG Metadata Embedding** - Downloads embed A1111-compatible generation parameters (prompt, negative, steps, CFG, seed, size)
-- 🔄 **Metadata Round-Trip** - Drag-and-drop any A1111/embedded PNG to auto-fill settings; download to preserve them
-- ⚙️ **Full Control** - Steps, CFG, Sampler, Seed for compatible providers
+- 🖼️ **PNG Metadata Embedding** - Downloads embed A1111-compatible generation parameters (prompt, negative, steps, sampler, scheduler, CFG, seed, size)
+- 🔄 **Metadata Round-Trip** - Drag-and-drop any A1111/embedded PNG to auto-fill settings including scheduler; download to preserve them
+- ⚙️ **Full Control** - Steps, CFG, Sampler, Scheduler, Seed for compatible providers
 
 ---
 
@@ -204,7 +212,7 @@ Save and load provider configurations per-provider:
 - **Replicate**: API key, model
 - **Fal.ai**: API key, model
 - **Together AI**: API key, model
-- **Local**: URL, type (A1111/ComfyUI), checkpoint/model, Comfy workflow JSON, Comfy denoise/clip/LoRAs, A1111 and IP-Adapter settings
+- **Local**: URL, type (A1111/ComfyUI), checkpoint/model, Comfy workflow JSON, Comfy denoise/clip/scheduler/LoRAs/upscale, A1111 scheduler/VAE/restore faces/tiling/subseed, Hires Fix (full), ADetailer (2 units), ControlNet, and IP-Adapter settings
 - **Proxy**: URL, key, model, LoRAs, steps, CFG, sampler, seed, facefix, extra instructions, reference images
 
 Profiles are stored in localStorage and persist across sessions.
@@ -221,7 +229,9 @@ Each preset stores:
 - Checkpoint Name
 - Comfy Denoise
 - Comfy CLIP Skip
+- Comfy Scheduler
 - Comfy LoRAs
+- Comfy Upscale settings
 - Custom Workflow JSON
 
 Buttons:
@@ -279,7 +289,7 @@ When enabled, the override endpoint is used for:
 5. Optionally adjust temperature, max tokens, and system prompt
 
 ## Drag and Drop Metadata
-Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, CFG, Seed, Model). Images downloaded from this extension include embedded metadata, enabling full round-trip: generate → download → drag back → settings auto-fill.
+Drag and drop any A1111-generated PNG image onto the settings panel to automatically import its generation parameters (Prompt, Negative, Steps, Sampler, Scheduler, CFG, Seed, Model). Images downloaded from this extension include embedded metadata, enabling full round-trip: generate → download → drag back → settings auto-fill.
 
 ## Prompt Wildcards
 Use `{option1|option2|option3}` syntax in prompts for random selection. Each image in a batch gets a fresh random pick. Double-brace placeholders like `{{char}}` are not affected.
@@ -287,7 +297,9 @@ Use `{option1|option2|option3}` syntax in prompts for random selection. Each ima
 Example: `{red|blue|green} hair, {indoor|outdoor} scene` → each batch image gets different random combinations.
 
 ## Local Img2Img
-When using the Local (A1111) provider, you can upload a reference image to perform Image-to-Image generation. The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
+When using the Local provider, you can upload a reference image to perform Image-to-Image generation:
+- **A1111**: The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
+- **ComfyUI**: Upload a reference image and set Denoise < 1.0. The extension automatically builds an img2img workflow (no custom JSON needed).
 
 ## ComfyUI Setup (Friendly Step-by-Step)
 
@@ -327,9 +339,11 @@ Use a short prompt with a small size (for example `512x512`) and click **Generat
 ### ComfyUI Settings
 | Setting | Description |
 |---------|-------------|
-| **Checkpoint Name** | Exact filename from your ComfyUI checkpoints folder |
-| **Denoise** | Denoising strength (0-1, default 1.0) |
+| **Checkpoint Name** | Select from available checkpoints (fetched from server) or type manually |
+| **Denoise** | Denoising strength (0-1, default 1.0). Set < 1.0 with a reference image for img2img |
 | **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
+| **Scheduler** | Sampling scheduler (normal, karras, exponential, sgm_uniform, simple, ddim_uniform, beta) |
+| **Upscale** | Enable model-based upscaling after generation (RealESRGAN, etc.) |
 | **Custom Workflow** | Paste workflow JSON from ComfyUI "Save (API Format)" |
 
 ### Workflow Placeholders
@@ -346,15 +360,31 @@ Custom Workflow JSON is optional for standard SD1.5/SDXL checkpoints, but requir
 |---------|-------------|
 | **LoRAs** | Comma-separated LoRAs in `name:weight` format (e.g., `add_detail:0.7, my_lora:0.8`) |
 | **CLIP Skip** | Skip last N CLIP layers (1-12, default 1) |
+| **Scheduler** | Sampling scheduler (Automatic, Karras, Exponential, SGM Uniform, etc.) — requires A1111 1.6+ |
+| **VAE** | Select VAE model (Automatic = use model's built-in VAE) |
+| **Restore Faces** | Enable built-in face restoration postprocessing |
+| **Tiling** | Enable seamless tiling mode for texture generation |
+| **Variation Seed** | Subseed for controlled variation (-1 = random) |
+| **Variation Strength** | How much the variation seed influences the output (0 = none, 1 = full) |
 | **Hires Fix** | Enable upscaling via Hires Fix (txt2img only) |
 | **Hires Upscaler** | Upscaling algorithm (Latent, R-ESRGAN, etc. — populated from A1111 API) |
 | **Hires Scale** | Upscale factor (1-4, default 2) |
 | **Hires 2nd Pass Steps** | Sampling steps for upscale pass (0 = same as first pass) |
 | **Hires Denoise** | Denoising strength for upscale pass (0-1, default 0.55) |
+| **Hires Sampler** | Separate sampler for upscale pass (empty = same as first pass) |
+| **Hires Scheduler** | Separate scheduler for upscale pass (empty = same as first pass) |
+| **Hires Resize W/H** | Target resolution for upscale (0 = use scale factor instead) |
+| **Hires Prompt/Negative** | Override prompt/negative for upscale pass (empty = use main) |
 | **ADetailer** | Enable face/hand fix using ADetailer extension |
 | **ADetailer Model** | Detection model (face_yolov8n, hand_yolov8n, person_yolov8n, mediapipe) |
-| **ADetailer Prompt** | Custom prompt for inpainting (empty = use main prompt) |
-| **ADetailer Negative** | Custom negative for inpainting (empty = use main negative) |
+| **ADetailer Prompt/Negative** | Custom prompt for inpainting (empty = use main prompt) |
+| **ADetailer Denoise** | Denoising strength for inpainting (default 0.4) |
+| **ADetailer Confidence** | Minimum detection confidence (default 0.3) |
+| **ADetailer Mask Blur** | Blur radius for inpainting mask (default 4) |
+| **ADetailer Dilate/Erode** | Expand or shrink detection mask (default 4) |
+| **ADetailer Inpaint Padding** | Padding around detected region (default 32) |
+| **ADetailer Unit 2** | Second independent ADetailer unit (e.g., hands while unit 1 handles faces) |
+| **ControlNet** | Generic ControlNet with preprocessor selection, weight, guidance range, pixel perfect, and image upload |
 | **Save to WebUI** | Save generated images to WebUI's output folder using its configured paths, naming, and per-model subfolders |
 | **IP-Adapter Face** | Use reference image for face features only (not pose/clothes) |
 | **IP-Adapter Model** | FaceID model (Portrait, Standard, Plus v2 - SD1.5 or SDXL) |
