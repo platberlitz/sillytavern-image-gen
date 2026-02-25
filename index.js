@@ -4333,7 +4333,8 @@ function refreshAllUI(s) {
         "qig-llm-instruction": "llmCustomInstruction",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
-        "qig-inject-insert-mode": "injectInsertMode"
+        "qig-inject-insert-mode": "injectInsertMode",
+        "qig-palette-mode": "paletteMode"
     };
     Object.entries(fields).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -6699,6 +6700,10 @@ jQuery(function () {
             createUI();
             addInputButton();
             loadCharSettings();
+
+            // Ensure paletteMode select reflects saved setting after DOM insertion
+            const palModeEl = document.getElementById("qig-palette-mode");
+            if (palModeEl) palModeEl.value = getSettings().paletteMode || "direct";
 
             // Populate LLM override dropdowns if enabled
             const initSettings = getSettings();
