@@ -332,7 +332,7 @@ If your workflow uses `%model%`, set **Checkpoint Name** to the exact checkpoint
 Use a short prompt with a small size (for example `512x512`) and click **Generate**. Once this works, tune steps, CFG, and the workflow.
 
 ### Common connection issues
-- **403 Forbidden**: ComfyUI was started without `--enable-cors-header`
+- **403 Forbidden**: ComfyUI was started without `--enable-cors-header`, or ComfyUI-Manager's security check is blocking cross-origin requests. If you have ComfyUI-Manager installed, go to its settings and set **Security Level** to `normal`, then restart ComfyUI.
 - **Connection error/timeouts**: wrong URL/port or ComfyUI not running
 - **No image output**: workflow is not API format or is missing expected output wiring
 

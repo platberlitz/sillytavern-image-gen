@@ -484,7 +484,7 @@ async function corsFetch(url, opts = {}) {
             throw new TypeError(`Cannot reach ${url} (CORS). Enable enableCorsProxy in SillyTavern config.yaml or launch A1111 with --cors-allow-origins=*`);
         }
     }
-    _corsProxyState = 2;
+    if (res.status !== 403) _corsProxyState = 2;
     return res;
 }
 
@@ -578,18 +578,24 @@ async function fetchA1111VAEs(url) {
 
 async function fetchComfyNodeModelList(baseUrl, nodeClass, inputKey) {
     const res = await corsFetch(`${baseUrl}/object_info/${nodeClass}`);
-    if (!res.ok) return [];
+    if (!res.ok) {
+        if (res.status === 403) {
+            throw new Error("ComfyUI returned 403 Forbidden. This is usually caused by ComfyUI-Manager's security check. Fix: in ComfyUI-Manager settings, set Security Level to 'normal', then restart ComfyUI. Also ensure ComfyUI is launched with --enable-cors-header.");
+        }
+        return [];
+    }
     const data = await res.json();
     const values = data?.[nodeClass]?.input?.required?.[inputKey]?.[0];
     return Array.isArray(values) ? values : [];
 }
 
 async function fetchComfyUIModels(url, preferUnet = false) {
+    const rethrow403 = (e) => { if (e.message?.includes("403 Forbidden")) throw e; return []; };
     try {
         const baseUrl = url.replace(/\/$/, "");
         const [ckpts, unets] = await Promise.all([
-            fetchComfyNodeModelList(baseUrl, "CheckpointLoaderSimple", "ckpt_name").catch(() => []),
-            fetchComfyNodeModelList(baseUrl, "UNETLoader", "unet_name").catch(() => [])
+            fetchComfyNodeModelList(baseUrl, "CheckpointLoaderSimple", "ckpt_name").catch(rethrow403),
+            fetchComfyNodeModelList(baseUrl, "UNETLoader", "unet_name").catch(rethrow403)
         ]);
 
         if (preferUnet) {
@@ -608,6 +614,7 @@ async function fetchComfyUIModels(url, preferUnet = false) {
         return [];
     } catch (e) {
         log("Failed to fetch ComfyUI models: " + e.message);
+        if (e.message?.includes("403 Forbidden")) throw e;
         return [];
     }
 }
@@ -2316,7 +2323,8 @@ async function genLocal(prompt, negative, s, signal) {
         if (!res.ok) {
             let detail = "";
             try { const b = await res.json(); detail = b.error?.message || b.error || ""; } catch {}
-            throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}`);
+            const hint403 = res.status === 403 ? " (Hint: ComfyUI-Manager's security check may be blocking this request. In ComfyUI-Manager settings, set Security Level to 'normal', then restart ComfyUI. Also ensure --enable-cors-header is set.)" : "";
+            throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}${hint403}`);
         }
         const data = await res.json();
         // Poll for result - find any SaveImage output
@@ -5675,7 +5683,17 @@ function createUI() {
         const s = getSettings();
         const modelSelect = document.getElementById("qig-local-model");
         modelSelect.innerHTML = '<option value="">Loading...</option>';
-        const models = await fetchComfyUIModels(s.localUrl, isComfyFluxMode(s));
+        let models;
+        try {
+            models = await fetchComfyUIModels(s.localUrl, isComfyFluxMode(s));
+        } catch (e) {
+            if (e.message?.includes("403 Forbidden")) {
+                modelSelect.innerHTML = '<option value="">-- 403 Forbidden (see error) --</option>';
+                toastr?.error?.(e.message, "ComfyUI Connection Error", { timeOut: 0, extendedTimeOut: 0 });
+                return;
+            }
+            models = [];
+        }
         if (models.length > 0) {
             const cur = s.localModel || "";
             modelSelect.innerHTML = models.map(m =>
