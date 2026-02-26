@@ -4376,7 +4376,7 @@ function savePreset() {
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
-    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to save preset. Browser storage may be full.")) return;
@@ -4400,7 +4400,7 @@ function loadPreset(i) {
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
-    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
     saveSettingsDebounced();
     refreshAllUI(s);
@@ -5604,7 +5604,11 @@ function createUI() {
 
     document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", html);
 
-    document.getElementById("qig-generate-btn").onclick = generateImage;
+    document.getElementById("qig-generate-btn").onclick = () => {
+        const mode = getSettings().paletteMode || "direct";
+        if (mode === "inject") generateImageInjectPalette();
+        else generateImage();
+    };
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
