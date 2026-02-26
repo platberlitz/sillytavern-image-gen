@@ -397,7 +397,9 @@ const SAMPLERS = [
     // Unified Predictor-Corrector
     "uni_pc", "uni_pc_bh2",
     // Specialty
-    "lcm", "deis", "restart"
+    "lcm", "deis", "restart",
+    // Anima
+    "er_sde"
 ];
 
 // Display names for samplers (used in HTML select and A1111 API)
@@ -408,7 +410,8 @@ const SAMPLER_DISPLAY_NAMES = {
     "dpm_2": "DPM2", "dpm_2_ancestral": "DPM2 a", "dpm_fast": "DPM fast", "dpm_adaptive": "DPM adaptive",
     "ddim": "DDIM", "ddpm": "DDPM", "lms": "LMS", "heun": "Heun", "heunpp2": "Heun++ 2", "plms": "PLMS",
     "uni_pc": "UniPC", "uni_pc_bh2": "UniPC BH2",
-    "lcm": "LCM", "deis": "DEIS", "restart": "Restart"
+    "lcm": "LCM", "deis": "DEIS", "restart": "Restart",
+    "er_sde": "ER SDE"
 };
 
 // Sampler grouping for <optgroup> display
@@ -418,12 +421,13 @@ const SAMPLER_GROUPS = {
     "DPM": ["dpm_2", "dpm_2_ancestral", "dpm_fast", "dpm_adaptive"],
     "Classic": ["ddim", "ddpm", "lms", "heun", "heunpp2", "plms"],
     "UniPC": ["uni_pc", "uni_pc_bh2"],
-    "Specialty": ["lcm", "deis", "restart"]
+    "Specialty": ["lcm", "deis", "restart"],
+    "Anima": ["er_sde"]
 };
 
 const A1111_SCHEDULERS = ["Automatic", "Uniform", "Karras", "Exponential", "Polyexponential", "SGM Uniform", "Simple", "Normal", "DDIM", "Beta"];
 
-const COMFY_SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta"];
+const COMFY_SCHEDULERS = ["normal", "karras", "exponential", "sgm_uniform", "simple", "ddim_uniform", "beta", "kl_optimal"];
 
 const logs = [];
 function log(msg) {
