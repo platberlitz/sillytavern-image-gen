@@ -954,6 +954,109 @@ function getActiveFilters() {
     return contextualFilters.filter(f => !f.charId || String(f.charId) === String(charId));
 }
 
+function splitPromptTokens(text) {
+    return String(text || "")
+        .split(",")
+        .map(t => t.trim())
+        .filter(Boolean);
+}
+
+function previewTextForLog(text, maxLen = 90) {
+    const compact = String(text || "").replace(/\s+/g, " ").trim();
+    if (!compact) return "";
+    if (compact.length <= maxLen) return compact;
+    return `${compact.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function previewTokenListForLog(tokens, maxItems = 3) {
+    const list = Array.isArray(tokens) ? tokens.filter(Boolean) : [];
+    if (!list.length) return "";
+    const shown = list.slice(0, maxItems).map(t => previewTextForLog(t, 36));
+    if (list.length > maxItems) shown.push(`+${list.length - maxItems} more`);
+    return shown.join(" | ");
+}
+
+function getPromptTokenIdentity(token) {
+    const normalized = String(token || "").trim().toLowerCase().replace(/\s+/g, " ");
+    if (!normalized) return "";
+    // Match LoRA tags by name only so <lora:foo:0.6> removes <lora:foo:1.0>.
+    const loraMatch = normalized.match(/^<\s*lora\s*:\s*([^:>]+?)\s*(?::\s*[^>]+)?\s*>$/i);
+    if (loraMatch) return `lora:${loraMatch[1].trim()}`;
+    return `text:${normalized}`;
+}
+
+function appendPromptText(base, addition) {
+    const add = String(addition || "").trim();
+    if (!add) return String(base || "");
+    return base ? `${base}, ${add}` : add;
+}
+
+function removeTokensFromPromptText(text, removalList) {
+    const removals = new Set(
+        splitPromptTokens(removalList)
+            .map(getPromptTokenIdentity)
+            .filter(Boolean)
+    );
+    const sourceTokens = splitPromptTokens(text);
+    if (!removals.size || !sourceTokens.length) {
+        return { text: String(text || ""), removedTokens: [] };
+    }
+    const kept = [];
+    const removed = [];
+    for (const token of sourceTokens) {
+        const identity = getPromptTokenIdentity(token);
+        if (identity && removals.has(identity)) {
+            removed.push(token);
+        } else {
+            kept.push(token);
+        }
+    }
+    return { text: kept.join(", "), removedTokens: removed };
+}
+
+function applyFilterRemovals(prompt, negative, filter) {
+    const mode = filter?.removeMode || "remove";
+    const removedFromPrompt = removeTokensFromPromptText(prompt, filter?.removePositive);
+    const removedFromNegative = removeTokensFromPromptText(negative, filter?.removeNegative);
+    let nextNegative = removedFromNegative.text;
+    if (mode === "moveToNegative" && removedFromPrompt.removedTokens.length) {
+        nextNegative = appendPromptText(nextNegative, removedFromPrompt.removedTokens.join(", "));
+    }
+    return {
+        prompt: removedFromPrompt.text,
+        negative: nextNegative,
+        removedPositiveTokens: removedFromPrompt.removedTokens,
+        removedNegativeTokens: removedFromNegative.removedTokens,
+        removedCount: removedFromPrompt.removedTokens.length + removedFromNegative.removedTokens.length,
+    };
+}
+
+function applyMatchedFiltersWithDebug(prompt, negative, filters, labelPrefix = "Contextual filter") {
+    let p = prompt;
+    let n = negative;
+    let removedCount = 0;
+    for (const f of (filters || [])) {
+        const beforeP = p;
+        const beforeN = n;
+        const removed = applyFilterRemovals(p, n, f);
+        p = removed.prompt;
+        n = removed.negative;
+        removedCount += removed.removedCount;
+        if (f.positive) p = appendPromptText(p, f.positive);
+        if (f.negative) n = appendPromptText(n, f.negative);
+        const deltas = [];
+        const removedPositivePreview = previewTokenListForLog(removed.removedPositiveTokens);
+        const removedNegativePreview = previewTokenListForLog(removed.removedNegativeTokens);
+        if (removedPositivePreview) deltas.push(`-P[${removedPositivePreview}]`);
+        if (removedNegativePreview) deltas.push(`-N[${removedNegativePreview}]`);
+        if (f.positive) deltas.push(`+P[${previewTextForLog(f.positive, 60)}]`);
+        if (f.negative) deltas.push(`+N[${previewTextForLog(f.negative, 60)}]`);
+        const changed = beforeP !== p || beforeN !== n;
+        log(`${labelPrefix} "${f.name || "(unnamed)"}" p${f.priority || 0}: ${deltas.join(" ") || "no-op"}${changed ? ` => P:${previewTextForLog(p)} | N:${previewTextForLog(n)}` : ""}`);
+    }
+    return { prompt: p, negative: n, removedCount };
+}
+
 function applyContextualFilters(prompt, negative, sceneText) {
     const activeFilters = getActiveFilters();
     if (!activeFilters.length || !sceneText) return { prompt, negative };
@@ -980,13 +1083,9 @@ function applyContextualFilters(prompt, negative, sceneText) {
             [...f._keywords].every(kw => af._keywords.has(kw))
         );
     });
-    let p = prompt, n = negative;
-    for (const f of surviving) {
-        if (f.positive) p = p ? `${p}, ${f.positive}` : f.positive;
-        if (f.negative) n = n ? `${n}, ${f.negative}` : f.negative;
-    }
-    log(`Contextual filters: ${surviving.length} applied (${matched.length - surviving.length} suppressed)`);
-    return { prompt: p, negative: n };
+    const applied = applyMatchedFiltersWithDebug(prompt, negative, surviving, "Contextual filter");
+    log(`Contextual filters: ${surviving.length} applied (${matched.length - surviving.length} suppressed, ${applied.removedCount} token(s) removed)`);
+    return { prompt: applied.prompt, negative: applied.negative };
 }
 
 async function matchLLMFilters(sceneText) {
@@ -3880,7 +3979,7 @@ function saveContextualFilters() {
 
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", priority: 0, description: "", charId: null };
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null };
     const isLLM = f.matchMode === "LLM";
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
@@ -3914,6 +4013,11 @@ function showFilterDialog(filter) {
                 <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${escapeHtml(f.positive)}</textarea>
                 <label style="font-size:11px;">Negative Prompt</label>
                 <textarea id="qig-fd-negative" style="width:100%;height:40px;resize:vertical;" placeholder="solo, 1boy">${escapeHtml(f.negative)}</textarea>
+                <label style="font-size:11px;">Remove From Positive (comma-separated)</label>
+                <textarea id="qig-fd-remove-positive" style="width:100%;height:40px;resize:vertical;" placeholder="<lora:general_style>, solo">${escapeHtml(f.removePositive || "")}</textarea>
+                <label style="font-size:11px;">Remove From Negative (comma-separated)</label>
+                <textarea id="qig-fd-remove-negative" style="width:100%;height:40px;resize:vertical;" placeholder="blurry, watermark">${escapeHtml(f.removeNegative || "")}</textarea>
+                <small style="display:block;opacity:0.65;font-size:10px;margin-bottom:8px;">LoRA removals match by name (weight-insensitive): &lt;lora:foo&gt; removes any &lt;lora:foo:*&gt;</small>
                 <label style="font-size:11px;">Priority (higher overrides lower)</label>
                 <input id="qig-fd-priority" type="number" value="${f.priority || 0}" style="width:80px;margin-bottom:12px;">
                 <div style="display:flex;gap:8px;justify-content:flex-end;">
@@ -3946,6 +4050,9 @@ function showFilterDialog(filter) {
                     description: mode === "LLM" ? description : "",
                     positive: document.getElementById("qig-fd-positive").value.trim(),
                     negative: document.getElementById("qig-fd-negative").value.trim(),
+                    removePositive: document.getElementById("qig-fd-remove-positive").value.trim(),
+                    removeNegative: document.getElementById("qig-fd-remove-negative").value.trim(),
+                    removeMode: "remove",
                     priority: parseInt(document.getElementById("qig-fd-priority").value) || 0,
                     charId: scopeVal || null
                 });
@@ -4047,8 +4154,15 @@ function renderContextualFilters() {
         const eName = escapeHtml(f.name);
         const eDesc = escapeHtml(f.description || '');
         const eKeywords = escapeHtml(f.keywords || '');
+        const eRemovePos = escapeHtml(f.removePositive || '');
+        const eRemoveNeg = escapeHtml(f.removeNegative || '');
         const eId = escapeHtml(f.id);
         const eMode = escapeHtml(f.matchMode);
+        const eDetail = f.matchMode === "LLM" ? eDesc : eKeywords;
+        const eRemovalInfo = [
+            eRemovePos ? `Remove +: ${eRemovePos}` : "",
+            eRemoveNeg ? `Remove -: ${eRemoveNeg}` : "",
+        ].filter(Boolean).join("\n");
         const isGlobal = !f.charId;
         const badge = isGlobal
             ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global filter">G</span>`
@@ -4056,7 +4170,7 @@ function renderContextualFilters() {
         return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
         badge +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${f.matchMode === 'LLM' ? eDesc : eKeywords}\nPriority: ${f.priority}">${eName}</button>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
         `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}</span>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${eId}')">×</button>` +
@@ -6433,9 +6547,11 @@ async function generateImageInjectPalette() {
             // Apply LLM-matched concept filters
             const llmMatched = await matchLLMFilters(extractedPrompt);
             checkAborted(cancelCheckpoint);
-            for (const f of llmMatched) {
-                if (f.positive) prompt = `${prompt}, ${f.positive}`;
-                if (f.negative) negative = `${negative}, ${f.negative}`;
+            if (llmMatched.length) {
+                const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
+                prompt = llmApplied.prompt;
+                negative = llmApplied.negative;
+                log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
             }
 
             lastPrompt = prompt;
@@ -6573,9 +6689,11 @@ async function generateImage() {
     const llmSceneText = scenePrompt || basePrompt;
     const llmMatched = await matchLLMFilters(llmSceneText);
     checkAborted(cancelCheckpoint);
-    for (const f of llmMatched) {
-        if (f.positive) prompt = `${prompt}, ${f.positive}`;
-        if (f.negative) negative = `${negative}, ${f.negative}`;
+    if (llmMatched.length) {
+        const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
+        prompt = llmApplied.prompt;
+        negative = llmApplied.negative;
+        log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
     }
 
     lastPrompt = prompt;
@@ -6803,9 +6921,11 @@ async function processInjectMessage(messageText, messageIndex) {
                 // Apply LLM-matched concept filters
                 const llmMatched = await matchLLMFilters(extractedPrompt);
                 checkAborted(cancelCheckpoint);
-                for (const f of llmMatched) {
-                    if (f.positive) prompt = `${prompt}, ${f.positive}`;
-                    if (f.negative) negative = `${negative}, ${f.negative}`;
+                if (llmMatched.length) {
+                    const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
+                    prompt = llmApplied.prompt;
+                    negative = llmApplied.negative;
+                    log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
                 }
 
                 lastPrompt = prompt;

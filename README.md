@@ -5,6 +5,12 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.4.5
+- Contextual Filters now support **Remove From Positive/Negative** rules so you can remove conflicting tokens before adding new ones.
+- LoRA removal matching is **name-based** (weight-insensitive), so `<lora:foo>` removes any `<lora:foo:*>` variant.
+- LLM contextual filters now use the same remove+append pipeline as keyword filters for consistent behavior.
+- Added compact per-filter debug logs showing what each contextual filter removed/added and the resulting prompt state.
+
 ---
 
 One-click image generation for SillyTavern. Images appear in a resizable popup with the option to insert them into chat messages.
@@ -42,7 +48,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that auto-inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** — filters can be global or limited to a specific character
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** — filters can be global or limited to a specific character
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
@@ -440,8 +446,15 @@ Each filter has:
 - **Keywords** (comma-separated) — scanned against the current scene/message text
 - **Match Mode** — `OR` (any keyword triggers), `AND` (all keywords required), or `LLM` (AI concept recognition)
 - **Positive/Negative Prompt** — appended to the generation prompts when triggered
+- **Remove From Positive/Negative** — optional comma-separated tokens to remove before appending (for conflict cleanup)
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
 - **Scope** — `Global` (applies in all chats) or `Character` (applies only when chatting with a specific character)
+
+Filter execution order is:
+1. Apply removals (`Remove From Positive/Negative`)
+2. Append `Positive/Negative Prompt`
+
+For LoRA tags, removal is **name-based** (weight-insensitive). Example: removing `<lora:foo>` removes `<lora:foo:0.6>` and `<lora:foo:1.0>`.
 
 ### Character-Specific Filters
 
@@ -476,6 +489,8 @@ All LLM-type filters are evaluated in a single API call (not one per filter) for
 
 When a message mentions only "goku", only the goku filter fires. When both "goku" and "vegeta" appear, the AND filter fires and suppresses the individual OR filters — preventing conflicting LoRAs from stacking.
 
+Contextual filters apply in both **Direct Mode** and **Inject Mode** generation flows.
+
 Filters are included in settings export/import and can be saved inside generation presets.
 
 ---
@@ -500,7 +515,7 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 
 1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<image>description</image>` or `<pic prompt="description">` tags for visual moments
 2. **Extraction**: When the AI responds, QIG scans for image tags using a configurable regex
-3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters → provider)
+3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append] → provider)
 4. **Cleanup**: Tags are optionally removed from the displayed message
 
 ### Settings
