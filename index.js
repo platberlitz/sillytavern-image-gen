@@ -203,6 +203,9 @@ const defaultSettings = {
     _backupGenPresets: null,
     _backupComfyWorkflows: null,
     _backupContextualFilters: null,
+    _backupFilterPools: null,
+    _backupActiveFilterPoolIdsGlobal: null,
+    _backupActiveFilterPoolIdsByChar: null,
 };
 
 let lastPrompt = "";
@@ -235,6 +238,9 @@ const BACKUP_KEYS = {
     qig_gen_presets: "_backupGenPresets",
     qig_comfy_workflows: "_backupComfyWorkflows",
     qig_contextual_filters: "_backupContextualFilters",
+    qig_filter_pools: "_backupFilterPools",
+    qig_active_pool_ids_global: "_backupActiveFilterPoolIdsGlobal",
+    qig_active_pool_ids_by_char: "_backupActiveFilterPoolIdsByChar",
 };
 function backupToSettings(localKey, data) {
     const backupKey = BACKUP_KEYS[localKey];
@@ -260,6 +266,9 @@ let charRefImages = safeParse("qig_char_ref_images", {});
 let generationPresets = safeParse("qig_gen_presets", []);
 let comfyWorkflows = safeParse("qig_comfy_workflows", []);
 let contextualFilters = safeParse("qig_contextual_filters", []);
+let filterPools = safeParse("qig_filter_pools", []);
+let activeFilterPoolIdsGlobal = safeParse("qig_active_pool_ids_global", []);
+let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
 let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const blobUrls = new Set();
@@ -269,6 +278,8 @@ let currentAbortController = null;
 let _autoGenTimeout = null;
 let cancelRequested = false;
 let cancelRequestSerial = 0;
+const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
+const DEFAULT_FILTER_POOL_NAME = "Default";
 
 function getCancelCheckpoint() {
     return cancelRequestSerial;
@@ -773,6 +784,9 @@ async function loadSettings() {
         { localKey: "qig_gen_presets", backupKey: "_backupGenPresets", setter: v => { generationPresets = v; } },
         { localKey: "qig_comfy_workflows", backupKey: "_backupComfyWorkflows", setter: v => { comfyWorkflows = v; } },
         { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", setter: v => { contextualFilters = v; } },
+        { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", setter: v => { filterPools = v; } },
+        { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", setter: v => { activeFilterPoolIdsGlobal = v; } },
+        { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
     ];
     let restoredCount = 0;
     for (const { localKey, backupKey, setter } of restoreTargets) {
@@ -787,6 +801,157 @@ async function loadSettings() {
         log(`Restored ${restoredCount} preset store(s) from server backup`);
         toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
     }
+    ensureFilterPoolsState({ persist: true });
+}
+
+function normalizePoolIdList(poolIds) {
+    if (!Array.isArray(poolIds)) return [];
+    const out = [];
+    const seen = new Set();
+    for (const id of poolIds) {
+        const val = String(id || "").trim();
+        if (!val || seen.has(val)) continue;
+        seen.add(val);
+        out.push(val);
+    }
+    return out;
+}
+
+function getDefaultFilterPool() {
+    return {
+        id: DEFAULT_FILTER_POOL_ID,
+        name: DEFAULT_FILTER_POOL_NAME,
+        scope: "global",
+        charId: null,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+    };
+}
+
+function saveFilterPools() {
+    const ok = safeSetStorage("qig_filter_pools", JSON.stringify(filterPools), "Failed to save filter pools. Browser storage may be full.");
+    if (ok) backupToSettings("qig_filter_pools", filterPools);
+    return ok;
+}
+
+function saveActiveFilterPools() {
+    const okGlobal = safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal), "Failed to save active global pools. Browser storage may be full.");
+    const okByChar = safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar), "Failed to save active character pools. Browser storage may be full.");
+    if (okGlobal) backupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
+    if (okByChar) backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
+    return okGlobal && okByChar;
+}
+
+function persistFilterPoolState() {
+    saveContextualFilters();
+    saveFilterPools();
+    saveActiveFilterPools();
+}
+
+function getEnabledPoolIdsForCurrentContext() {
+    const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+    const charId = getCurrentCharId();
+    if (charId != null) {
+        const charIds = normalizePoolIdList(activeFilterPoolIdsByChar?.[String(charId)]);
+        for (const id of charIds) enabled.add(id);
+    }
+    return enabled;
+}
+
+function getSelectablePoolsForFilterScope(scopeCharId) {
+    const charId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
+    return filterPools.filter(pool => pool.scope === "global" || (charId && pool.scope === "char" && String(pool.charId) === charId));
+}
+
+function ensureFilterPoolsState({ persist = false } = {}) {
+    let changed = false;
+
+    const incomingPools = Array.isArray(filterPools) ? filterPools : [];
+    if (!Array.isArray(filterPools)) changed = true;
+    const normalizedPools = [];
+    const seenPoolIds = new Set();
+    for (const rawPool of incomingPools) {
+        if (!rawPool || typeof rawPool !== "object") { changed = true; continue; }
+        const id = String(rawPool.id || "").trim();
+        if (!id || seenPoolIds.has(id)) { changed = true; continue; }
+        const name = String(rawPool.name || "").trim() || (id === DEFAULT_FILTER_POOL_ID ? DEFAULT_FILTER_POOL_NAME : "Untitled Pool");
+        const scope = rawPool.scope === "char" ? "char" : "global";
+        const charId = rawPool.charId != null && rawPool.charId !== "" ? String(rawPool.charId) : null;
+        if (scope === "char" && !charId) { changed = true; continue; }
+        normalizedPools.push({
+            id,
+            name,
+            scope,
+            charId: scope === "char" ? charId : null,
+            createdAt: rawPool.createdAt || new Date().toISOString(),
+            updatedAt: rawPool.updatedAt || new Date().toISOString(),
+        });
+        seenPoolIds.add(id);
+    }
+    if (!seenPoolIds.has(DEFAULT_FILTER_POOL_ID)) {
+        normalizedPools.unshift(getDefaultFilterPool());
+        seenPoolIds.add(DEFAULT_FILTER_POOL_ID);
+        changed = true;
+    }
+    filterPools = normalizedPools;
+
+    const globalPoolIds = new Set(filterPools.filter(p => p.scope === "global").map(p => p.id));
+    const charPoolsByChar = new Map();
+    for (const pool of filterPools) {
+        if (pool.scope !== "char" || !pool.charId) continue;
+        const key = String(pool.charId);
+        if (!charPoolsByChar.has(key)) charPoolsByChar.set(key, new Set());
+        charPoolsByChar.get(key).add(pool.id);
+    }
+
+    const hadStoredGlobalPoolState =
+        localStorage.getItem("qig_active_pool_ids_global") != null ||
+        extension_settings?.[extensionName]?._backupActiveFilterPoolIdsGlobal != null;
+    const originalGlobalIds = normalizePoolIdList(activeFilterPoolIdsGlobal);
+    let nextGlobalIds = originalGlobalIds.filter(id => globalPoolIds.has(id));
+    if (!hadStoredGlobalPoolState && nextGlobalIds.length === 0 && globalPoolIds.has(DEFAULT_FILTER_POOL_ID)) {
+        nextGlobalIds.push(DEFAULT_FILTER_POOL_ID);
+    }
+    if (JSON.stringify(originalGlobalIds) !== JSON.stringify(nextGlobalIds)) changed = true;
+    activeFilterPoolIdsGlobal = nextGlobalIds;
+
+    const incomingByChar = activeFilterPoolIdsByChar && typeof activeFilterPoolIdsByChar === "object" && !Array.isArray(activeFilterPoolIdsByChar)
+        ? activeFilterPoolIdsByChar
+        : {};
+    if (incomingByChar !== activeFilterPoolIdsByChar) changed = true;
+    const nextByChar = {};
+    for (const [charIdRaw, ids] of Object.entries(incomingByChar)) {
+        const charId = String(charIdRaw);
+        const allowed = charPoolsByChar.get(charId);
+        if (!allowed?.size) {
+            if (Array.isArray(ids) && ids.length) changed = true;
+            continue;
+        }
+        const normalizedIds = normalizePoolIdList(ids).filter(id => allowed.has(id));
+        if (normalizedIds.length > 0) nextByChar[charId] = normalizedIds;
+        if (JSON.stringify(normalizePoolIdList(ids)) !== JSON.stringify(normalizedIds)) changed = true;
+    }
+    if (JSON.stringify(incomingByChar) !== JSON.stringify(nextByChar)) changed = true;
+    activeFilterPoolIdsByChar = nextByChar;
+
+    if (!Array.isArray(contextualFilters)) {
+        contextualFilters = [];
+        changed = true;
+    }
+    const validPoolIds = new Set(filterPools.map(p => p.id));
+    for (const filter of contextualFilters) {
+        if (!filter || typeof filter !== "object") { changed = true; continue; }
+        const before = normalizePoolIdList(filter.poolIds);
+        const after = before.filter(id => validPoolIds.has(id));
+        if (!after.length) after.push(DEFAULT_FILTER_POOL_ID);
+        if (JSON.stringify(before) !== JSON.stringify(after)) changed = true;
+        filter.poolIds = after;
+    }
+
+    if (persist && changed) {
+        persistFilterPoolState();
+    }
+    return changed;
 }
 
 function getSettings() {
@@ -950,8 +1115,16 @@ function clearStyleCache() {
 }
 
 function getActiveFilters() {
+    ensureFilterPoolsState();
     const charId = getCurrentCharId();
-    return contextualFilters.filter(f => !f.charId || String(f.charId) === String(charId));
+    const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
+    return contextualFilters.filter(f => {
+        if (!f || typeof f !== "object") return false;
+        if (f.charId && String(f.charId) !== String(charId)) return false;
+        const poolIds = normalizePoolIdList(f.poolIds);
+        if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
+        return poolIds.some(id => enabledPoolIds.has(id));
+    });
 }
 
 function splitPromptTokens(text) {
@@ -1060,6 +1233,11 @@ function applyMatchedFiltersWithDebug(prompt, negative, filters, labelPrefix = "
 function applyContextualFilters(prompt, negative, sceneText) {
     const activeFilters = getActiveFilters();
     if (!activeFilters.length || !sceneText) return { prompt, negative };
+    const charId = getCurrentCharId();
+    const scopedFilterCount = contextualFilters.filter(f => !f?.charId || String(f.charId) === String(charId)).length;
+    if (scopedFilterCount > activeFilters.length) {
+        log(`Contextual pools: ${activeFilters.length}/${scopedFilterCount} scoped filter(s) enabled by active pools`);
+    }
     const scene = sceneText.toLowerCase();
     const matched = [];
     for (const f of activeFilters) {
@@ -3007,8 +3185,13 @@ function createPopup(id, title, content, onShow) {
             ${content}
             <div class="qig-resize-handle"></div>
         </div>`;
-    popup.querySelector(".qig-close-btn").onclick = () => popup.style.display = "none";
-    popup.onclick = () => popup.style.display = "none";
+    const closePopup = (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+        setTimeout(() => { popup.style.display = "none"; }, 0);
+    };
+    popup.querySelector(".qig-close-btn").onclick = closePopup;
+    popup.onclick = (e) => { if (e.target === popup) closePopup(e); };
     if (onShow) onShow(popup);
     popup.style.display = "flex";
     return popup;
@@ -3977,13 +4160,166 @@ function saveContextualFilters() {
     backupToSettings("qig_contextual_filters", contextualFilters);
 }
 
+function getVisibleFilterPools() {
+    const currentCharId = getCurrentCharId();
+    const globalPools = filterPools
+        .filter(p => p.scope === "global")
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const charPools = currentCharId != null
+        ? filterPools
+            .filter(p => p.scope === "char" && String(p.charId) === String(currentCharId))
+            .sort((a, b) => a.name.localeCompare(b.name))
+        : [];
+    return { globalPools, charPools, currentCharId };
+}
+
+function getPoolNameById(poolId) {
+    const id = String(poolId || "");
+    return filterPools.find(p => p.id === id)?.name || "Unknown Pool";
+}
+
+function addFilterPool(scope = "global") {
+    const currentCharId = getCurrentCharId();
+    const isCharScope = scope === "char";
+    const targetCharId = isCharScope && currentCharId != null ? String(currentCharId) : null;
+    if (isCharScope && !targetCharId) {
+        toastr.warning("Open a character chat to create a character pool.");
+        return;
+    }
+    const rawName = prompt(`New ${isCharScope ? "character" : "global"} pool name:`);
+    if (rawName == null) return;
+    const name = rawName.trim();
+    if (!name) {
+        toastr.warning("Pool name cannot be empty.");
+        return;
+    }
+    const exists = filterPools.some(pool =>
+        pool.scope === (isCharScope ? "char" : "global") &&
+        String(pool.charId || "") === String(targetCharId || "") &&
+        String(pool.name || "").toLowerCase() === name.toLowerCase()
+    );
+    if (exists) {
+        toastr.warning(`Pool "${name}" already exists in this scope.`);
+        return;
+    }
+    const now = new Date().toISOString();
+    const id = `qig_pool_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    filterPools.push({
+        id,
+        name,
+        scope: isCharScope ? "char" : "global",
+        charId: targetCharId,
+        createdAt: now,
+        updatedAt: now,
+    });
+    if (isCharScope && targetCharId) {
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[targetCharId]));
+        ids.add(id);
+        activeFilterPoolIdsByChar[targetCharId] = [...ids];
+    } else {
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+        ids.add(id);
+        activeFilterPoolIdsGlobal = [...ids];
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function renameFilterPool(poolId) {
+    const pool = filterPools.find(p => p.id === poolId);
+    if (!pool) return;
+    const rawName = prompt("Rename pool:", pool.name || "");
+    if (rawName == null) return;
+    const name = rawName.trim();
+    if (!name) {
+        toastr.warning("Pool name cannot be empty.");
+        return;
+    }
+    pool.name = name;
+    pool.updatedAt = new Date().toISOString();
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function deleteFilterPool(poolId) {
+    if (poolId === DEFAULT_FILTER_POOL_ID) {
+        toastr.warning("The default pool cannot be deleted.");
+        return;
+    }
+    const pool = filterPools.find(p => p.id === poolId);
+    if (!pool) return;
+    if (!confirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`)) return;
+    filterPools = filterPools.filter(p => p.id !== poolId);
+    activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => id !== poolId);
+    const nextByChar = {};
+    for (const [charId, ids] of Object.entries(activeFilterPoolIdsByChar || {})) {
+        const nextIds = normalizePoolIdList(ids).filter(id => id !== poolId);
+        if (nextIds.length) nextByChar[charId] = nextIds;
+    }
+    activeFilterPoolIdsByChar = nextByChar;
+    for (const f of contextualFilters) {
+        const nextPoolIds = normalizePoolIdList(f.poolIds).filter(id => id !== poolId);
+        f.poolIds = nextPoolIds.length ? nextPoolIds : [DEFAULT_FILTER_POOL_ID];
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function toggleFilterPool(poolId) {
+    const pool = filterPools.find(p => p.id === poolId);
+    if (!pool) return;
+    if (pool.scope === "char") {
+        const key = String(pool.charId);
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
+        if (ids.has(poolId)) ids.delete(poolId);
+        else ids.add(poolId);
+        if (ids.size > 0) activeFilterPoolIdsByChar[key] = [...ids];
+        else delete activeFilterPoolIdsByChar[key];
+    } else {
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+        if (ids.has(poolId)) ids.delete(poolId);
+        else ids.add(poolId);
+        activeFilterPoolIdsGlobal = [...ids];
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function setVisiblePoolsEnabled(enabled) {
+    const { globalPools, charPools, currentCharId } = getVisibleFilterPools();
+    if (enabled) {
+        const globalIds = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+        for (const p of globalPools) globalIds.add(p.id);
+        activeFilterPoolIdsGlobal = [...globalIds];
+        if (currentCharId != null) {
+            const key = String(currentCharId);
+            const charIds = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
+            for (const p of charPools) charIds.add(p.id);
+            if (charIds.size > 0) activeFilterPoolIdsByChar[key] = [...charIds];
+        }
+    } else {
+        const hideGlobal = new Set(globalPools.map(p => p.id));
+        activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => !hideGlobal.has(id));
+        if (currentCharId != null) {
+            const key = String(currentCharId);
+            const hideChar = new Set(charPools.map(p => p.id));
+            const next = normalizePoolIdList(activeFilterPoolIdsByChar[key]).filter(id => !hideChar.has(id));
+            if (next.length > 0) activeFilterPoolIdsByChar[key] = next;
+            else delete activeFilterPoolIdsByChar[key];
+        }
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null };
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null, poolIds: [DEFAULT_FILTER_POOL_ID] };
     const isLLM = f.matchMode === "LLM";
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
     const editingDifferentChar = f.charId && (!currentCharId || String(f.charId) !== String(currentCharId));
+    const initialPoolIds = normalizePoolIdList(f.poolIds);
     return new Promise((resolve) => {
         const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
             <div style="padding:12px;">
@@ -3995,6 +4331,8 @@ function showFilterDialog(filter) {
                     ${currentCharId != null ? `<option value="${escapeHtml(String(currentCharId))}" ${f.charId && String(f.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
                     ${editingDifferentChar ? `<option value="${escapeHtml(String(f.charId))}" selected disabled>Other Character (${escapeHtml(String(f.charId))})</option>` : ""}
                 </select>
+                <label style="font-size:11px;">Pools</label>
+                <div id="qig-fd-pools-wrap" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
                 <label style="font-size:11px;">Match Mode</label>
                 <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
                     <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
@@ -4025,15 +4363,66 @@ function showFilterDialog(filter) {
                     <button id="qig-fd-save" class="menu_button">Save</button>
                 </div>
             </div>`, (popup) => {
+            const selectedPoolIds = new Set(initialPoolIds.length ? initialPoolIds : [DEFAULT_FILTER_POOL_ID]);
+            const poolWrap = document.getElementById("qig-fd-pools-wrap");
+
+            const syncSelectedPoolIds = () => {
+                if (!poolWrap) return;
+                const checkboxes = poolWrap.querySelectorAll(".qig-fd-pool-cb");
+                if (!checkboxes.length) return;
+                for (const id of [...selectedPoolIds]) selectedPoolIds.delete(id);
+                checkboxes.forEach(cb => { if (cb.checked) selectedPoolIds.add(String(cb.value)); });
+            };
+
+            const renderPoolChoices = () => {
+                syncSelectedPoolIds();
+                const scopeVal = document.getElementById("qig-fd-scope").value || null;
+                const poolChoices = getSelectablePoolsForFilterScope(scopeVal);
+                const available = new Set(poolChoices.map(p => p.id));
+                for (const id of [...selectedPoolIds]) {
+                    if (!available.has(id)) selectedPoolIds.delete(id);
+                }
+                if (!selectedPoolIds.size) {
+                    if (available.has(DEFAULT_FILTER_POOL_ID)) selectedPoolIds.add(DEFAULT_FILTER_POOL_ID);
+                    else if (poolChoices[0]) selectedPoolIds.add(poolChoices[0].id);
+                }
+                if (!poolChoices.length) {
+                    poolWrap.innerHTML = `<div style="font-size:10px;opacity:0.7;">No pools available for this scope.</div>`;
+                    return;
+                }
+                poolWrap.innerHTML = poolChoices.map(pool => {
+                    const isChecked = selectedPoolIds.has(pool.id);
+                    const scopeBadge = pool.scope === "global"
+                        ? '<span style="font-size:8px;background:#4a90d9;color:#fff;padding:1px 4px;border-radius:3px;">G</span>'
+                        : '<span style="font-size:8px;background:#5cb85c;color:#fff;padding:1px 4px;border-radius:3px;">C</span>';
+                    return `<label style="display:flex;align-items:center;gap:6px;font-size:10px;">
+                        <input class="qig-fd-pool-cb" type="checkbox" value="${escapeHtml(pool.id)}" ${isChecked ? "checked" : ""}>
+                        <span style="flex:1;">${escapeHtml(pool.name)}</span>
+                        ${scopeBadge}
+                    </label>`;
+                }).join("");
+            };
+
             document.getElementById("qig-fd-name").focus();
+            renderPoolChoices();
             document.getElementById("qig-fd-mode").onchange = (e) => {
                 const llm = e.target.value === "LLM";
                 document.getElementById("qig-fd-keywords-wrap").style.display = llm ? "none" : "";
                 document.getElementById("qig-fd-desc-wrap").style.display = llm ? "" : "none";
             };
-            const close = () => { popup.style.display = "none"; resolve(null); };
+            document.getElementById("qig-fd-scope").onchange = renderPoolChoices;
+            const close = (e) => {
+                e?.preventDefault?.();
+                e?.stopPropagation?.();
+                setTimeout(() => {
+                    popup.style.display = "none";
+                    resolve(null);
+                }, 0);
+            };
             document.getElementById("qig-fd-cancel").onclick = close;
-            document.getElementById("qig-fd-save").onclick = () => {
+            document.getElementById("qig-fd-save").onclick = (e) => {
+                e?.preventDefault?.();
+                e?.stopPropagation?.();
                 const name = document.getElementById("qig-fd-name").value.trim();
                 const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
@@ -4041,7 +4430,10 @@ function showFilterDialog(filter) {
                 if (!name) { alert("Name is required."); return; }
                 if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
                 if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
-                popup.style.display = "none";
+                const selected = [...popup.querySelectorAll(".qig-fd-pool-cb:checked")].map(cb => String(cb.value));
+                const poolIds = normalizePoolIdList(selected);
+                if (!poolIds.length) { alert("Select at least one pool."); return; }
+                setTimeout(() => { popup.style.display = "none"; }, 0);
                 const scopeVal = document.getElementById("qig-fd-scope").value;
                 resolve({
                     name,
@@ -4054,9 +4446,13 @@ function showFilterDialog(filter) {
                     removeNegative: document.getElementById("qig-fd-remove-negative").value.trim(),
                     removeMode: "remove",
                     priority: parseInt(document.getElementById("qig-fd-priority").value) || 0,
-                    charId: scopeVal || null
+                    charId: scopeVal || null,
+                    poolIds,
                 });
             };
+            popup.onclick = (e) => { if (e.target === popup) close(e); };
+            const popupCloseBtn = popup.querySelector(".qig-close-btn");
+            if (popupCloseBtn) popupCloseBtn.onclick = close;
         });
     });
 }
@@ -4068,8 +4464,9 @@ async function addContextualFilter() {
     if (!result) return;
     result.id = crypto.randomUUID();
     result.enabled = true;
+    result.poolIds = normalizePoolIdList(result.poolIds);
     contextualFilters.push(result);
-    saveContextualFilters();
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
@@ -4079,7 +4476,8 @@ async function editContextualFilter(id) {
     const result = await showFilterDialog(f);
     if (!result) return;
     Object.assign(f, result);
-    saveContextualFilters();
+    f.poolIds = normalizePoolIdList(f.poolIds);
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
@@ -4143,12 +4541,29 @@ function duplicateContextualFilter(id) {
 function renderContextualFilters() {
     const container = document.getElementById("qig-contextual-filters");
     if (!container) return;
-    if (!contextualFilters.length) { container.innerHTML = ""; return; }
+    ensureFilterPoolsState();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
     const globalFilters = contextualFilters.filter(f => !f.charId);
     const charFilters = currentCharId != null ? contextualFilters.filter(f => f.charId && String(f.charId) === String(currentCharId)) : [];
     const otherCount = contextualFilters.filter(f => f.charId && (!currentCharId || String(f.charId) !== String(currentCharId))).length;
+    const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
+    const { globalPools, charPools } = getVisibleFilterPools();
+
+    const renderPoolRow = (pool) => {
+        const isActive = enabledPoolIds.has(pool.id);
+        const assignedCount = contextualFilters.filter(f => normalizePoolIdList(f.poolIds).includes(pool.id)).length;
+        const scopeBadge = pool.scope === "global"
+            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;">G</span>`
+            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;">C</span>`;
+        const canDelete = pool.id !== DEFAULT_FILTER_POOL_ID;
+        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">
+            <button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;${isActive ? "border-color:var(--SmartThemeQuoteColor);" : "opacity:0.7;"}" onclick="toggleFilterPool('${escapeHtml(pool.id)}')" title="Toggle pool">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
+            ${scopeBadge}
+            <button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="renameFilterPool('${escapeHtml(pool.id)}')" title="Rename pool">✎</button>
+            <button class="menu_button" style="padding:2px 4px;font-size:10px;${canDelete ? "" : "opacity:0.4;"}" onclick="deleteFilterPool('${escapeHtml(pool.id)}')" ${canDelete ? "" : "disabled"} title="Delete pool">🗑️</button>
+        </div>`;
+    };
 
     const renderRow = (f) => {
         const eName = escapeHtml(f.name);
@@ -4163,19 +4578,34 @@ function renderContextualFilters() {
             eRemovePos ? `Remove +: ${eRemovePos}` : "",
             eRemoveNeg ? `Remove -: ${eRemoveNeg}` : "",
         ].filter(Boolean).join("\n");
+        const poolNames = normalizePoolIdList(f.poolIds).map(id => getPoolNameById(id));
+        const poolInfo = poolNames.length ? `Pools: ${poolNames.join(", ")}` : `Pools: ${DEFAULT_FILTER_POOL_NAME}`;
+        const ePoolInfo = escapeHtml(poolInfo);
         const isGlobal = !f.charId;
+        const enabledByPool = normalizePoolIdList(f.poolIds).some(id => enabledPoolIds.has(id));
+        const effectiveEnabled = !!f.enabled && enabledByPool;
         const badge = isGlobal
             ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global filter">G</span>`
             : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Character filter">C</span>`;
-        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">` +
+        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;${effectiveEnabled ? "" : "opacity:0.72;"}">` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
         badge +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
-        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}</span>` +
+        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}\n${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
+        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}${effectiveEnabled ? "" : " off"}</span>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
         `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${eId}')">×</button>` +
         `</div>`;
     };
+
+    let poolHtml = "";
+    if (globalPools.length) {
+        poolHtml += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Pools (${globalPools.length})</div>`;
+        poolHtml += globalPools.map(renderPoolRow).join("");
+    }
+    if (charPools.length) {
+        poolHtml += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Pools (${charPools.length})</div>`;
+        poolHtml += charPools.map(renderPoolRow).join("");
+    }
 
     let html = "";
     if (globalFilters.length) {
@@ -4190,8 +4620,20 @@ function renderContextualFilters() {
         html += `<div style="font-size:9px;opacity:0.5;margin:4px 0 2px;font-style:italic;">${otherCount} filter(s) for other characters (hidden)</div>`;
     }
 
-    container.innerHTML = `<div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>` +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
+    if (!html) {
+        html = `<div style="font-size:10px;opacity:0.65;margin:4px 0;">No filters yet. Add one to get started.</div>`;
+    }
+    container.innerHTML = `<div style="padding:4px 0 2px;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:6px;">
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolGlobal()">+ Global Pool</button>
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(true)">Enable Visible</button>
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(false)">Disable Visible</button>
+            </div>
+            <div style="max-height:120px;overflow-y:auto;margin-bottom:4px;">${poolHtml}</div>
+        </div>
+        <div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>
+        <button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
 }
 
 window.addContextualFilter = addContextualFilter;
@@ -4200,6 +4642,12 @@ window.deleteContextualFilter = deleteContextualFilter;
 window.toggleContextualFilter = toggleContextualFilter;
 window.clearContextualFilters = clearContextualFilters;
 window.duplicateContextualFilter = duplicateContextualFilter;
+window.addFilterPoolGlobal = () => addFilterPool("global");
+window.addFilterPoolForCurrentChar = () => addFilterPool("char");
+window.renameFilterPool = renameFilterPool;
+window.deleteFilterPool = deleteFilterPool;
+window.toggleFilterPool = toggleFilterPool;
+window.setVisiblePoolsEnabled = setVisiblePoolsEnabled;
 
 // Character-specific settings
 function getCurrentRefImages(s) {
@@ -4480,13 +4928,15 @@ const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale"
 function savePreset() {
     const name = prompt("Preset name:");
     if (!name) return;
+    ensureFilterPoolsState();
     const s = getSettings();
     const preset = { name };
     PRESET_KEYS.forEach(k => preset[k] = s[k]);
     // Always include contextual filters snapshot in preset
-    if (contextualFilters.length > 0) {
-        preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
-    }
+    preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
+    preset.filterPools = JSON.parse(JSON.stringify(filterPools));
+    preset.activeFilterPoolIdsGlobal = [...normalizePoolIdList(activeFilterPoolIdsGlobal)];
+    preset.activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(activeFilterPoolIdsByChar || {}));
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
@@ -4508,9 +4958,18 @@ function loadPreset(i) {
     // Restore contextual filters if saved in preset
     if (p.contextualFilters) {
         contextualFilters = JSON.parse(JSON.stringify(p.contextualFilters));
-        saveContextualFilters();
-        renderContextualFilters();
     }
+    if (p.filterPools) {
+        filterPools = JSON.parse(JSON.stringify(p.filterPools));
+    }
+    if (p.activeFilterPoolIdsGlobal) {
+        activeFilterPoolIdsGlobal = JSON.parse(JSON.stringify(p.activeFilterPoolIdsGlobal));
+    }
+    if (p.activeFilterPoolIdsByChar) {
+        activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByChar));
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
@@ -4599,7 +5058,7 @@ window.clearPresets = clearPresets;
 // === Export / Import Settings ===
 function exportAllSettings() {
     const data = {
-        version: 2,
+        version: 3,
         exportDate: new Date().toISOString(),
         connectionProfiles,
         comfyWorkflows,
@@ -4607,7 +5066,10 @@ function exportAllSettings() {
         generationPresets,
         charSettings,
         charRefImages,
-        contextualFilters
+        contextualFilters,
+        filterPools,
+        activeFilterPoolIdsGlobal,
+        activeFilterPoolIdsByChar,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -4668,6 +5130,22 @@ function importSettings() {
                 if (!safeSetStorage("qig_contextual_filters", JSON.stringify(contextualFilters))) throw new Error("Could not save imported contextual filters. Browser storage may be full.");
                 backupToSettings("qig_contextual_filters", contextualFilters);
             }
+            if (Array.isArray(data.filterPools)) {
+                filterPools = data.filterPools;
+                if (!safeSetStorage("qig_filter_pools", JSON.stringify(filterPools))) throw new Error("Could not save imported filter pools. Browser storage may be full.");
+                backupToSettings("qig_filter_pools", filterPools);
+            }
+            if (Array.isArray(data.activeFilterPoolIdsGlobal)) {
+                activeFilterPoolIdsGlobal = data.activeFilterPoolIdsGlobal;
+                if (!safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal))) throw new Error("Could not save imported global pool states. Browser storage may be full.");
+                backupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
+            }
+            if (data.activeFilterPoolIdsByChar && typeof data.activeFilterPoolIdsByChar === "object") {
+                activeFilterPoolIdsByChar = data.activeFilterPoolIdsByChar;
+                if (!safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar))) throw new Error("Could not save imported character pool states. Browser storage may be full.");
+                backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
+            }
+            ensureFilterPoolsState({ persist: true });
             renderTemplates();
             renderPresets();
             renderProfileSelect();
@@ -5544,7 +6022,7 @@ function createUI() {
                         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                     </div>
                     <div class="inline-drawer-content">
-                        <small style="opacity:0.7;">Lorebook-style triggers — inject prompts when keywords appear in scene text</small>
+                        <small style="opacity:0.7;">Lorebook-style triggers with pool controls — inject prompts when keywords/concepts match scene text</small>
                         <div id="qig-contextual-filters" style="margin:4px 0;"></div>
                         <button id="qig-add-filter-btn" class="menu_button" style="padding:4px 8px;">+ Add Filter</button>
                     </div>

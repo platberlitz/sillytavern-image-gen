@@ -48,7 +48,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** — filters can be global or limited to a specific character
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** and **pool-based bulk enable/disable** (global + per-character pools)
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
@@ -449,6 +449,7 @@ Each filter has:
 - **Remove From Positive/Negative** — optional comma-separated tokens to remove before appending (for conflict cleanup)
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
 - **Scope** — `Global` (applies in all chats) or `Character` (applies only when chatting with a specific character)
+- **Pools** — one filter can belong to multiple pools for bulk on/off control
 
 Filter execution order is:
 1. Apply removals (`Remove From Positive/Negative`)
@@ -465,6 +466,19 @@ Filters can be scoped to a specific character. When creating or editing a filter
 The filter list groups filters by scope with colored badges: blue **G** for global, green **C** for character-specific. A **⧉** duplicate button lets you quickly copy a filter between scopes (e.g., promote a character filter to global or create a character-specific copy of a global filter). Filters for other characters are hidden but counted.
 
 When clearing filters with a character active, you can choose to clear all filters, only global filters, or only the current character's filters.
+
+### Filter Pools (Bulk Toggle)
+
+Pools let you organize large filter libraries (for example: goblin pack, sci-fi pack, superhero pack) and enable/disable them in one click.
+
+- **Global pools** apply across all chats
+- **Character pools** apply only to the active character
+- Filters can belong to multiple pools
+- A filter is active only when both conditions are true:
+  - the filter checkbox is enabled
+  - at least one of its pools is enabled in the current context
+
+Migration note: existing filters are automatically assigned to a global **Default** pool so behavior stays unchanged after updating.
 
 ### LLM Concept Matching
 
