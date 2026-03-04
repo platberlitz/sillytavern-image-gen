@@ -263,6 +263,29 @@ function backupToSettings(localKey, data) {
 function escapeHtml(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
+function generateUUID() {
+    if (typeof crypto !== "undefined") {
+        if (typeof crypto.randomUUID === "function") {
+            return crypto.randomUUID();
+        }
+        if (typeof crypto.getRandomValues === "function") {
+            const bytes = new Uint8Array(16);
+            crypto.getRandomValues(bytes);
+            bytes[6] = (bytes[6] & 0x0f) | 0x40;
+            bytes[8] = (bytes[8] & 0x3f) | 0x80;
+            const hex = [...bytes].map(b => b.toString(16).padStart(2, "0"));
+            return [
+                hex.slice(0, 4).join(""),
+                hex.slice(4, 6).join(""),
+                hex.slice(6, 8).join(""),
+                hex.slice(8, 10).join(""),
+                hex.slice(10, 16).join("")
+            ].join("-");
+        }
+    }
+    return "qig_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 10);
+}
+
 let sessionGallery = safeParse("qig_gallery", []);
 let promptHistory = safeParse("qig_prompt_history", []);
 let promptTemplates = safeParse("qig_templates", []);
@@ -4737,7 +4760,7 @@ function showFilterDialog(filter) {
 async function addContextualFilter() {
     const result = await showFilterDialog(null);
     if (!result) return;
-    result.id = crypto.randomUUID();
+    result.id = generateUUID();
     result.enabled = true;
     result.poolIds = normalizePoolIdList(result.poolIds);
     contextualFilters.push(result);
@@ -4806,7 +4829,7 @@ function duplicateContextualFilter(id) {
     if (!f.charId && newCharId == null) return;
     contextualFilters.push({
         ...JSON.parse(JSON.stringify(f)),
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         charId: newCharId
     });
     saveContextualFilters();
@@ -5001,7 +5024,7 @@ async function addPromptReplacement() {
     if (!result) return;
     const now = new Date().toISOString();
     promptReplacements.push({
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         enabled: true,
         createdAt: now,
         updatedAt: now,
@@ -5048,7 +5071,7 @@ function duplicatePromptReplacement(id) {
     const now = new Date().toISOString();
     promptReplacements.push({
         ...JSON.parse(JSON.stringify(rule)),
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         scope: duplicateScope,
         charId: duplicateCharId,
         createdAt: now,
