@@ -310,6 +310,10 @@ let currentAbortController = null;
 let _autoGenTimeout = null;
 let cancelRequested = false;
 let cancelRequestSerial = 0;
+let paletteGenerateLockUntil = 0;
+let paletteCancelLockUntil = 0;
+const PALETTE_GENERATE_LOCK_MS = 350;
+const PALETTE_CANCEL_LOCK_MS = 500;
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
 const DEFAULT_FILTER_POOL_NAME = "Default";
 
@@ -738,17 +742,24 @@ function endGeneration({ disableGenerateButton = false } = {}) {
     currentAbortController = null;
     isGenerating = false;
     cancelRequested = false;
+    paletteCancelLockUntil = 0;
     showStatus(null);
     setGenerationActiveUI(false, { disableGenerateButton });
 }
 
 function requestGenerationCancel() {
     if (!isGenerating) return false;
+    const now = Date.now();
+    if (now < paletteCancelLockUntil) {
+        log("Palette: Ignored rapid duplicate cancel click");
+        return false;
+    }
     if (currentAbortController?.signal?.aborted) {
         log("Cancel already requested, ignoring duplicate click");
         return false;
     }
 
+    paletteCancelLockUntil = now + PALETTE_CANCEL_LOCK_MS;
     cancelRequested = true;
     cancelRequestSerial += 1;
     if (currentAbortController) {
@@ -907,10 +918,10 @@ function persistFilterPoolState() {
 
 function getEnabledPoolIdsForCurrentContext() {
     const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
-    const charId = getCurrentCharId();
-    if (charId != null) {
-        const charIds = normalizePoolIdList(activeFilterPoolIdsByChar?.[String(charId)]);
-        for (const id of charIds) enabled.add(id);
+    const activeCharIds = getActiveCharacterScopeIds();
+    for (const charId of activeCharIds) {
+        const charPoolIds = normalizePoolIdList(activeFilterPoolIdsByChar?.[String(charId)]);
+        for (const id of charPoolIds) enabled.add(id);
     }
     return enabled;
 }
@@ -1145,14 +1156,299 @@ function comparePromptReplacements(a, b) {
     return String(a.id || "").localeCompare(String(b.id || ""));
 }
 
+function normalizeContextLookupValue(value) {
+    return String(value ?? "").trim().toLowerCase();
+}
+
+function uniqueStringList(values) {
+    const seen = new Set();
+    const result = [];
+    for (const value of (values || [])) {
+        const str = String(value ?? "").trim();
+        if (!str || seen.has(str)) continue;
+        seen.add(str);
+        result.push(str);
+    }
+    return result;
+}
+
+function truncateForContext(text, maxLen = 1200) {
+    const str = String(text || "").trim();
+    if (!str) return "";
+    if (str.length <= maxLen) return str;
+    return `${str.slice(0, maxLen - 3)}...`;
+}
+
+function getCharacterCardTags(charData) {
+    if (!charData) return [];
+    if (Array.isArray(charData.tags)) {
+        return charData.tags.map(tag => String(tag || "").trim()).filter(Boolean);
+    }
+    if (typeof charData.tags === "string") {
+        return charData.tags.split(",").map(tag => tag.trim()).filter(Boolean);
+    }
+    return [];
+}
+
+function getContextCharactersList(ctx) {
+    const chars = ctx?.characters;
+    if (!chars) return [];
+    const entries = [];
+    if (Array.isArray(chars)) {
+        chars.forEach((charData, index) => {
+            if (!charData || typeof charData !== "object") return;
+            const id = String(index);
+            entries.push({
+                id,
+                name: String(charData.name || charData.avatar || `Character ${id}`).trim(),
+                avatar: String(charData.avatar || "").trim(),
+                data: charData,
+            });
+        });
+        return entries;
+    }
+    if (typeof chars === "object") {
+        for (const [key, charData] of Object.entries(chars)) {
+            if (!charData || typeof charData !== "object") continue;
+            const id = String(key);
+            entries.push({
+                id,
+                name: String(charData.name || charData.avatar || `Character ${id}`).trim(),
+                avatar: String(charData.avatar || "").trim(),
+                data: charData,
+            });
+        }
+    }
+    return entries;
+}
+
+function getGroupObjectFromContext(ctx) {
+    const groupId = ctx?.groupId;
+    if (groupId == null) return null;
+    const normalizedGroupId = String(groupId);
+    if (ctx?.group && (ctx.group.id == null || String(ctx.group.id) === normalizedGroupId)) {
+        return ctx.group;
+    }
+    const groups = ctx?.groups;
+    if (Array.isArray(groups)) {
+        return groups.find(group => String(group?.id ?? group?.group_id ?? "") === normalizedGroupId) || null;
+    }
+    if (groups && typeof groups === "object") {
+        if (groups[groupId]) return groups[groupId];
+        for (const [key, group] of Object.entries(groups)) {
+            if (!group) continue;
+            if (String(group.id ?? key) === normalizedGroupId || String(key) === normalizedGroupId) {
+                return group;
+            }
+        }
+    }
+    return null;
+}
+
+function getRecentSpeakerNames(ctx, maxItems = 8) {
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const names = [];
+    for (let i = chat.length - 1; i >= 0 && names.length < maxItems; i--) {
+        const msg = chat[i];
+        if (!msg || msg.is_user) continue;
+        const name = String(msg.name || "").trim();
+        if (!name) continue;
+        names.push(name);
+    }
+    return uniqueStringList(names);
+}
+
+function resolveGroupCharacterEntries(ctx, characters) {
+    const byId = new Map();
+    const byAvatar = new Map();
+    const byName = new Map();
+
+    for (const entry of characters) {
+        const idKey = normalizeContextLookupValue(entry.id);
+        if (idKey) byId.set(idKey, entry);
+
+        const modelId = normalizeContextLookupValue(entry.data?.id);
+        if (modelId) byId.set(modelId, entry);
+
+        const avatarKey = normalizeContextLookupValue(entry.avatar || entry.data?.avatar);
+        if (avatarKey) byAvatar.set(avatarKey, entry);
+
+        const nameKey = normalizeContextLookupValue(entry.name);
+        if (nameKey) byName.set(nameKey, entry);
+    }
+
+    const group = getGroupObjectFromContext(ctx);
+    const rawMembers = Array.isArray(group?.members)
+        ? group.members
+        : Array.isArray(group?.characters)
+            ? group.characters
+            : Array.isArray(group?.member_ids)
+                ? group.member_ids
+                : [];
+
+    const resolved = [];
+    const seenIds = new Set();
+    const addEntry = (entry) => {
+        if (!entry) return;
+        if (seenIds.has(entry.id)) return;
+        seenIds.add(entry.id);
+        resolved.push(entry);
+    };
+
+    const resolveToken = (token) => {
+        const normalized = normalizeContextLookupValue(token);
+        if (!normalized) return null;
+        return byId.get(normalized) || byAvatar.get(normalized) || byName.get(normalized) || null;
+    };
+
+    for (const member of rawMembers) {
+        const candidates = [];
+        if (member && typeof member === "object") {
+            candidates.push(member.characterId, member.character_id, member.id, member.avatar, member.name);
+        } else {
+            candidates.push(member);
+        }
+        for (const token of candidates) {
+            const match = resolveToken(token);
+            if (match) {
+                addEntry(match);
+                break;
+            }
+        }
+    }
+
+    for (const speakerName of getRecentSpeakerNames(ctx)) {
+        const match = byName.get(normalizeContextLookupValue(speakerName));
+        if (match) addEntry(match);
+    }
+
+    if (!resolved.length && ctx?.characterId != null) {
+        const fallback = resolveToken(ctx.characterId);
+        if (fallback) addEntry(fallback);
+    }
+    if (!resolved.length && characters.length === 1) {
+        addEntry(characters[0]);
+    }
+
+    return resolved;
+}
+
+function resolveChatProfileContext(ctx = getContext()) {
+    if (!ctx) {
+        return {
+            isGroup: false,
+            userName: "user",
+            userDesc: "",
+            charIds: [],
+            charNames: [],
+            charNameJoined: "character",
+            primaryCharId: null,
+            primaryCharName: "character",
+            charDescCombined: "",
+            charScenarioCombined: "",
+            charTagsCombined: "",
+            charCards: [],
+        };
+    }
+
+    const isGroup = !!ctx.groupId;
+    const characters = getContextCharactersList(ctx);
+    let activeEntries = [];
+    if (isGroup) {
+        activeEntries = resolveGroupCharacterEntries(ctx, characters);
+    } else if (ctx.characterId != null) {
+        const key = normalizeContextLookupValue(ctx.characterId);
+        activeEntries = characters.filter(entry =>
+            normalizeContextLookupValue(entry.id) === key ||
+            normalizeContextLookupValue(entry.data?.id) === key
+        );
+    } else if (characters.length === 1) {
+        activeEntries = [characters[0]];
+    }
+
+    const charIds = uniqueStringList(activeEntries.map(entry => entry.id));
+    if (!charIds.length && ctx.characterId != null) {
+        charIds.push(String(ctx.characterId));
+    }
+
+    const charNames = uniqueStringList(activeEntries.map(entry => entry.name));
+    const fallbackName = String(ctx.name2 || "").trim();
+    if (!charNames.length && fallbackName) {
+        charNames.push(fallbackName);
+    }
+
+    const charDescLines = [];
+    const charScenarioLines = [];
+    const tagSet = new Set();
+    const charCards = [];
+    for (const entry of activeEntries) {
+        const data = entry.data || {};
+        charCards.push(data);
+        const desc = truncateForContext(data.description, 1500);
+        if (desc) charDescLines.push(`${entry.name}: ${desc}`);
+
+        const scenario = truncateForContext(data.scenario, 600);
+        if (scenario) charScenarioLines.push(`${entry.name}: ${scenario}`);
+
+        const creatorNotes = truncateForContext(data.creator_notes || data.creatorcomment, 600);
+        if (creatorNotes) charScenarioLines.push(`${entry.name} notes: ${creatorNotes}`);
+
+        for (const tag of getCharacterCardTags(data)) {
+            tagSet.add(tag);
+        }
+    }
+
+    return {
+        isGroup,
+        userName: String(ctx.name1 || "").trim() || "user",
+        userDesc: String(ctx.persona || "").trim(),
+        charIds,
+        charNames,
+        charNameJoined: charNames.length ? charNames.join(", ") : "character",
+        primaryCharId: charIds[0] || null,
+        primaryCharName: charNames[0] || "character",
+        charDescCombined: charDescLines.join("\n"),
+        charScenarioCombined: charScenarioLines.join("\n"),
+        charTagsCombined: [...tagSet].join(", "),
+        charCards,
+    };
+}
+
+function getActiveCharacterScopeIds(ctx = getContext()) {
+    const profile = resolveChatProfileContext(ctx);
+    return uniqueStringList(profile.charIds);
+}
+
+function enrichSceneTextForFilters(sceneText, label = "Contextual filters") {
+    const base = String(sceneText || "").trim();
+    const profile = resolveChatProfileContext();
+    const extraLines = [];
+    if (profile.charNames.length) {
+        extraLines.push(`Characters: ${profile.charNames.join(", ")}`);
+    }
+    if (profile.charDescCombined) {
+        extraLines.push(`Character profiles:\n${truncateForContext(profile.charDescCombined, 1800)}`);
+    }
+    if (profile.userDesc) {
+        extraLines.push(`${profile.userName} profile: ${truncateForContext(profile.userDesc, 600)}`);
+    }
+    if (!extraLines.length) return base;
+    const enriched = [base, ...extraLines].filter(Boolean).join("\n\n");
+    const addedChars = Math.max(0, enriched.length - base.length);
+    if (addedChars > 0) {
+        log(`${label}: enriched matching context (+${addedChars} chars)`);
+    }
+    return enriched;
+}
+
 function getActivePromptReplacements() {
     ensurePromptReplacementState();
-    const charId = getCurrentCharId();
+    const activeCharIds = new Set(getActiveCharacterScopeIds());
     return promptReplacements
         .filter(rule => {
             if (!rule?.enabled) return false;
             if (rule.scope === "char") {
-                return rule.charId && String(rule.charId) === String(charId);
+                return !!rule.charId && activeCharIds.has(String(rule.charId));
             }
             return true;
         })
@@ -1164,11 +1460,12 @@ function getSettings() {
 }
 
 function resolvePrompt(template) {
-    const ctx = getContext();
-    if (!ctx) return template;
-    return template
-        .replace(/\{\{char\}\}/gi, ctx.name2 || "character")
-        .replace(/\{\{user\}\}/gi, ctx.name1 || "user");
+    if (template == null) return "";
+    const text = typeof template === "string" ? template : String(template);
+    const profile = resolveChatProfileContext();
+    return text
+        .replace(/\{\{char\}\}/gi, profile.charNameJoined || "character")
+        .replace(/\{\{user\}\}/gi, profile.userName || "user");
 }
 
 function expandWildcards(text) {
@@ -1321,11 +1618,11 @@ function clearStyleCache() {
 
 function getActiveFilters() {
     ensureFilterPoolsState();
-    const charId = getCurrentCharId();
+    const activeCharIds = new Set(getActiveCharacterScopeIds());
     const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
     return contextualFilters.filter(f => {
         if (!f || typeof f !== "object") return false;
-        if (f.charId && String(f.charId) !== String(charId)) return false;
+        if (f.charId && !activeCharIds.has(String(f.charId))) return false;
         const poolIds = normalizePoolIdList(f.poolIds);
         if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
         return poolIds.some(id => enabledPoolIds.has(id));
@@ -1438,12 +1735,13 @@ function applyMatchedFiltersWithDebug(prompt, negative, filters, labelPrefix = "
 function applyContextualFilters(prompt, negative, sceneText) {
     const activeFilters = getActiveFilters();
     if (!activeFilters.length || !sceneText) return { prompt, negative };
-    const charId = getCurrentCharId();
-    const scopedFilterCount = contextualFilters.filter(f => !f?.charId || String(f.charId) === String(charId)).length;
+    const activeCharIds = new Set(getActiveCharacterScopeIds());
+    const scopedFilterCount = contextualFilters.filter(f => !f?.charId || activeCharIds.has(String(f.charId))).length;
     if (scopedFilterCount > activeFilters.length) {
         log(`Contextual pools: ${activeFilters.length}/${scopedFilterCount} scoped filter(s) enabled by active pools`);
     }
-    const scene = sceneText.toLowerCase();
+    const sceneForMatching = enrichSceneTextForFilters(sceneText, "Contextual filters");
+    const scene = sceneForMatching.toLowerCase();
     const matched = [];
     for (const f of activeFilters) {
         if (!f.enabled) continue;
@@ -1560,6 +1858,7 @@ function applyPromptReplacementMaps(prompt, negative) {
 async function matchLLMFilters(sceneText) {
     const llmFilters = getActiveFilters().filter(f => f.enabled && f.matchMode === "LLM" && f.description);
     if (!llmFilters.length || !sceneText) return [];
+    const sceneForMatching = enrichSceneTextForFilters(sceneText, "LLM filters");
 
     const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name}": ${f.description}`).join('\n');
 
@@ -1567,7 +1866,7 @@ async function matchLLMFilters(sceneText) {
 Reply ONLY with the numbers of matching concepts, comma-separated. If none match, reply "none".
 
 Scene:
-${sceneText.substring(0, 2000)}
+${sceneForMatching.substring(0, 2000)}
 
 Concepts:
 ${conceptList}`;
@@ -1783,16 +2082,13 @@ async function generateLLMPrompt(s, basePrompt, signal) {
 
     try {
         const ctx = getContext();
-        const charName = ctx.name2 || "character";
-        const userName = ctx.name1 || "user";
-        const charDesc = ctx.characterId ? (ctx.characters?.[ctx.characterId]?.description || "") : "";
-        const userPersona = ctx.persona || "";
-
-        // Extract franchise/series info from character card
-        const charCard = ctx.characterId ? ctx.characters?.[ctx.characterId] : null;
-        const creatorNotes = charCard?.creator_notes || charCard?.creatorcomment || "";
-        const scenario = charCard?.scenario || "";
-        const tags = charCard?.tags?.join(", ") || "";
+        const profile = resolveChatProfileContext(ctx);
+        const charName = profile.charNameJoined || "character";
+        const userName = profile.userName || "user";
+        const charDesc = profile.charDescCombined || "";
+        const userPersona = profile.userDesc || "";
+        const scenario = profile.charScenarioCombined || "";
+        const tags = profile.charTagsCombined || "";
 
         const skinTones = [];
         const charSkin = charDesc.match(skinPattern);
@@ -7521,12 +7817,18 @@ function addInputButton() {
     btn.title = "Generate Image";
     btn.style.cssText = "cursor:pointer;padding:5px;font-size:1.2em;opacity:0.7;";
     btn.onclick = () => {
+        const now = Date.now();
         if (isGenerating) {
             if (!requestGenerationCancel()) return;
             log("User cancelled generation via palette button");
             toastr.warning("Cancelling generation...");
             return;
         }
+        if (now < paletteGenerateLockUntil) {
+            log("Palette: Ignored rapid duplicate generate click");
+            return;
+        }
+        paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
         const mode = getSettings().paletteMode || "direct";
         if (mode === "inject") generateImageInjectPalette();
         else generateImage();

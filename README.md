@@ -5,6 +5,13 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.4.9
+- Group-chat context improvements: `{{char}}` now resolves to all active group member names (comma-separated) instead of a single fallback name.
+- Character-scoped contextual filters, pools, and prompt replacement maps now apply correctly in group chats by matching active group member IDs.
+- LLM filter matching now enriches scene context with character and user profile details, improving first-person/implicit trigger detection.
+- LLM prompt generation now reads combined group member profile data (descriptions/scenario/tags) instead of single-card-only context.
+- Palette button stability hardening: rapid duplicate generate/cancel clicks are debounced to avoid intermittent popover/cancel-state issues.
+
 ## What's New in v1.4.8
 - Comprehensive bug-sweep release focused on preset/UI consistency and metadata reliability.
 - Fixed preset load UI sync regressions (custom LLM instruction field mapping + provider input refresh after preset load).
