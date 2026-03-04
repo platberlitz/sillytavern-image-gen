@@ -803,9 +803,30 @@ async function loadSettings() {
     let restoredCount = 0;
     for (const { localKey, backupKey, setter } of restoreTargets) {
         const localVal = localStorage.getItem(localKey);
-        if (localVal == null && s[backupKey] != null) {
-            setter(s[backupKey]);
-            safeSetStorage(localKey, JSON.stringify(s[backupKey]));
+        const backupVal = s[backupKey];
+        if (backupVal == null) continue;
+
+        let parsedLocal;
+        let hasParsableLocal = false;
+        if (localVal != null) {
+            try {
+                parsedLocal = JSON.parse(localVal);
+                hasParsableLocal = true;
+            } catch {
+                hasParsableLocal = false;
+            }
+        }
+
+        const expectsArray = Array.isArray(backupVal);
+        const expectsObject = !expectsArray && typeof backupVal === "object" && backupVal !== null;
+        const typeMismatch = hasParsableLocal && (
+            (expectsArray && !Array.isArray(parsedLocal)) ||
+            (expectsObject && (typeof parsedLocal !== "object" || parsedLocal === null || Array.isArray(parsedLocal)))
+        );
+
+        if (localVal == null || !hasParsableLocal || typeMismatch) {
+            setter(backupVal);
+            safeSetStorage(localKey, JSON.stringify(backupVal));
             restoredCount++;
         }
     }
@@ -2129,9 +2150,16 @@ async function genNovelAI(prompt, negative, s, signal) {
             throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
         }
         if (json.url.startsWith("data:")) return json.url;
-        // Relative URL — prepend proxy base
+        if (/^https?:\/\//i.test(json.url)) return json.url;
+
+        // Relative URL - resolve against proxy base
         const baseUrl = s.naiProxyUrl.replace(/\/generate\/?$/, "").replace(/\/$/, "");
-        return baseUrl + json.url;
+        try {
+            return new URL(String(json.url), baseUrl + "/").toString();
+        } catch {
+            const rel = String(json.url);
+            return baseUrl + (rel.startsWith("/") ? rel : "/" + rel);
+        }
     }
 
     const arrayBuffer = await res.arrayBuffer();
@@ -5515,7 +5543,7 @@ function refreshAllUI(s) {
         "qig-batch": "batchCount", "qig-provider": "provider", "qig-style": "style",
         "qig-llm-style": "llmPromptStyle",
         "qig-llm-prefill": "llmPrefill",
-        "qig-llm-instruction": "llmCustomInstruction",
+        "qig-llm-custom": "llmCustomInstruction",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
         "qig-inject-insert-mode": "injectInsertMode",
@@ -5536,6 +5564,7 @@ function refreshAllUI(s) {
         if (el) el.checked = !!s[key];
     });
     updateProviderUI();
+    refreshProviderInputs(s.provider);
     renderProfileSelect();
     // Update seq seeds visibility
     const seqWrap = document.getElementById("qig-seq-seeds-wrap");
@@ -8128,12 +8157,18 @@ function warnSaveToServer(msg) {
 }
 
 function getMetadataSettings(s) {
+    const isProxy = s.provider === "proxy";
+    const steps = isProxy ? (s.proxySteps ?? s.steps) : s.steps;
+    const sampler = isProxy ? (s.proxySampler || s.sampler) : s.sampler;
+    const cfgScale = isProxy ? (s.proxyCfg ?? s.cfgScale) : s.cfgScale;
+    const seed = isProxy ? (s.proxySeed ?? s.seed) : s.seed;
+
     return {
-        steps: s.steps,
-        sampler: s.sampler,
+        steps,
+        sampler,
         scheduler: s.provider === "local" && s.localType === "a1111" ? s.a1111Scheduler : undefined,
-        cfgScale: s.cfgScale,
-        seed: s.seed,
+        cfgScale,
+        seed,
         width: s.width,
         height: s.height,
         provider: s.provider,
@@ -8312,14 +8347,7 @@ function embedPNGMetadata(arrayBuffer, text) {
 
 async function downloadWithMetadata(url, filename, prompt, negative, settings) {
     try {
-        let arrayBuffer;
-        if (url.startsWith('data:')) {
-            const resp = await fetch(url);
-            arrayBuffer = await resp.arrayBuffer();
-        } else {
-            const resp = await fetch(url);
-            arrayBuffer = await resp.arrayBuffer();
-        }
+        const { buffer: arrayBuffer } = await fetchImageBuffer(url);
         const metaText = buildMetadataString(prompt, negative, settings);
         const isPNG = new Uint8Array(arrayBuffer).slice(0, 4).join(',') === '137,80,78,71';
         const finalBuffer = isPNG ? embedPNGMetadata(arrayBuffer, metaText) : arrayBuffer;
@@ -8334,6 +8362,7 @@ async function downloadWithMetadata(url, filename, prompt, negative, settings) {
         setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     } catch (err) {
         console.error("Download with metadata failed:", err);
+        toastr?.warning?.("Could not embed metadata for this image; opening original file.");
         window.open(url, '_blank');
     }
 }
@@ -8451,7 +8480,10 @@ async function handleMetadataDrop(e) {
     if (!file) return;
     const fileType = (file.type || "").toLowerCase();
     const fileName = (file.name || "").toLowerCase();
-    if (fileType && !fileType.startsWith('image/png') && !fileName.endsWith('.png')) return;
+    const isPngMime = fileType.startsWith('image/png');
+    const isPngName = fileName.endsWith('.png');
+    const hasNoMime = !fileType;
+    if (!isPngMime && !(hasNoMime && isPngName)) return;
 
     showStatus("🔍 Reading metadata...");
     try {

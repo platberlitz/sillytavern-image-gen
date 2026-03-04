@@ -5,6 +5,14 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.4.8
+- Comprehensive bug-sweep release focused on preset/UI consistency and metadata reliability.
+- Fixed preset load UI sync regressions (custom LLM instruction field mapping + provider input refresh after preset load).
+- Fixed PNG metadata parser edge cases for Proxy mode (uses proxy sampler/CFG/seed/steps when provider is Proxy).
+- Improved Proxy URL handling to support both absolute and relative endpoint paths safely.
+- Download fallback now reuses normalized image fetch path for better provider compatibility.
+- Hardened settings restore from backup when localStorage is missing, malformed, or mismatched.
+
 ## What's New in v1.4.7
 - Added **Prompt Replacement Maps** for native token-level substitutions (e.g., `miranda` -> `<lora:...>, 1girl, ...`) with Global/Character scope, target field selection, and priority ordering.
 - Prompt Replacement Maps now run in **Direct Mode** and **Inject Mode** flows after contextual filters.
