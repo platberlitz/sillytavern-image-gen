@@ -5,11 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v1.4.5
-- Contextual Filters now support **Remove From Positive/Negative** rules so you can remove conflicting tokens before adding new ones.
-- LoRA removal matching is **name-based** (weight-insensitive), so `<lora:foo>` removes any `<lora:foo:*>` variant.
-- LLM contextual filters now use the same remove+append pipeline as keyword filters for consistent behavior.
-- Added compact per-filter debug logs showing what each contextual filter removed/added and the resulting prompt state.
+## What's New in v1.4.7
+- Added **Prompt Replacement Maps** for native token-level substitutions (e.g., `miranda` -> `<lora:...>, 1girl, ...`) with Global/Character scope, target field selection, and priority ordering.
+- Prompt Replacement Maps now run in **Direct Mode** and **Inject Mode** flows after contextual filters.
+- Prompt Replacement Maps are now included in **generation presets** and **settings export/import**.
+- Added a manual QA matrix for replacement behavior and endpoint coexistence: [`docs/prompt-replacement-test-matrix-2026-03-04.md`](docs/prompt-replacement-test-matrix-2026-03-04.md)
 
 ---
 
@@ -49,6 +49,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
 - 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** and **pool-based bulk enable/disable** (global + per-character pools)
+- 🔁 **Prompt Replacement Maps** - Native exact-token replacements for prompt tags/text with priority, target field control (positive/negative/both), and global or character scope
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
 - 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
@@ -438,7 +439,7 @@ IP-Adapter Face allows you to use a reference image to copy **only the face** (n
 
 ## Contextual Filters
 
-Lorebook-style keyword triggers that automatically inject positive/negative prompt additions when trigger words appear in the scene text. Useful for character-specific LoRAs, multi-character scenarios, and franchise RPG cards.
+Lorebook-style keyword triggers that automatically inject positive/negative prompt additions when trigger words appear in the scene text. Useful for character-specific LoRAs, multi-character scenarios, and franchise RPG cards. For exact token replacement/substitution, use **Prompt Replacement Maps** below.
 
 ### How It Works
 
@@ -509,6 +510,39 @@ Filters are included in settings export/import and can be saved inside generatio
 
 ---
 
+## Prompt Replacement Maps
+
+Prompt Replacement Maps provide native token-level substitutions for prompt tags/text. This is useful for character aliases like:
+
+- Trigger: `miranda`
+- Replacement: `<lora:miranda_v2:0.8>, 1girl, miranda, detailed face`
+
+### How It Works
+
+Each map has:
+
+- **Trigger Tokens** (comma-separated) — exact match against comma-separated prompt tokens
+- **Replacement Text** — appended after matching trigger tokens are removed
+- **Target Field** — `Positive`, `Negative`, or `Both`
+- **Priority** — higher priority runs first
+- **Scope** — `Global` or `This Character`
+
+Execution behavior:
+
+1. Maps run after contextual filters (including LLM concept filters)
+2. Matching tokens are removed from the targeted prompt field
+3. Replacement text is appended
+4. A trigger token can only be claimed once per pass (by the highest-priority eligible map)
+
+Additional notes:
+
+- LoRA trigger matching is **name-based** and weight-insensitive (`<lora:foo>` matches `<lora:foo:0.6>`)
+- Character-scoped maps are keyed to SillyTavern `characterId`
+- Maps are included in settings export/import and generation presets
+- Manual QA matrix: [`docs/prompt-replacement-test-matrix-2026-03-04.md`](docs/prompt-replacement-test-matrix-2026-03-04.md)
+
+---
+
 ## ST Style Integration
 
 When enabled (default: on), QIG reads SillyTavern's built-in Style panel settings from the SD extension:
@@ -529,7 +563,7 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 
 1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<image>description</image>` or `<pic prompt="description">` tags for visual moments
 2. **Extraction**: When the AI responds, QIG scans for image tags using a configurable regex
-3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append] → provider)
+3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append] → prompt replacement maps → provider)
 4. **Cleanup**: Tags are optionally removed from the displayed message
 
 ### Settings

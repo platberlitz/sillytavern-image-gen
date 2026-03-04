@@ -206,6 +206,9 @@ const defaultSettings = {
     _backupFilterPools: null,
     _backupActiveFilterPoolIdsGlobal: null,
     _backupActiveFilterPoolIdsByChar: null,
+    _backupPromptReplacements: null,
+    _backupActivePromptReplacementIdsGlobal: null,
+    _backupActivePromptReplacementIdsByChar: null,
 };
 
 let lastPrompt = "";
@@ -241,6 +244,9 @@ const BACKUP_KEYS = {
     qig_filter_pools: "_backupFilterPools",
     qig_active_pool_ids_global: "_backupActiveFilterPoolIdsGlobal",
     qig_active_pool_ids_by_char: "_backupActiveFilterPoolIdsByChar",
+    qig_prompt_replacements: "_backupPromptReplacements",
+    qig_active_prompt_replacement_ids_global: "_backupActivePromptReplacementIdsGlobal",
+    qig_active_prompt_replacement_ids_by_char: "_backupActivePromptReplacementIdsByChar",
 };
 function backupToSettings(localKey, data) {
     const backupKey = BACKUP_KEYS[localKey];
@@ -269,6 +275,9 @@ let contextualFilters = safeParse("qig_contextual_filters", []);
 let filterPools = safeParse("qig_filter_pools", []);
 let activeFilterPoolIdsGlobal = safeParse("qig_active_pool_ids_global", []);
 let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
+let promptReplacements = safeParse("qig_prompt_replacements", []);
+let activePromptReplacementIdsGlobal = safeParse("qig_active_prompt_replacement_ids_global", []);
+let activePromptReplacementIdsByChar = safeParse("qig_active_prompt_replacement_ids_by_char", {});
 let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const blobUrls = new Set();
@@ -787,6 +796,9 @@ async function loadSettings() {
         { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", setter: v => { filterPools = v; } },
         { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", setter: v => { activeFilterPoolIdsGlobal = v; } },
         { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
+        { localKey: "qig_prompt_replacements", backupKey: "_backupPromptReplacements", setter: v => { promptReplacements = v; } },
+        { localKey: "qig_active_prompt_replacement_ids_global", backupKey: "_backupActivePromptReplacementIdsGlobal", setter: v => { activePromptReplacementIdsGlobal = v; } },
+        { localKey: "qig_active_prompt_replacement_ids_by_char", backupKey: "_backupActivePromptReplacementIdsByChar", setter: v => { activePromptReplacementIdsByChar = v; } },
     ];
     let restoredCount = 0;
     for (const { localKey, backupKey, setter } of restoreTargets) {
@@ -802,6 +814,7 @@ async function loadSettings() {
         toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
     }
     ensureFilterPoolsState({ persist: true });
+    ensurePromptReplacementState({ persist: true });
 }
 
 function normalizePoolIdList(poolIds) {
@@ -952,6 +965,154 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         persistFilterPoolState();
     }
     return changed;
+}
+
+function buildPromptReplacementActiveStateFromRules(rules = promptReplacements) {
+    const globalIds = [];
+    const byChar = {};
+    for (const rule of (rules || [])) {
+        if (!rule?.enabled || !rule?.id) continue;
+        if (rule.scope === "char") {
+            const key = String(rule.charId || "");
+            if (!key) continue;
+            if (!byChar[key]) byChar[key] = [];
+            byChar[key].push(rule.id);
+        } else {
+            globalIds.push(rule.id);
+        }
+    }
+    return {
+        globalIds: normalizePoolIdList(globalIds),
+        byChar: Object.fromEntries(
+            Object.entries(byChar)
+                .map(([charId, ids]) => [charId, normalizePoolIdList(ids)])
+                .filter(([, ids]) => ids.length > 0)
+        ),
+    };
+}
+
+function savePromptReplacementActiveState() {
+    const okGlobal = safeSetStorage("qig_active_prompt_replacement_ids_global", JSON.stringify(activePromptReplacementIdsGlobal), "Failed to save global replacement map states. Browser storage may be full.");
+    const okByChar = safeSetStorage("qig_active_prompt_replacement_ids_by_char", JSON.stringify(activePromptReplacementIdsByChar), "Failed to save character replacement map states. Browser storage may be full.");
+    if (okGlobal) backupToSettings("qig_active_prompt_replacement_ids_global", activePromptReplacementIdsGlobal);
+    if (okByChar) backupToSettings("qig_active_prompt_replacement_ids_by_char", activePromptReplacementIdsByChar);
+    return okGlobal && okByChar;
+}
+
+function savePromptReplacements() {
+    const computed = buildPromptReplacementActiveStateFromRules(promptReplacements);
+    activePromptReplacementIdsGlobal = computed.globalIds;
+    activePromptReplacementIdsByChar = computed.byChar;
+    const okReplacements = safeSetStorage("qig_prompt_replacements", JSON.stringify(promptReplacements), "Failed to save prompt replacement maps. Browser storage may be full.");
+    if (okReplacements) backupToSettings("qig_prompt_replacements", promptReplacements);
+    const okState = savePromptReplacementActiveState();
+    return okReplacements && okState;
+}
+
+function ensurePromptReplacementState({ persist = false } = {}) {
+    let changed = false;
+    const incoming = Array.isArray(promptReplacements) ? promptReplacements : [];
+    if (!Array.isArray(promptReplacements)) changed = true;
+
+    const normalized = [];
+    const seenIds = new Set();
+    for (const raw of incoming) {
+        if (!raw || typeof raw !== "object") { changed = true; continue; }
+        let id = String(raw.id || "").trim();
+        if (!id || seenIds.has(id)) {
+            id = `qig_repl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+            changed = true;
+        }
+        let scope = (raw.scope === "char" || (raw.charId != null && raw.charId !== "")) ? "char" : "global";
+        let charId = raw.charId != null && raw.charId !== "" ? String(raw.charId) : null;
+        if (!charId && scope === "char") {
+            scope = "global";
+            changed = true;
+        }
+        if (scope === "global") charId = null;
+        const target = raw.target === "positive" || raw.target === "negative" || raw.target === "both" ? raw.target : "both";
+        const priorityValue = Number(raw.priority);
+        normalized.push({
+            id,
+            name: String(raw.name || "").trim() || "Untitled replacement",
+            enabled: raw.enabled !== false,
+            scope,
+            charId,
+            target,
+            trigger: String(raw.trigger || "").trim(),
+            replacement: String(raw.replacement || "").trim(),
+            priority: Number.isFinite(priorityValue) ? Math.trunc(priorityValue) : 0,
+            createdAt: raw.createdAt || new Date().toISOString(),
+            updatedAt: raw.updatedAt || new Date().toISOString(),
+        });
+        seenIds.add(id);
+    }
+    promptReplacements = normalized;
+
+    const globalIds = new Set(promptReplacements.filter(r => r.scope === "global").map(r => r.id));
+    const charIdsByChar = new Map();
+    for (const rule of promptReplacements) {
+        if (rule.scope !== "char" || !rule.charId) continue;
+        const key = String(rule.charId);
+        if (!charIdsByChar.has(key)) charIdsByChar.set(key, new Set());
+        charIdsByChar.get(key).add(rule.id);
+    }
+
+    const storedGlobal = normalizePoolIdList(activePromptReplacementIdsGlobal).filter(id => globalIds.has(id));
+    if (JSON.stringify(storedGlobal) !== JSON.stringify(normalizePoolIdList(activePromptReplacementIdsGlobal))) changed = true;
+
+    const incomingByChar = activePromptReplacementIdsByChar && typeof activePromptReplacementIdsByChar === "object" && !Array.isArray(activePromptReplacementIdsByChar)
+        ? activePromptReplacementIdsByChar
+        : {};
+    if (incomingByChar !== activePromptReplacementIdsByChar) changed = true;
+    const storedByChar = {};
+    for (const [charIdRaw, ids] of Object.entries(incomingByChar)) {
+        const key = String(charIdRaw);
+        const allowed = charIdsByChar.get(key);
+        if (!allowed?.size) continue;
+        const nextIds = normalizePoolIdList(ids).filter(id => allowed.has(id));
+        if (nextIds.length > 0) storedByChar[key] = nextIds;
+    }
+    if (JSON.stringify(storedByChar) !== JSON.stringify(incomingByChar)) changed = true;
+
+    const computed = buildPromptReplacementActiveStateFromRules(promptReplacements);
+    if (JSON.stringify(activePromptReplacementIdsGlobal) !== JSON.stringify(computed.globalIds)) changed = true;
+    if (JSON.stringify(activePromptReplacementIdsByChar) !== JSON.stringify(computed.byChar)) changed = true;
+    activePromptReplacementIdsGlobal = computed.globalIds;
+    activePromptReplacementIdsByChar = computed.byChar;
+
+    if (persist && changed) {
+        savePromptReplacements();
+    }
+    return changed;
+}
+
+function getPromptReplacementScopeRank(rule) {
+    return rule?.scope === "char" ? 1 : 0;
+}
+
+function comparePromptReplacements(a, b) {
+    const byPriority = (b.priority || 0) - (a.priority || 0);
+    if (byPriority !== 0) return byPriority;
+    const byScope = getPromptReplacementScopeRank(b) - getPromptReplacementScopeRank(a);
+    if (byScope !== 0) return byScope;
+    const byCreated = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
+    if (byCreated !== 0) return byCreated;
+    return String(a.id || "").localeCompare(String(b.id || ""));
+}
+
+function getActivePromptReplacements() {
+    ensurePromptReplacementState();
+    const charId = getCurrentCharId();
+    return promptReplacements
+        .filter(rule => {
+            if (!rule?.enabled) return false;
+            if (rule.scope === "char") {
+                return rule.charId && String(rule.charId) === String(charId);
+            }
+            return true;
+        })
+        .sort(comparePromptReplacements);
 }
 
 function getSettings() {
@@ -1264,6 +1425,92 @@ function applyContextualFilters(prompt, negative, sceneText) {
     const applied = applyMatchedFiltersWithDebug(prompt, negative, surviving, "Contextual filter");
     log(`Contextual filters: ${surviving.length} applied (${matched.length - surviving.length} suppressed, ${applied.removedCount} token(s) removed)`);
     return { prompt: applied.prompt, negative: applied.negative };
+}
+
+function parsePromptReplacementTriggers(triggerText) {
+    return splitPromptTokens(triggerText)
+        .map(token => ({
+            raw: token,
+            identity: getPromptTokenIdentity(token),
+        }))
+        .filter(entry => entry.identity);
+}
+
+function applyPromptReplacementMaps(prompt, negative) {
+    const rules = getActivePromptReplacements();
+    if (!rules.length) return { prompt, negative, appliedCount: 0, replacedTokenCount: 0 };
+    let p = String(prompt || "");
+    let n = String(negative || "");
+    const consumedPositive = new Set();
+    const consumedNegative = new Set();
+    let appliedCount = 0;
+    let replacedTokenCount = 0;
+
+    const applyToField = (text, fieldKey, triggers, replacementText) => {
+        if (!triggers.length) return { text, matched: false, replaced: 0 };
+        const consumed = fieldKey === "positive" ? consumedPositive : consumedNegative;
+        const triggerIds = triggers.map(t => t.identity).filter(id => !consumed.has(id));
+        if (!triggerIds.length) return { text, matched: false, replaced: 0 };
+        const allowed = new Set(triggerIds);
+        const sourceTokens = splitPromptTokens(text);
+        if (!sourceTokens.length) return { text, matched: false, replaced: 0 };
+        let matched = false;
+        let replaced = 0;
+        const matchedIds = new Set();
+        const kept = [];
+        for (const token of sourceTokens) {
+            const identity = getPromptTokenIdentity(token);
+            if (identity && allowed.has(identity)) {
+                matched = true;
+                replaced += 1;
+                matchedIds.add(identity);
+            } else {
+                kept.push(token);
+            }
+        }
+        if (!matched) return { text, matched: false, replaced: 0 };
+        for (const id of matchedIds) consumed.add(id);
+        const next = appendPromptText(kept.join(", "), replacementText);
+        return { text: next, matched: true, replaced };
+    };
+
+    for (const rule of rules) {
+        const triggers = parsePromptReplacementTriggers(rule.trigger);
+        const replacementText = String(rule.replacement || "").trim();
+        if (!triggers.length || !replacementText) continue;
+        const target = rule.target || "both";
+        let ruleMatched = false;
+        let ruleReplacedTokens = 0;
+
+        if (target === "both" || target === "positive") {
+            const result = applyToField(p, "positive", triggers, replacementText);
+            p = result.text;
+            if (result.matched) {
+                ruleMatched = true;
+                ruleReplacedTokens += result.replaced;
+            }
+        }
+        if (target === "both" || target === "negative") {
+            const result = applyToField(n, "negative", triggers, replacementText);
+            n = result.text;
+            if (result.matched) {
+                ruleMatched = true;
+                ruleReplacedTokens += result.replaced;
+            }
+        }
+
+        if (ruleMatched) {
+            appliedCount += 1;
+            replacedTokenCount += ruleReplacedTokens;
+            const scopeLabel = rule.scope === "char" ? `char:${rule.charId}` : "global";
+            log(`Replacement map "${rule.name || "(unnamed)"}" [${scopeLabel}] p${rule.priority || 0} ${rule.target || "both"}: replaced ${ruleReplacedTokens} token(s) -> ${previewTextForLog(rule.replacement, 80)}`);
+        }
+    }
+
+    if (appliedCount > 0) {
+        log(`Replacement maps: ${appliedCount} applied (${replacedTokenCount} token(s) replaced)`);
+    }
+    return { prompt: p, negative: n, appliedCount, replacedTokenCount };
 }
 
 async function matchLLMFilters(sceneText) {
@@ -4636,6 +4883,234 @@ function renderContextualFilters() {
         <button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
 }
 
+function showPromptReplacementDialog(rule) {
+    const isNew = !rule;
+    const r = rule || {
+        name: "",
+        scope: "global",
+        charId: null,
+        target: "both",
+        trigger: "",
+        replacement: "",
+        priority: 0,
+    };
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    const editingDifferentChar = r.scope === "char" && r.charId && (!currentCharId || String(r.charId) !== String(currentCharId));
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-replacement-dialog", isNew ? "Add Prompt Replacement Map" : "Edit Prompt Replacement Map", `
+            <div style="padding:12px;">
+                <label style="font-size:11px;">Name</label>
+                <input id="qig-rd-name" type="text" value="${escapeHtml(r.name || "")}" placeholder="e.g., Miranda character map" style="width:100%;margin-bottom:8px;">
+                <label style="font-size:11px;">Scope</label>
+                <select id="qig-rd-scope" style="width:100%;margin-bottom:8px;">
+                    <option value="global" ${(r.scope !== "char" || !r.charId) ? "selected" : ""}>Global (all characters)</option>
+                    ${currentCharId != null ? `<option value="char:${escapeHtml(String(currentCharId))}" ${r.scope === "char" && String(r.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
+                    ${editingDifferentChar ? `<option value="char:${escapeHtml(String(r.charId))}" selected disabled>Other Character (${escapeHtml(String(r.charId))})</option>` : ""}
+                </select>
+                <label style="font-size:11px;">Target Field</label>
+                <select id="qig-rd-target" style="width:100%;margin-bottom:8px;">
+                    <option value="both" ${r.target === "both" ? "selected" : ""}>Both (Positive + Negative)</option>
+                    <option value="positive" ${r.target === "positive" ? "selected" : ""}>Positive Prompt only</option>
+                    <option value="negative" ${r.target === "negative" ? "selected" : ""}>Negative Prompt only</option>
+                </select>
+                <label style="font-size:11px;">Trigger Tokens (comma-separated, exact token match)</label>
+                <textarea id="qig-rd-trigger" style="width:100%;height:50px;resize:vertical;" placeholder="miranda, miranda_style">${escapeHtml(r.trigger || "")}</textarea>
+                <small style="display:block;opacity:0.65;font-size:10px;margin-bottom:8px;">Matches comma-separated prompt tokens exactly. LoRA tags match by name, weight-insensitive.</small>
+                <label style="font-size:11px;">Replacement Text</label>
+                <textarea id="qig-rd-replacement" style="width:100%;height:60px;resize:vertical;" placeholder="&lt;lora:miranda_v2:0.8&gt;, 1girl, miranda, detailed face">${escapeHtml(r.replacement || "")}</textarea>
+                <label style="font-size:11px;">Priority (higher runs first)</label>
+                <input id="qig-rd-priority" type="number" value="${r.priority || 0}" style="width:80px;margin-bottom:12px;">
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button id="qig-rd-cancel" class="menu_button">Cancel</button>
+                    <button id="qig-rd-save" class="menu_button">Save</button>
+                </div>
+            </div>`, (popup) => {
+            const close = (e) => {
+                e?.preventDefault?.();
+                e?.stopPropagation?.();
+                setTimeout(() => {
+                    popup.style.display = "none";
+                    resolve(null);
+                }, 0);
+            };
+            document.getElementById("qig-rd-name").focus();
+            document.getElementById("qig-rd-cancel").onclick = close;
+            document.getElementById("qig-rd-save").onclick = (e) => {
+                e?.preventDefault?.();
+                e?.stopPropagation?.();
+                const name = document.getElementById("qig-rd-name").value.trim();
+                const scopeVal = document.getElementById("qig-rd-scope").value;
+                const target = document.getElementById("qig-rd-target").value;
+                const trigger = document.getElementById("qig-rd-trigger").value.trim();
+                const replacement = document.getElementById("qig-rd-replacement").value.trim();
+                if (!name) { alert("Name is required."); return; }
+                if (!trigger) { alert("Trigger tokens are required."); return; }
+                if (!replacement) { alert("Replacement text is required."); return; }
+                let scope = "global";
+                let charId = null;
+                if (scopeVal.startsWith("char:")) {
+                    scope = "char";
+                    charId = scopeVal.slice(5) || null;
+                    if (!charId) {
+                        alert("Character scope requires an active character.");
+                        return;
+                    }
+                }
+                const priority = parseInt(document.getElementById("qig-rd-priority").value, 10) || 0;
+                setTimeout(() => { popup.style.display = "none"; }, 0);
+                resolve({ name, scope, charId, target, trigger, replacement, priority });
+            };
+            popup.onclick = (e) => { if (e.target === popup) close(e); };
+            const popupCloseBtn = popup.querySelector(".qig-close-btn");
+            if (popupCloseBtn) popupCloseBtn.onclick = close;
+        });
+    });
+}
+
+async function addPromptReplacement() {
+    const result = await showPromptReplacementDialog(null);
+    if (!result) return;
+    const now = new Date().toISOString();
+    promptReplacements.push({
+        id: crypto.randomUUID(),
+        enabled: true,
+        createdAt: now,
+        updatedAt: now,
+        ...result,
+    });
+    ensurePromptReplacementState({ persist: true });
+    renderPromptReplacements();
+}
+
+async function editPromptReplacement(id) {
+    const rule = promptReplacements.find(x => x.id === id);
+    if (!rule) return;
+    const result = await showPromptReplacementDialog(rule);
+    if (!result) return;
+    Object.assign(rule, result, { updatedAt: new Date().toISOString() });
+    ensurePromptReplacementState({ persist: true });
+    renderPromptReplacements();
+}
+
+function deletePromptReplacement(id) {
+    const idx = promptReplacements.findIndex(x => x.id === id);
+    if (idx === -1) return;
+    promptReplacements.splice(idx, 1);
+    savePromptReplacements();
+    renderPromptReplacements();
+}
+
+function togglePromptReplacement(id) {
+    const rule = promptReplacements.find(x => x.id === id);
+    if (!rule) return;
+    rule.enabled = !rule.enabled;
+    rule.updatedAt = new Date().toISOString();
+    savePromptReplacements();
+    renderPromptReplacements();
+}
+
+function duplicatePromptReplacement(id) {
+    const rule = promptReplacements.find(x => x.id === id);
+    if (!rule) return;
+    const charId = getCurrentCharId();
+    const duplicateScope = rule.scope === "char" ? "global" : "char";
+    const duplicateCharId = duplicateScope === "char" ? (charId != null ? String(charId) : null) : null;
+    if (duplicateScope === "char" && !duplicateCharId) return;
+    const now = new Date().toISOString();
+    promptReplacements.push({
+        ...JSON.parse(JSON.stringify(rule)),
+        id: crypto.randomUUID(),
+        scope: duplicateScope,
+        charId: duplicateCharId,
+        createdAt: now,
+        updatedAt: now,
+    });
+    savePromptReplacements();
+    renderPromptReplacements();
+}
+
+function clearPromptReplacements() {
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    if (currentCharId != null) {
+        const choice = prompt(
+            `Clear replacement maps — type a number:\n1) All replacement maps\n2) Global maps only\n3) ${charName || "This character"}'s maps only\n\nCancel to abort.`
+        );
+        if (!choice) return;
+        const n = parseInt(choice, 10);
+        if (n === 1) {
+            promptReplacements = [];
+        } else if (n === 2) {
+            promptReplacements = promptReplacements.filter(r => r.scope === "char");
+        } else if (n === 3) {
+            promptReplacements = promptReplacements.filter(r => !(r.scope === "char" && String(r.charId) === String(currentCharId)));
+        } else {
+            return;
+        }
+    } else {
+        if (!confirm("Clear all prompt replacement maps?")) return;
+        promptReplacements = [];
+    }
+    savePromptReplacements();
+    renderPromptReplacements();
+}
+
+function renderPromptReplacements() {
+    const container = document.getElementById("qig-prompt-replacements");
+    if (!container) return;
+    ensurePromptReplacementState();
+    const currentCharId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    const globalRules = promptReplacements
+        .filter(r => r.scope !== "char")
+        .sort(comparePromptReplacements);
+    const charRules = currentCharId != null
+        ? promptReplacements
+            .filter(r => r.scope === "char" && String(r.charId) === String(currentCharId))
+            .sort(comparePromptReplacements)
+        : [];
+    const otherCount = promptReplacements.filter(r => r.scope === "char" && (!currentCharId || String(r.charId) !== String(currentCharId))).length;
+
+    const renderRow = (r) => {
+        const eId = escapeHtml(r.id || "");
+        const eName = escapeHtml(r.name || "");
+        const eTrigger = escapeHtml(r.trigger || "");
+        const eReplacement = escapeHtml(r.replacement || "");
+        const isGlobal = r.scope !== "char";
+        const badge = isGlobal
+            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global map">G</span>`
+            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Character map">C</span>`;
+        const targetLabel = r.target === "positive" ? "P" : r.target === "negative" ? "N" : "P+N";
+        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;${r.enabled ? "" : "opacity:0.72;"}">` +
+            `<input type="checkbox" ${r.enabled ? "checked" : ""} onchange="togglePromptReplacement('${eId}')" title="Enable/disable">` +
+            badge +
+            `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editPromptReplacement('${eId}')" title="Trigger: ${eTrigger}\nReplacement: ${eReplacement}\nPriority: ${r.priority || 0}\nTarget: ${targetLabel}">${eName}</button>` +
+            `<span style="opacity:0.6;font-size:9px;">${targetLabel} p${r.priority || 0}${r.enabled ? "" : " off"}</span>` +
+            `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicatePromptReplacement('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
+            `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deletePromptReplacement('${eId}')">×</button>` +
+            `</div>`;
+    };
+
+    let html = "";
+    if (globalRules.length) {
+        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Maps (${globalRules.length})</div>`;
+        html += globalRules.map(renderRow).join("");
+    }
+    if (charRules.length) {
+        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Maps (${charRules.length})</div>`;
+        html += charRules.map(renderRow).join("");
+    }
+    if (otherCount > 0) {
+        html += `<div style="font-size:9px;opacity:0.5;margin:4px 0 2px;font-style:italic;">${otherCount} map(s) for other characters (hidden)</div>`;
+    }
+    if (!html) {
+        html = `<div style="font-size:10px;opacity:0.65;margin:4px 0;">No replacement maps yet. Add one to get started.</div>`;
+    }
+    container.innerHTML = `<div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>
+        <button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearPromptReplacements()">Clear All</button>`;
+}
+
 window.addContextualFilter = addContextualFilter;
 window.editContextualFilter = editContextualFilter;
 window.deleteContextualFilter = deleteContextualFilter;
@@ -4648,6 +5123,12 @@ window.renameFilterPool = renameFilterPool;
 window.deleteFilterPool = deleteFilterPool;
 window.toggleFilterPool = toggleFilterPool;
 window.setVisiblePoolsEnabled = setVisiblePoolsEnabled;
+window.addPromptReplacement = addPromptReplacement;
+window.editPromptReplacement = editPromptReplacement;
+window.deletePromptReplacement = deletePromptReplacement;
+window.togglePromptReplacement = togglePromptReplacement;
+window.duplicatePromptReplacement = duplicatePromptReplacement;
+window.clearPromptReplacements = clearPromptReplacements;
 
 // Character-specific settings
 function getCurrentRefImages(s) {
@@ -4724,6 +5205,7 @@ function loadCharSettings() {
         saveSettingsDebounced();
     }
     renderContextualFilters();
+    renderPromptReplacements();
     return true;
 }
 
@@ -4937,6 +5419,9 @@ function savePreset() {
     preset.filterPools = JSON.parse(JSON.stringify(filterPools));
     preset.activeFilterPoolIdsGlobal = [...normalizePoolIdList(activeFilterPoolIdsGlobal)];
     preset.activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(activeFilterPoolIdsByChar || {}));
+    preset.promptReplacements = JSON.parse(JSON.stringify(promptReplacements));
+    preset.activePromptReplacementIdsGlobal = [...normalizePoolIdList(activePromptReplacementIdsGlobal)];
+    preset.activePromptReplacementIdsByChar = JSON.parse(JSON.stringify(activePromptReplacementIdsByChar || {}));
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
@@ -4968,8 +5453,19 @@ function loadPreset(i) {
     if (p.activeFilterPoolIdsByChar) {
         activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByChar));
     }
+    if (p.promptReplacements) {
+        promptReplacements = JSON.parse(JSON.stringify(p.promptReplacements));
+    }
+    if (p.activePromptReplacementIdsGlobal) {
+        activePromptReplacementIdsGlobal = JSON.parse(JSON.stringify(p.activePromptReplacementIdsGlobal));
+    }
+    if (p.activePromptReplacementIdsByChar) {
+        activePromptReplacementIdsByChar = JSON.parse(JSON.stringify(p.activePromptReplacementIdsByChar));
+    }
     ensureFilterPoolsState({ persist: true });
+    ensurePromptReplacementState({ persist: true });
     renderContextualFilters();
+    renderPromptReplacements();
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
@@ -5049,6 +5545,8 @@ function refreshAllUI(s) {
     if (injectOpts) injectOpts.style.display = s.injectEnabled ? "block" : "none";
     const injectDepthWrap = document.getElementById("qig-inject-depth-wrap");
     if (injectDepthWrap) injectDepthWrap.style.display = s.injectPosition === "atDepth" ? "block" : "none";
+    renderContextualFilters();
+    renderPromptReplacements();
 }
 
 window.loadPreset = loadPreset;
@@ -5058,7 +5556,7 @@ window.clearPresets = clearPresets;
 // === Export / Import Settings ===
 function exportAllSettings() {
     const data = {
-        version: 3,
+        version: 4,
         exportDate: new Date().toISOString(),
         connectionProfiles,
         comfyWorkflows,
@@ -5070,6 +5568,9 @@ function exportAllSettings() {
         filterPools,
         activeFilterPoolIdsGlobal,
         activeFilterPoolIdsByChar,
+        promptReplacements,
+        activePromptReplacementIdsGlobal,
+        activePromptReplacementIdsByChar,
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -5145,12 +5646,29 @@ function importSettings() {
                 if (!safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar))) throw new Error("Could not save imported character pool states. Browser storage may be full.");
                 backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
             }
+            if (Array.isArray(data.promptReplacements)) {
+                promptReplacements = data.promptReplacements;
+                if (!safeSetStorage("qig_prompt_replacements", JSON.stringify(promptReplacements))) throw new Error("Could not save imported prompt replacement maps. Browser storage may be full.");
+                backupToSettings("qig_prompt_replacements", promptReplacements);
+            }
+            if (Array.isArray(data.activePromptReplacementIdsGlobal)) {
+                activePromptReplacementIdsGlobal = data.activePromptReplacementIdsGlobal;
+                if (!safeSetStorage("qig_active_prompt_replacement_ids_global", JSON.stringify(activePromptReplacementIdsGlobal))) throw new Error("Could not save imported global prompt replacement map states. Browser storage may be full.");
+                backupToSettings("qig_active_prompt_replacement_ids_global", activePromptReplacementIdsGlobal);
+            }
+            if (data.activePromptReplacementIdsByChar && typeof data.activePromptReplacementIdsByChar === "object") {
+                activePromptReplacementIdsByChar = data.activePromptReplacementIdsByChar;
+                if (!safeSetStorage("qig_active_prompt_replacement_ids_by_char", JSON.stringify(activePromptReplacementIdsByChar))) throw new Error("Could not save imported character prompt replacement map states. Browser storage may be full.");
+                backupToSettings("qig_active_prompt_replacement_ids_by_char", activePromptReplacementIdsByChar);
+            }
             ensureFilterPoolsState({ persist: true });
+            ensurePromptReplacementState({ persist: true });
             renderTemplates();
             renderPresets();
             renderProfileSelect();
             renderComfyWorkflowPresets();
             renderContextualFilters();
+            renderPromptReplacements();
             toastr.success("Settings imported successfully");
         } catch (err) {
             console.error("[Quick Image Gen] Import failed:", err);
@@ -6027,6 +6545,17 @@ function createUI() {
                         <button id="qig-add-filter-btn" class="menu_button" style="padding:4px 8px;">+ Add Filter</button>
                     </div>
                 </div>
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Prompt Replacement Maps</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small style="opacity:0.7;">Exact-token replacement maps for prompt tags/text (global or per-character)</small>
+                        <div id="qig-prompt-replacements" style="margin:4px 0;"></div>
+                        <button id="qig-add-replacement-btn" class="menu_button" style="padding:4px 8px;">+ Add Replacement Map</button>
+                    </div>
+                </div>
 
                 <label class="checkbox_label">
                     <input id="qig-use-st-style" type="checkbox" ${s.useSTStyle !== false ? "checked" : ""}>
@@ -6211,11 +6740,13 @@ function createUI() {
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
     document.getElementById("qig-add-filter-btn").onclick = addContextualFilter;
+    document.getElementById("qig-add-replacement-btn").onclick = addPromptReplacement;
     renderTemplates();
     renderPresets();
     renderProfileSelect();
     renderComfyWorkflowPresets();
     renderContextualFilters();
+    renderPromptReplacements();
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -7025,16 +7556,20 @@ async function generateImageInjectPalette() {
             // Apply LLM-matched concept filters
             const llmMatched = await matchLLMFilters(extractedPrompt);
             checkAborted(cancelCheckpoint);
-            if (llmMatched.length) {
-                const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
-                prompt = llmApplied.prompt;
-                negative = llmApplied.negative;
-                log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
-            }
+    if (llmMatched.length) {
+        const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
+        prompt = llmApplied.prompt;
+        negative = llmApplied.negative;
+        log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
+    }
 
-            lastPrompt = prompt;
-            lastNegative = negative;
-            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+    const replacementApplied = applyPromptReplacementMaps(prompt, negative);
+    prompt = replacementApplied.prompt;
+    negative = replacementApplied.negative;
+
+    lastPrompt = prompt;
+    lastNegative = negative;
+    lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
 
             const batchCount = s.batchCount || 1;
             const results = [];
@@ -7173,6 +7708,10 @@ async function generateImage() {
         negative = llmApplied.negative;
         log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
     }
+
+    const replacementApplied = applyPromptReplacementMaps(prompt, negative);
+    prompt = replacementApplied.prompt;
+    negative = replacementApplied.negative;
 
     lastPrompt = prompt;
     lastNegative = negative;
@@ -7406,6 +7945,10 @@ async function processInjectMessage(messageText, messageIndex) {
                     log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
                 }
 
+                const replacementApplied = applyPromptReplacementMaps(prompt, negative);
+                prompt = replacementApplied.prompt;
+                negative = replacementApplied.negative;
+
                 lastPrompt = prompt;
                 lastNegative = negative;
                 lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
@@ -7562,6 +8105,7 @@ jQuery(function () {
                     _processedInjectIndices.clear();
                     loadCharSettings();
                     renderContextualFilters();
+                    renderPromptReplacements();
                 });
             }
         } catch (err) {
