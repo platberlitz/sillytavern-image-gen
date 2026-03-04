@@ -6678,6 +6678,7 @@ function createUI() {
                                 <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
                                 <span>Remove &lt;pic&gt; tags from displayed message</span>
                             </label>
+                            <button id="qig-test-inject" style="margin-top:8px;padding:4px 8px;cursor:pointer;">🔍 Test Inject Detection</button>
                         </div>
                     </div>
                 </div>
@@ -7367,7 +7368,17 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-inject-prompt", "injectPrompt");
-    bind("qig-inject-regex", "injectRegex");
+    bind("qig-inject-regex", "injectRegex", (value) => {
+        try {
+            const testRegex = new RegExp(value, "gi");
+            const testMatch = testRegex.exec('<image>test</image>');
+            if (!testMatch || testMatch.slice(1).every(g => g === undefined)) {
+                toastr.warning("Regex may not capture image descriptions. Test with sample tags.");
+            }
+        } catch (e) {
+            toastr.error("Invalid regex pattern: " + e.message);
+        }
+    });
     document.getElementById("qig-inject-position").onchange = (e) => {
         getSettings().injectPosition = e.target.value;
         document.getElementById("qig-inject-depth-wrap").style.display = e.target.value === "atDepth" ? "block" : "none";
@@ -7376,6 +7387,56 @@ function createUI() {
     bind("qig-inject-depth", "injectDepth", true);
     bind("qig-inject-insert-mode", "injectInsertMode");
     bindCheckbox("qig-inject-autoclean", "injectAutoClean");
+
+    // Test inject detection button
+    document.getElementById("qig-test-inject").onclick = async () => {
+        const s = getSettings();
+        const ctx = getContext();
+        const chat = ctx.chat;
+
+        if (!chat || chat.length === 0) {
+            toastr.info("No chat messages to test");
+            return;
+        }
+
+        // Find last AI message
+        let lastAiMsg = null;
+        for (let i = chat.length - 1; i >= 0; i--) {
+            if (!chat[i].is_user && chat[i].mes) {
+                lastAiMsg = chat[i].mes;
+                break;
+            }
+        }
+
+        if (!lastAiMsg) {
+            toastr.info("No AI messages found");
+            return;
+        }
+
+        // Test regex
+        const regexPattern = s.injectRegex || '<pic\\s+prompt="([^"]+)"\\s*/?>';
+        let regex;
+        try {
+            regex = new RegExp(regexPattern, "gi");
+        } catch (e) {
+            toastr.error("Invalid regex: " + e.message);
+            return;
+        }
+
+        let matches = [];
+        let match;
+        while ((match = regex.exec(lastAiMsg)) !== null) {
+            const captured = match.slice(1).find(g => g !== undefined);
+            if (captured) matches.push(captured.trim());
+        }
+
+        const result = matches.length > 0
+            ? `Found ${matches.length} tag(s):\n${matches.join('\n')}`
+            : `No tags found in last AI message.\n\nMessage preview:\n${lastAiMsg.substring(0, 200)}...\n\nRegex used:\n${regexPattern}`;
+
+        alert(result);
+    };
+
     // Mode tab switching
     document.querySelectorAll(".qig-mode-tab").forEach(tab => {
         tab.addEventListener("click", () => {
@@ -7522,7 +7583,7 @@ async function generateImageInjectPalette() {
             const sceneContext = getMessages() || "the current scene";
             const injectInstruction = resolvePrompt(s.injectPrompt || 'When describing a scene visually, include an image tag using <image>detailed visual description</image> or <pic prompt="detailed visual description">');
             const timestamp = Date.now();
-            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate image tags for the key visual moments:\n\n${sceneContext}\n\n[${timestamp}]`;
+            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate image tags for the key visual moments. YOU MUST use the exact tag format shown above.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
 
             let llmResponse;
             if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
@@ -7555,8 +7616,26 @@ async function generateImageInjectPalette() {
             }
 
             if (matches.length === 0) {
-                toastr.warning("No image tags found in AI message or LLM response");
-                log("Palette inject: No image tags extracted after LLM fallback");
+                // Enhanced diagnostic logging
+                const lastAiMsgIndex = chat.findIndex((m, i) => i === chat.length - 1 - [...chat].reverse().findIndex(msg => !msg.is_user && msg.mes));
+                const aiMsgPreview = chat[lastAiMsgIndex]?.mes?.substring(0, 200) || 'none';
+                const llmPreview = (llmResponse || 'none').substring(0, 200);
+                const regexPreview = regexPattern.substring(0, 100);
+
+                log(`Palette inject: Regex pattern used: ${regexPattern}`);
+                log(`Palette inject: AI message scanned: ${aiMsgPreview}...`);
+                log(`Palette inject: LLM response received: ${llmPreview}...`);
+                log(`Palette inject: Full instruction sent: ${fullInstruction.substring(0, 300)}...`);
+
+                const debugInfo = `Regex: ${regexPreview}${regexPattern.length > 100 ? '...' : ''} | AI msg: ${aiMsgPreview.substring(0, 50)}... | LLM: ${llmPreview.substring(0, 50)}...`;
+                toastr.warning("No image tags found. Check console for details.", "Image Generation");
+                log(`Palette inject: DIAGNOSTIC INFO - ${debugInfo}`);
+                console.warn("QIG Inject Mode Debug:", {
+                    regexPattern,
+                    aiMessage: chat[lastAiMsgIndex]?.mes,
+                    llmResponse,
+                    instruction: fullInstruction
+                });
                 return;
             }
         }
