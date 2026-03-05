@@ -154,7 +154,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Add random artist tags** | LLM includes art style references from artists |
 | **Batch Count** | Number of images to generate (1-10) |
 | **Sequential Seeds** | Generate batch with incrementing seeds (seed, seed+1, seed+2...) |
-| **Size** | Image dimensions (custom or NovelAI presets) |
+| **Size** | Image dimensions (custom + NovelAI presets) |
 | **Auto-generate** | Generate after each AI response |
 | **Auto-insert** | Skip popup and insert images directly into chat |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
@@ -190,7 +190,8 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 ### NovelAI
 - **Samplers**: k_euler_ancestral, k_euler, k_dpmpp_2m, k_dpmpp_sde, ddim, k_lms, k_heun
 - **Models**: nai-diffusion-4-5-curated, nai-diffusion-4-5-full, nai-diffusion-3
-- **Features**: SMEA support, resolution presets, ZIP response handling
+- **Features**: SMEA support, resolution presets + custom size, ZIP response handling
+- **Proxy note**: For OpenAI-compatible proxies on `/chat/completions`, QIG tries exact-size `/generate` first and falls back to mapped preset sizes if unavailable
 
 ### CivitAI
 - **Model Format**: URN format (`urn:air:sd1:checkpoint:civitai:4201@130072`)

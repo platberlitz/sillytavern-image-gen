@@ -377,6 +377,87 @@ const NAI_RESOLUTIONS = [
     { label: "Wallpaper Landscape (1920×1088)", w: 1920, h: 1088 }
 ];
 
+const SIZE_MIN = 256;
+const SIZE_MAX = 2048;
+const SIZE_STEP = 64;
+const SIZE_DEFAULT = 512;
+const NAI_CUSTOM_RESOLUTION_VALUE = "custom";
+
+function normalizeDimension(value, fallback = SIZE_DEFAULT) {
+    const numeric = Number.parseInt(value, 10);
+    const base = Number.isFinite(numeric) ? numeric : fallback;
+    const clamped = Math.max(SIZE_MIN, Math.min(SIZE_MAX, base));
+    return Math.round(clamped / SIZE_STEP) * SIZE_STEP;
+}
+
+function normalizeSize(settings) {
+    if (!settings || typeof settings !== "object") return false;
+    const width = normalizeDimension(settings.width, SIZE_DEFAULT);
+    const height = normalizeDimension(settings.height, SIZE_DEFAULT);
+    const changed = settings.width !== width || settings.height !== height;
+    settings.width = width;
+    settings.height = height;
+    return changed;
+}
+
+function syncSizeInputs(width, height) {
+    const wEl = document.getElementById("qig-width");
+    const hEl = document.getElementById("qig-height");
+    if (wEl) wEl.value = width;
+    if (hEl) hEl.value = height;
+}
+
+function getNaiResolutionOptionValue(width, height) {
+    const w = Number.parseInt(width, 10);
+    const h = Number.parseInt(height, 10);
+    const preset = NAI_RESOLUTIONS.find(r => r.w === w && r.h === h);
+    return preset ? `${preset.w}x${preset.h}` : NAI_CUSTOM_RESOLUTION_VALUE;
+}
+
+function syncNaiResolutionSelect() {
+    const select = document.getElementById("qig-nai-resolution");
+    if (!select) return;
+    const s = getSettings();
+    if (!s) return;
+    const customOption = Array.from(select.options).find(opt => opt.value === NAI_CUSTOM_RESOLUTION_VALUE);
+    if (customOption) customOption.textContent = `Custom (${s.width}×${s.height})`;
+    const nextValue = getNaiResolutionOptionValue(s.width, s.height);
+    const exists = Array.from(select.options).some(opt => opt.value === nextValue);
+    select.value = exists ? nextValue : NAI_CUSTOM_RESOLUTION_VALUE;
+}
+
+function getNovelAIProxyGenerateUrl(proxyUrl) {
+    const trimmed = String(proxyUrl || "").trim().replace(/\/$/, "");
+    if (!trimmed) return "";
+    if (/\/generate$/i.test(trimmed)) return trimmed;
+    if (/\/chat\/completions$/i.test(trimmed)) return trimmed.replace(/\/chat\/completions$/i, "/generate");
+    if (/\/v1$/i.test(trimmed)) return trimmed.replace(/\/v1$/i, "/generate");
+    return `${trimmed}/generate`;
+}
+
+function resolveNovelAIProxyImageUrl(rawUrl, proxyUrl) {
+    const url = String(rawUrl || "");
+    if (url.startsWith("data:")) return url;
+    if (/^https?:\/\//i.test(url)) return url;
+
+    const baseUrl = String(proxyUrl || "")
+        .replace(/\/generate\/?$/i, "")
+        .replace(/\/chat\/completions\/?$/i, "")
+        .replace(/\/$/, "");
+    try {
+        return new URL(url, baseUrl + "/").toString();
+    } catch {
+        return baseUrl + (url.startsWith("/") ? url : "/" + url);
+    }
+}
+
+function extractNovelAIProxyImageUrl(json, proxyUrl) {
+    if (json?.status !== "success" || !json?.url) {
+        throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
+    }
+    return resolveNovelAIProxyImageUrl(json.url, proxyUrl);
+}
+
 const STYLES = {
     none: { name: "None", prefix: "", suffix: "" },
     anime: { name: "Anime", prefix: "anime style, anime artwork, 2D illustration, anime key visual, ", suffix: ", sharp lineart, anime coloring, vibrant colors" },
@@ -2355,6 +2436,7 @@ async function genPollinations(prompt, negative, s, signal) {
 }
 
 async function genNovelAI(prompt, negative, s, signal) {
+    normalizeSize(s);
     const isV4 = s.naiModel.includes("-4");
     // Map SillyTavern sampler names to NovelAI API format
     const samplerMap = {
@@ -2374,46 +2456,6 @@ async function genNovelAI(prompt, negative, s, signal) {
         ? "ddim_v3"
         : (samplerMap[s.sampler] || "k_euler_ancestral");
     const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
-
-    // OpenAI-compatible proxy (e.g. linkapi.cc/v1 → yousebaby → NAI)
-    if (s.naiProxyUrl && s.naiProxyUrl.includes("/v1")) {
-        const v1SamplerMap = {
-            "k_euler_ancestral": "Euler Ancestral", "k_euler": "Euler",
-            "k_dpmpp_2m": "DPM++ 2M", "k_dpmpp_sde": "DPM++ SDE",
-            "k_dpmpp_2m_sde": "DPM++ 2M SDE", "ddim": "DDIM", "ddim_v3": "DDIM"
-        };
-        const v1Url = s.naiProxyUrl.includes("/chat/completions")
-            ? s.naiProxyUrl
-            : s.naiProxyUrl.replace(/\/$/, "") + "/chat/completions";
-        const v1Payload = {
-            model: s.naiModel,
-            messages: [{ role: "user", content: prompt }],
-            size: s.width > s.height ? "1216:832" : s.width < s.height ? "832:1216" : "1024:1024",
-            negative_prompt: negative,
-            sampler: v1SamplerMap[sampler] || "Euler Ancestral",
-            return_base64: true,
-            stream: false
-        };
-        log(`NAI v1 proxy request to ${v1Url}: ${JSON.stringify(v1Payload).substring(0, 200)}...`);
-        const res = await fetch(v1Url, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${s.naiProxyKey || s.naiKey}`, "Content-Type": "application/json" },
-            body: JSON.stringify(v1Payload),
-            signal
-        });
-        if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            throw new Error(`NovelAI proxy error: ${res.status} ${errText}`);
-        }
-        const json = await res.json();
-        const content = json.choices?.[0]?.message?.content;
-        if (!content) throw new Error(`NovelAI proxy returned no image: ${JSON.stringify(json).substring(0, 300)}`);
-        if (content.startsWith("data:")) return content;
-        if (content.startsWith("http")) return content;
-        const mdMatch = content.match(/!\[.*?\]\((.*?)\)/);
-        if (mdMatch) return mdMatch[1];
-        throw new Error(`NovelAI proxy returned unexpected content: ${content.substring(0, 200)}`);
-    }
 
     const params = {
         width: s.width,
@@ -2443,10 +2485,84 @@ async function genNovelAI(prompt, negative, s, signal) {
 
     const payload = { input: prompt, model: s.naiModel, action: "generate", parameters: params };
 
+    // OpenAI-compatible proxy (e.g. linkapi.cc/v1 → yousebaby → NAI)
+    if (s.naiProxyUrl && s.naiProxyUrl.includes("/v1")) {
+        const proxyKey = s.naiProxyKey || s.naiKey;
+        const proxyUrl = String(s.naiProxyUrl || "").replace(/\/$/, "");
+
+        if (proxyUrl.includes("/chat/completions")) {
+            const exactGenerateUrl = getNovelAIProxyGenerateUrl(proxyUrl);
+            if (exactGenerateUrl) {
+                const exactPayload = {
+                    input: prompt,
+                    model: s.naiModel,
+                    action: "generate",
+                    parameters: { ...params, return_base64: true }
+                };
+                try {
+                    log(`NAI v1 proxy exact-size attempt to ${exactGenerateUrl}: size=${s.width}x${s.height}`);
+                    const exactRes = await fetch(exactGenerateUrl, {
+                        method: "POST",
+                        headers: { "Authorization": `Bearer ${proxyKey}`, "Content-Type": "application/json", "Accept": "*/*" },
+                        body: JSON.stringify(exactPayload),
+                        signal
+                    });
+                    if (exactRes.ok) {
+                        const exactJson = await exactRes.json();
+                        return extractNovelAIProxyImageUrl(exactJson, exactGenerateUrl);
+                    }
+                    const errText = await exactRes.text().catch(() => "");
+                    log(`NAI v1 proxy exact-size fallback: ${exactRes.status} ${errText.substring(0, 180)}`);
+                } catch (e) {
+                    if (e.name === "AbortError") throw e;
+                    log(`NAI v1 proxy exact-size fallback (error): ${e.message}`);
+                }
+            }
+        }
+
+        const v1SamplerMap = {
+            "k_euler_ancestral": "Euler Ancestral", "k_euler": "Euler",
+            "k_dpmpp_2m": "DPM++ 2M", "k_dpmpp_sde": "DPM++ SDE",
+            "k_dpmpp_2m_sde": "DPM++ 2M SDE", "ddim": "DDIM", "ddim_v3": "DDIM"
+        };
+        const v1Url = proxyUrl.includes("/chat/completions")
+            ? proxyUrl
+            : proxyUrl + "/chat/completions";
+        const v1Payload = {
+            model: s.naiModel,
+            messages: [{ role: "user", content: prompt }],
+            size: s.width > s.height ? "1216:832" : s.width < s.height ? "832:1216" : "1024:1024",
+            negative_prompt: negative,
+            sampler: v1SamplerMap[sampler] || "Euler Ancestral",
+            return_base64: true,
+            stream: false
+        };
+        log(`NAI v1 proxy request to ${v1Url}: ${JSON.stringify(v1Payload).substring(0, 200)}...`);
+        const res = await fetch(v1Url, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${proxyKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify(v1Payload),
+            signal
+        });
+        if (!res.ok) {
+            const errText = await res.text().catch(() => "");
+            throw new Error(`NovelAI proxy error: ${res.status} ${errText}`);
+        }
+        const json = await res.json();
+        const content = json.choices?.[0]?.message?.content;
+        if (!content) throw new Error(`NovelAI proxy returned no image: ${JSON.stringify(json).substring(0, 300)}`);
+        if (content.startsWith("data:")) return content;
+        if (content.startsWith("http")) return content;
+        const mdMatch = content.match(/!\[.*?\]\((.*?)\)/);
+        if (mdMatch) return mdMatch[1];
+        throw new Error(`NovelAI proxy returned unexpected content: ${content.substring(0, 200)}`);
+    }
+
     const isProxy = !!s.naiProxyUrl;
     const apiUrl = isProxy
-        ? s.naiProxyUrl.replace(/\/$/, "") + (s.naiProxyUrl.includes("/generate") ? "" : "/generate")
+        ? getNovelAIProxyGenerateUrl(s.naiProxyUrl)
         : "https://image.novelai.net/ai/generate-image";
+    if (isProxy && !apiUrl) throw new Error("NovelAI proxy URL is required");
     const apiKey = s.naiProxyKey || s.naiKey;
 
     if (isProxy) params.return_base64 = true;
@@ -2465,20 +2581,7 @@ async function genNovelAI(prompt, negative, s, signal) {
     // Proxy returns JSON with a URL or base64 data URI
     if (isProxy) {
         const json = await res.json();
-        if (json.status !== "success" || !json.url) {
-            throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
-        }
-        if (json.url.startsWith("data:")) return json.url;
-        if (/^https?:\/\//i.test(json.url)) return json.url;
-
-        // Relative URL - resolve against proxy base
-        const baseUrl = s.naiProxyUrl.replace(/\/generate\/?$/, "").replace(/\/$/, "");
-        try {
-            return new URL(String(json.url), baseUrl + "/").toString();
-        } catch {
-            const rel = String(json.url);
-            return baseUrl + (rel.startsWith("/") ? rel : "/" + rel);
-        }
+        return extractNovelAIProxyImageUrl(json, apiUrl);
     }
 
     const arrayBuffer = await res.arrayBuffer();
@@ -5537,6 +5640,11 @@ function loadCharSettings() {
     if (cs.style) { s.style = cs.style; document.getElementById("qig-style").value = cs.style; }
     if (cs.width) { s.width = cs.width; document.getElementById("qig-width").value = cs.width; }
     if (cs.height) { s.height = cs.height; document.getElementById("qig-height").value = cs.height; }
+    if (s.provider === "novelai") {
+        normalizeSize(s);
+        syncSizeInputs(s.width, s.height);
+        syncNaiResolutionSelect();
+    }
     const refs = charRefImages[charId];
     if (refs && refs.length > 0) {
         if (s.provider === "proxy") {
@@ -6176,8 +6284,16 @@ function updateProviderUI() {
     document.getElementById("qig-advanced-settings").style.display = showAdvanced ? "block" : "none";
 
     const isNai = s.provider === "novelai";
-    document.getElementById("qig-size-custom").style.display = isNai ? "none" : "flex";
-    document.getElementById("qig-nai-resolution").style.display = isNai ? "block" : "none";
+    const sizeCustomEl = document.getElementById("qig-size-custom");
+    const naiResolutionEl = document.getElementById("qig-nai-resolution");
+    if (sizeCustomEl) sizeCustomEl.style.display = "flex";
+    if (naiResolutionEl) naiResolutionEl.style.display = isNai ? "block" : "none";
+    if (isNai) {
+        const changed = normalizeSize(s);
+        syncSizeInputs(s.width, s.height);
+        syncNaiResolutionSelect();
+        if (changed) saveSettingsDebounced();
+    }
 }
 
 function renderRefImages() {
@@ -6261,7 +6377,9 @@ function buildOptions(items, selectedValue, labelFn) {
 function createUI() {
     clearCache();
     const s = getSettings();
+    if (s.provider === "novelai") normalizeSize(s);
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
+    const selectedNaiResolution = getNaiResolutionOptionValue(s.width, s.height);
     const samplerOpts = Object.entries(SAMPLER_GROUPS).map(([group, ids]) =>
         `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
     ).join("");
@@ -7037,7 +7155,8 @@ function createUI() {
                     </select>
                 </div>
                 <select id="qig-nai-resolution" style="display:none;width:100%">
-                    ${NAI_RESOLUTIONS.map(r => `<option value="${r.w}x${r.h}" ${s.width === r.w && s.height === r.h ? "selected" : ""}>${r.label}</option>`).join("")}
+                    ${NAI_RESOLUTIONS.map(r => `<option value="${r.w}x${r.h}" ${selectedNaiResolution === `${r.w}x${r.h}` ? "selected" : ""}>${r.label}</option>`).join("")}
+                    <option value="${NAI_CUSTOM_RESOLUTION_VALUE}" ${selectedNaiResolution === NAI_CUSTOM_RESOLUTION_VALUE ? "selected" : ""}>Custom (${esc(s.width)}×${esc(s.height)})</option>
                 </select>
                 
                 <label>Batch Count</label>
@@ -7763,8 +7882,23 @@ function createUI() {
     };
     bind("qig-llm-override-max", "llmOverrideMaxTokens", true);
     document.querySelector('.qig-mode-tab[data-tab="direct"]').classList.add("active");
-    bind("qig-width", "width", true);
-    bind("qig-height", "height", true);
+    const widthEl = document.getElementById("qig-width");
+    const heightEl = document.getElementById("qig-height");
+    const onSizeChange = () => {
+        const s = getSettings();
+        const currentWidth = Number.isFinite(s.width) ? s.width : SIZE_DEFAULT;
+        const currentHeight = Number.isFinite(s.height) ? s.height : SIZE_DEFAULT;
+        s.width = parseIntOr(widthEl?.value, currentWidth);
+        s.height = parseIntOr(heightEl?.value, currentHeight);
+        if (s.provider === "novelai") {
+            normalizeSize(s);
+            syncNaiResolutionSelect();
+        }
+        syncSizeInputs(s.width, s.height);
+        saveSettingsDebounced();
+    };
+    if (widthEl) widthEl.onchange = onSizeChange;
+    if (heightEl) heightEl.onchange = onSizeChange;
     document.getElementById("qig-aspect").onchange = (e) => {
         const v = e.target.value;
         if (!v) return;
@@ -7774,16 +7908,26 @@ function createUI() {
         if (isNaN(w) || isNaN(h) || h === 0) return;
         if (w > h) { s.width = Math.round(base * w / h); s.height = base; }
         else { s.width = base; s.height = Math.round(base * h / w); }
-        document.getElementById("qig-width").value = s.width;
-        document.getElementById("qig-height").value = s.height;
+        if (s.provider === "novelai") {
+            normalizeSize(s);
+            syncNaiResolutionSelect();
+        }
+        syncSizeInputs(s.width, s.height);
         saveSettingsDebounced();
     };
     document.getElementById("qig-nai-resolution").onchange = (e) => {
+        if (e.target.value === NAI_CUSTOM_RESOLUTION_VALUE) {
+            syncNaiResolutionSelect();
+            return;
+        }
         const [w, h] = e.target.value.split("x").map(Number);
         if (isNaN(w) || isNaN(h)) return;
         const s = getSettings();
         s.width = w;
         s.height = h;
+        normalizeSize(s);
+        syncSizeInputs(s.width, s.height);
+        syncNaiResolutionSelect();
         saveSettingsDebounced();
     };
     bind("qig-batch", "batchCount", true);
@@ -8929,10 +9073,9 @@ async function handleMetadataDrop(e) {
             if (params.width && params.height) {
                 s.width = params.width;
                 s.height = params.height;
-                const wEl = document.getElementById("qig-width");
-                const hEl = document.getElementById("qig-height");
-                if (wEl) wEl.value = s.width;
-                if (hEl) hEl.value = s.height;
+                if (s.provider === "novelai") normalizeSize(s);
+                syncSizeInputs(s.width, s.height);
+                if (s.provider === "novelai") syncNaiResolutionSelect();
             }
             if (params.model && PROVIDERS[params.model]) {
                 s.provider = params.model;
