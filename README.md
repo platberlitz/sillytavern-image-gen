@@ -9,7 +9,6 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 - Fixed welcome-page / HTML prompt leakage when `Use chat message` is enabled, so QIG now falls back to clean text instead of ingesting UI markup.
 - Fixed random-seed provenance across providers, including Stability, and preserved resolved seeds in gallery/download metadata.
 - Fixed image metadata round-tripping by saving per-image settings snapshots, expanding provider/model/backend metadata, and improving PNG `tEXt`/`zTXt`/`iTXt` import support.
-- Added a reusable Playwright smoke script plus GitHub Actions smoke workflow for regression coverage.
 - Hardened format detection and metadata export edge cases for non-PNG downloads and numeric zero-valued fields.
 
 ## What's New in v1.4.9
@@ -137,31 +136,6 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 4. Click **Generate**
 
 ---
-
-## Smoke Test
-
-A reusable browser smoke script lives at [`scripts/qig-smoke.sh`](scripts/qig-smoke.sh). It drives a real SillyTavern page via Playwright CLI and verifies that:
-- QIG loads into the page
-- palette-button generation works with Pollinations
-- welcome-page prompt fallback does not leak raw UI HTML/button labels
-- saved gallery entries keep their original metadata snapshot and resolved seed even after later UI changes
-
-Examples:
-
-```bash
-# Against an already-running SillyTavern
-./scripts/qig-smoke.sh --base-url http://127.0.0.1:8000/
-
-# Sync this repo into an installed SillyTavern copy, start the server, and
-# temporarily disable local basic auth for the browser test (restored on exit)
-./scripts/qig-smoke.sh \
-  --st-dir /path/to/SillyTavern \
-  --sync-extension \
-  --start-server \
-  --disable-basic-auth
-```
-
-Artifacts are written to `output/playwright/qig-smoke/`. The script requires `npx` and will fetch `@playwright/cli` on demand if it is not already available.
 
 ## Settings
 
