@@ -5,7 +5,7 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v1.4.14
+## What's New in v1.5
 - Fixed welcome-page / HTML prompt leakage when `Use chat message` is enabled, so QIG now falls back to clean text instead of ingesting UI markup.
 - Fixed random-seed provenance across providers, including Stability, and preserved resolved seeds in gallery/download metadata.
 - Fixed image metadata round-tripping by saving per-image settings snapshots, expanding provider/model/backend metadata, and improving PNG `tEXt`/`zTXt`/`iTXt` import support.
@@ -31,7 +31,6 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 - Added **Prompt Replacement Maps** for native token-level substitutions (e.g., `miranda` -> `<lora:...>, 1girl, ...`) with Global/Character scope, target field selection, and priority ordering.
 - Prompt Replacement Maps now run in **Direct Mode** and **Inject Mode** flows after contextual filters.
 - Prompt Replacement Maps are now included in **generation presets** and **settings export/import**.
-- Added a manual QA matrix for replacement behavior and endpoint coexistence: [`docs/prompt-replacement-test-matrix-2026-03-04.md`](docs/prompt-replacement-test-matrix-2026-03-04.md)
 
 ---
 
@@ -587,7 +586,6 @@ Additional notes:
 - LoRA trigger matching is **name-based** and weight-insensitive (`<lora:foo>` matches `<lora:foo:0.6>`)
 - Character-scoped maps are keyed to SillyTavern `characterId`
 - Maps are included in settings export/import and generation presets
-- Manual QA matrix: [`docs/prompt-replacement-test-matrix-2026-03-04.md`](docs/prompt-replacement-test-matrix-2026-03-04.md)
 
 ---
 
