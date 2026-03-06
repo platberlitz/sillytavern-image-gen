@@ -2376,6 +2376,12 @@ Tags:`;
         cleaned = cleaned.replace(/\[Generation ID: \d+\]/g, '');  // legacy Generation ID
         cleaned = cleaned.trim();
 
+        if (!cleaned) {
+            log("WARNING: LLM returned empty response — using extracted prompt as-is. Check your provider's token/output limit.");
+            toastr.warning("LLM prompt was empty — using raw prompt. Check token limits.", "Image Gen", { timeOut: 5000 });
+            return basePrompt;
+        }
+
         // Remove prefill text if it appears at start of response
         if (s.llmPrefill && cleaned.toLowerCase().startsWith(s.llmPrefill.toLowerCase())) {
             cleaned = cleaned.substring(s.llmPrefill.length).trim();
@@ -2398,6 +2404,7 @@ Tags:`;
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`LLM prompt failed: ${e.message}`);
+        toastr.warning(`LLM prompt failed: ${e.message}`, "Image Gen", { timeOut: 5000 });
         return basePrompt;
     }
 }
