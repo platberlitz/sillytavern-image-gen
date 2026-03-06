@@ -132,6 +132,31 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 
 ---
 
+## Smoke Test
+
+A reusable browser smoke script lives at [`scripts/qig-smoke.sh`](scripts/qig-smoke.sh). It drives a real SillyTavern page via Playwright CLI and verifies that:
+- QIG loads into the page
+- palette-button generation works with Pollinations
+- welcome-page prompt fallback does not leak raw UI HTML/button labels
+- saved gallery entries keep their original metadata snapshot and resolved seed even after later UI changes
+
+Examples:
+
+```bash
+# Against an already-running SillyTavern
+./scripts/qig-smoke.sh --base-url http://127.0.0.1:8000/
+
+# Sync this repo into an installed SillyTavern copy, start the server, and
+# temporarily disable local basic auth for the browser test (restored on exit)
+./scripts/qig-smoke.sh \
+  --st-dir /path/to/SillyTavern \
+  --sync-extension \
+  --start-server \
+  --disable-basic-auth
+```
+
+Artifacts are written to `output/playwright/qig-smoke/`. The script requires `npx` and will fetch `@playwright/cli` on demand if it is not already available.
+
 ## Settings
 
 | Setting | Description |

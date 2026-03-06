@@ -1,0 +1,54 @@
+name: qig-smoke
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Playwright CLI workspace
+        run: npx --yes --package @playwright/cli playwright-cli install
+
+      - name: Install Chromium for Playwright CLI
+        run: npx --yes --package @playwright/cli playwright-cli install-browser --browser chromium
+
+      - name: Clone SillyTavern
+        run: git clone --depth 1 https://github.com/SillyTavern/SillyTavern.git "$RUNNER_TEMP/SillyTavern"
+
+      - name: Install SillyTavern dependencies
+        working-directory: ${{ runner.temp }}/SillyTavern
+        run: npm ci
+
+      - name: Static checks
+        run: |
+          bash -n scripts/qig-smoke.sh
+          node --check index.js
+
+      - name: Run QIG smoke test
+        run: ./scripts/qig-smoke.sh --st-dir "$RUNNER_TEMP/SillyTavern" --sync-extension --start-server --disable-basic-auth
+
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qig-smoke-artifacts
+          path: output/playwright/qig-smoke/
+          if-no-files-found: ignore

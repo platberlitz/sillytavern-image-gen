@@ -333,6 +333,41 @@ function checkAborted(checkpoint) {
     }
 }
 
+function generateRandomSeed() {
+    return Math.floor(Math.random() * 2147483647);
+}
+
+function resolveRandomSeed(seedValue = -1, target = null) {
+    const numericSeed = Number(seedValue);
+    if (Number.isFinite(numericSeed) && numericSeed >= 0) return numericSeed;
+    const resolvedSeed = generateRandomSeed();
+    if (target && typeof target === "object") target.__qigResolvedSeed = resolvedSeed;
+    return resolvedSeed;
+}
+
+const HTML_MESSAGE_TAG_RE = /<\/?(?:div|span|button|i|p|br|ul|ol|li|a|img|svg|section|article|table|tr|td|th)\b/i;
+const UI_HTML_MESSAGE_RE = /menu_button|drawer-opener|data-target=|fa-solid|inline-flex|extensions-settings-button|sys-settings-button|rightNavHolder/i;
+
+function normalizeSceneMessageText(text) {
+    const raw = String(text || "").trim();
+    if (!raw) return "";
+    if (!HTML_MESSAGE_TAG_RE.test(raw)) return raw;
+    if (UI_HTML_MESSAGE_RE.test(raw)) return "";
+    try {
+        const temp = document.createElement("div");
+        temp.innerHTML = raw;
+        return String(temp.innerText || temp.textContent || "")
+            .replace(/\u00a0/g, " ")
+            .replace(/\r\n/g, "\n")
+            .replace(/[ \t]+\n/g, "\n")
+            .replace(/\n[ \t]+/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+    } catch {
+        return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+    }
+}
+
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
@@ -1657,7 +1692,7 @@ function getMessages() {
     // Single message: return plain text (backward compatible, no labels)
     if (indices.length === 1) {
         const msg = chat[indices[0]];
-        return msg?.mes || "";
+        return normalizeSceneMessageText(msg?.mes || "");
     }
 
     // Multiple messages: return speaker-labeled concatenation
@@ -1665,8 +1700,10 @@ function getMessages() {
     for (const i of indices) {
         const msg = chat[i];
         if (!msg || !msg.mes) continue;
+        const plainText = normalizeSceneMessageText(msg.mes);
+        if (!plainText) continue;
         const name = msg.name || (msg.is_user ? ctx.name1 : ctx.name2) || "Unknown";
-        lines.push(`[${name}]: ${msg.mes}`);
+        lines.push(`[${name}]: ${plainText}`);
     }
     const result = lines.join("\n\n");
     if (result.length > 10000) {
@@ -2436,7 +2473,7 @@ async function generateLiteralFallback(originalInstruction) {
 }
 async function genPollinations(prompt, negative, s, signal) {
     if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-    const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+    const seed = resolveRandomSeed(s.seed, s);
     let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
     if (negative) url += `&negative=${encodeURIComponent(negative)}`;
     if (s.pollinationsModel && s.pollinationsModel !== "flux") url += `&model=${s.pollinationsModel}`;
@@ -2464,7 +2501,7 @@ async function genNovelAI(prompt, negative, s, signal) {
     const sampler = (s.sampler === "ddim" && isV3OrNewer)
         ? "ddim_v3"
         : (samplerMap[s.sampler] || "k_euler_ancestral");
-    const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+    const seed = resolveRandomSeed(s.seed, s);
 
     const params = {
         width: s.width,
@@ -3024,7 +3061,7 @@ async function genLocal(prompt, negative, s, signal) {
 
         const samplerName = comfySamplerMap[s.sampler] || s.sampler.replace(/\+\+/g, "pp");
         const schedulerName = s.comfyScheduler || "normal";
-        const seed = s.seed === -1 ? Math.floor(Math.random() * 2147483647) : s.seed;
+        const seed = resolveRandomSeed(s.seed, s);
         const denoise = parseFloatOr(s.comfyDenoise, 1.0);
         const clipSkip = parseIntOr(s.comfyClipSkip, 1);
 
@@ -4104,10 +4141,68 @@ function createThumbnail(url, maxSize = 150) {
     });
 }
 
-async function addToGallery(url) {
-    const persistentUrl = await persistImageUrl(url);
+function cloneMetadataSettings(settings) {
+    try {
+        return JSON.parse(JSON.stringify(settings || {}));
+    } catch {
+        return { ...(settings || {}) };
+    }
+}
+
+function createGenerationEntry(url, prompt = lastPrompt, negative = lastNegative, metadataSettings = null, options = {}) {
+    const snapshot = cloneMetadataSettings(metadataSettings || {});
+    const provider = options.provider || snapshot.provider || getSettings()?.provider || "";
+    if (provider && !snapshot.provider) snapshot.provider = provider;
+    return {
+        url,
+        thumbnail: options.thumbnail ?? null,
+        prompt: prompt || "",
+        negative: negative || "",
+        provider,
+        metadataSettings: snapshot,
+        promptWasLLM: options.promptWasLLM ?? lastPromptWasLLM,
+        date: options.date ?? Date.now(),
+    };
+}
+
+function normalizeGenerationEntry(entryOrUrl, fallback = {}) {
+    if (typeof entryOrUrl === "string") {
+        return createGenerationEntry(entryOrUrl, fallback.prompt, fallback.negative, fallback.metadataSettings, fallback);
+    }
+    if (!entryOrUrl || typeof entryOrUrl !== "object") {
+        return createGenerationEntry("", fallback.prompt, fallback.negative, fallback.metadataSettings, fallback);
+    }
+    const snapshot = cloneMetadataSettings(entryOrUrl.metadataSettings || fallback.metadataSettings || {});
+    const provider = entryOrUrl.provider || snapshot.provider || fallback.provider || getSettings()?.provider || "";
+    if (provider && !snapshot.provider) snapshot.provider = provider;
+    return {
+        ...entryOrUrl,
+        prompt: entryOrUrl.prompt ?? fallback.prompt ?? "",
+        negative: entryOrUrl.negative ?? fallback.negative ?? "",
+        provider,
+        metadataSettings: snapshot,
+        promptWasLLM: entryOrUrl.promptWasLLM ?? fallback.promptWasLLM ?? false,
+        date: entryOrUrl.date ?? fallback.date ?? Date.now(),
+    };
+}
+
+async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, options = {}) {
+    const resolvedSeed = settings && Number.isFinite(settings.__qigResolvedSeed) ? settings.__qigResolvedSeed : undefined;
+    if (settings && Object.prototype.hasOwnProperty.call(settings, "__qigResolvedSeed")) {
+        delete settings.__qigResolvedSeed;
+    }
+    const metadataSettings = getMetadataSettings(settings, { resolvedSeed });
+    const finalUrl = await maybeFinalizeUrl(rawUrl, prompt, negative, metadataSettings);
+    if (!finalUrl) return null;
+    return createGenerationEntry(finalUrl, prompt, negative, metadataSettings, options);
+}
+
+async function addToGallery(entryOrUrl) {
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    if (!entry.url) return;
+    const persistentUrl = await persistImageUrl(entry.url);
     const thumbnail = await createThumbnail(persistentUrl);
-    sessionGallery.unshift({ url: persistentUrl, thumbnail, prompt: lastPrompt, negative: lastNegative, provider: getSettings().provider, date: Date.now() });
+    sessionGallery.unshift({ ...entry, url: persistentUrl, thumbnail, date: entry.date ?? Date.now() });
     if (sessionGallery.length > 50) sessionGallery.pop();
     saveGallery();
 }
@@ -4135,8 +4230,15 @@ function savePromptHistory() {
     }
 }
 
-function displayImage(url, skipGallery) {
-    if (!skipGallery) addToGallery(url);
+function displayImage(entryOrUrl, skipGallery) {
+    const entry = normalizeGenerationEntry(entryOrUrl);
+    if (!entry.url) return;
+    if (!skipGallery) addToGallery(entry);
+
+    const imagePrompt = entry.prompt || "";
+    const imageNegative = entry.negative || "";
+    const imagePromptWasLLM = !!entry.promptWasLLM;
+    const imageMetadataSettings = cloneMetadataSettings(entry.metadataSettings || {});
 
     const popup = createPopup("qig-popup", "Generated Image", `
         <img id="qig-result-img" src="">
@@ -4172,17 +4274,17 @@ function displayImage(url, skipGallery) {
         initResizeHandle(popup);
 
         // Initialize prompt editor
-        originalPrompt = lastPrompt;
-        originalNegative = lastNegative;
+        originalPrompt = imagePrompt;
+        originalNegative = imageNegative;
         const promptTextarea = document.getElementById("qig-preview-prompt");
         const negativeTextarea = document.getElementById("qig-preview-negative");
         const toggleBtn = document.getElementById("qig-toggle-prompt-editor");
         const resetBtn = document.getElementById("qig-reset-prompt");
         const editorDiv = popup.querySelector(".qig-prompt-editor");
-        if (promptTextarea) promptTextarea.value = lastPrompt;
-        if (negativeTextarea) negativeTextarea.value = lastNegative;
+        if (promptTextarea) promptTextarea.value = imagePrompt;
+        if (negativeTextarea) negativeTextarea.value = imageNegative;
         const sourceLabel = document.getElementById("qig-prompt-source-label");
-        if (sourceLabel) sourceLabel.textContent = lastPromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
+        if (sourceLabel) sourceLabel.textContent = imagePromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
         toggleBtn.onclick = (e) => {
             e.stopPropagation();
             const isVisible = editorDiv.style.display !== "none";
@@ -4197,11 +4299,11 @@ function displayImage(url, skipGallery) {
 
         const img = document.getElementById("qig-result-img");
         img.src = "";
-        img.src = url;
+        img.src = entry.url;
         const downloadBtn = document.getElementById("qig-download-btn");
         downloadBtn.onclick = async (e) => {
             e.stopPropagation();
-            await downloadWithMetadata(url, `generated-${Date.now()}.png`, lastPrompt, lastNegative, getSettings());
+            await downloadWithMetadata(entry.url, `generated-${Date.now()}.png`, imagePrompt, imageNegative, imageMetadataSettings);
         };
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
@@ -4230,7 +4332,7 @@ function displayImage(url, skipGallery) {
         document.getElementById("qig-insert-btn").onclick = async (e) => {
             e.stopPropagation();
             try {
-                await insertImageIntoMessage(url);
+                await insertImageIntoMessage(entry.url);
                 toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -4242,19 +4344,21 @@ function displayImage(url, skipGallery) {
 }
 
 function displayBatchResults(results) {
-    results.forEach(url => addToGallery(url));
+    const entries = results.map(result => normalizeGenerationEntry(result));
+    if (!entries.length) return;
+    entries.forEach(entry => addToGallery(entry));
 
     let currentIndex = 0;
 
-    const thumbsHtml = results.map((url, i) =>
-        `<img class="qig-batch-thumb${i === 0 ? ' active' : ''}" data-index="${i}" src="${url}">`
+    const thumbsHtml = entries.map((entry, i) =>
+        `<img class="qig-batch-thumb${i === 0 ? ' active' : ''}" data-index="${i}" src="${entry.url}">`
     ).join('');
 
-    const popup = createPopup("qig-batch-popup", `Image 1/${results.length}`, `
+    const popup = createPopup("qig-batch-popup", `Image 1/${entries.length}`, `
         <img id="qig-batch-img" src="" style="max-width:100%;max-height:60vh;object-fit:contain;padding:10px;min-height:100px;">
         <div class="qig-batch-nav">
             <button id="qig-batch-prev">◀</button>
-            <span id="qig-batch-counter">1 / ${results.length}</span>
+            <span id="qig-batch-counter">1 / ${entries.length}</span>
             <button id="qig-batch-next">▶</button>
         </div>
         <div class="qig-batch-thumbs">${thumbsHtml}</div>
@@ -4290,18 +4394,24 @@ function displayBatchResults(results) {
         }
         initResizeHandle(popup);
 
+        const getCurrentEntry = () => entries[currentIndex];
+        const syncPromptEditor = (entry) => {
+            const activeEntry = normalizeGenerationEntry(entry, { prompt: lastPrompt, negative: lastNegative, promptWasLLM: lastPromptWasLLM });
+            originalPrompt = activeEntry.prompt;
+            originalNegative = activeEntry.negative;
+            if (batchPromptTextarea) batchPromptTextarea.value = originalPrompt;
+            if (batchNegativeTextarea) batchNegativeTextarea.value = originalNegative;
+            if (batchSourceLabel) batchSourceLabel.textContent = activeEntry.promptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
+        };
+
         // Initialize prompt editor
-        originalPrompt = lastPrompt;
-        originalNegative = lastNegative;
         const batchPromptTextarea = document.getElementById("qig-batch-preview-prompt");
         const batchNegativeTextarea = document.getElementById("qig-batch-preview-negative");
         const batchToggleBtn = document.getElementById("qig-batch-toggle-prompt-editor");
         const batchResetBtn = document.getElementById("qig-batch-reset-prompt");
         const batchEditorDiv = popup.querySelector(".qig-prompt-editor");
-        if (batchPromptTextarea) batchPromptTextarea.value = lastPrompt;
-        if (batchNegativeTextarea) batchNegativeTextarea.value = lastNegative;
         const batchSourceLabel = document.getElementById("qig-batch-prompt-source-label");
-        if (batchSourceLabel) batchSourceLabel.textContent = lastPromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
+        syncPromptEditor(entries[0]);
         batchToggleBtn.onclick = (e) => {
             e.stopPropagation();
             const isVisible = batchEditorDiv.style.display !== "none";
@@ -4315,13 +4425,14 @@ function displayBatchResults(results) {
         };
 
         const img = document.getElementById("qig-batch-img");
-        img.src = results[0];
+        img.src = entries[0].url;
 
         function showImage(index) {
             currentIndex = index;
-            img.src = results[index];
-            document.getElementById("qig-batch-counter").textContent = `${index + 1} / ${results.length}`;
-            popup.querySelector('.qig-popup-header span').textContent = `Image ${index + 1}/${results.length}`;
+            img.src = entries[index].url;
+            syncPromptEditor(entries[index]);
+            document.getElementById("qig-batch-counter").textContent = `${index + 1} / ${entries.length}`;
+            popup.querySelector('.qig-popup-header span').textContent = `Image ${index + 1}/${entries.length}`;
             popup.querySelectorAll('.qig-batch-thumb').forEach((t, i) => {
                 t.classList.toggle('active', i === index);
             });
@@ -4329,11 +4440,11 @@ function displayBatchResults(results) {
 
         document.getElementById("qig-batch-prev").onclick = (e) => {
             e.stopPropagation();
-            showImage((currentIndex - 1 + results.length) % results.length);
+            showImage((currentIndex - 1 + entries.length) % entries.length);
         };
         document.getElementById("qig-batch-next").onclick = (e) => {
             e.stopPropagation();
-            showImage((currentIndex + 1) % results.length);
+            showImage((currentIndex + 1) % entries.length);
         };
 
         popup.querySelectorAll('.qig-batch-thumb').forEach(thumb => {
@@ -4351,8 +4462,8 @@ function displayBatchResults(results) {
             }
             const tag = document.activeElement?.tagName;
             if (tag === "INPUT" || tag === "TEXTAREA") return;
-            if (e.key === "ArrowLeft") showImage((currentIndex - 1 + results.length) % results.length);
-            if (e.key === "ArrowRight") showImage((currentIndex + 1) % results.length);
+            if (e.key === "ArrowLeft") showImage((currentIndex - 1 + entries.length) % entries.length);
+            if (e.key === "ArrowRight") showImage((currentIndex + 1) % entries.length);
             if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
         };
         if (batchKeyHandler) document.removeEventListener("keydown", batchKeyHandler);
@@ -4366,22 +4477,24 @@ function displayBatchResults(results) {
 
         document.getElementById("qig-batch-download").onclick = async (e) => {
             e.stopPropagation();
-            await downloadWithMetadata(results[currentIndex], `generated-${Date.now()}.png`, lastPrompt, lastNegative, getSettings());
+            const activeEntry = getCurrentEntry();
+            await downloadWithMetadata(activeEntry.url, `generated-${Date.now()}.png`, activeEntry.prompt, activeEntry.negative, activeEntry.metadataSettings);
         };
         document.getElementById("qig-batch-save-all").onclick = async (e) => {
             e.stopPropagation();
             const ts = Date.now();
-            for (let i = 0; i < results.length; i++) {
-                await downloadWithMetadata(results[i], `generated-${ts}-${i + 1}.png`, lastPrompt, lastNegative, getSettings());
-                if (i < results.length - 1) await new Promise(r => setTimeout(r, 300));
+            for (let i = 0; i < entries.length; i++) {
+                const item = entries[i];
+                await downloadWithMetadata(item.url, `generated-${ts}-${i + 1}.png`, item.prompt, item.negative, item.metadataSettings);
+                if (i < entries.length - 1) await new Promise(r => setTimeout(r, 300));
             }
-            toastr.success(`Downloaded ${results.length} images`);
+            toastr.success(`Downloaded ${entries.length} images`);
         };
         document.getElementById("qig-batch-insert-all").onclick = async (e) => {
             e.stopPropagation();
             try {
-                for (const r of results) await insertImageIntoMessage(r);
-                toastr.success(`Inserted ${results.length} images into message`);
+                for (const entry of entries) await insertImageIntoMessage(entry.url);
+                toastr.success(`Inserted ${entries.length} images into message`);
             } catch (err) {
                 console.error("[Quick Image Gen] Insert all failed:", err);
                 toastr.error("Failed to insert images: " + err.message);
@@ -4414,7 +4527,7 @@ function displayBatchResults(results) {
         document.getElementById("qig-batch-insert").onclick = async (e) => {
             e.stopPropagation();
             try {
-                await insertImageIntoMessage(results[currentIndex]);
+                await insertImageIntoMessage(getCurrentEntry().url);
                 toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -4463,9 +4576,9 @@ function showGallery() {
                 if (!item) return;
                 lastPrompt = item.prompt || "";
                 lastNegative = item.negative || "";
-                lastPromptWasLLM = false;
+                lastPromptWasLLM = !!item.promptWasLLM;
                 gallery.style.display = "none";
-                displayImage(item.url, true);
+                displayImage(item, true);
             };
         });
     });
@@ -4573,6 +4686,7 @@ function showParagraphPicker(messageText) {
 
 async function genStability(prompt, negative, s, signal) {
     if (!s.stabilityKey) throw new Error("Stability AI API key required");
+    const seed = resolveRandomSeed(s.seed, s);
     const res = await fetch("https://api.stability.ai/v1/generation/stable-diffusion-xl-1024-v1-0/text-to-image", {
         method: "POST",
         headers: {
@@ -4588,7 +4702,7 @@ async function genStability(prompt, negative, s, signal) {
             steps: Math.min(Math.max(s.steps, 10), 50),
             width: s.width,
             height: s.height,
-            seed: s.seed === -1 ? 0 : s.seed,
+            seed,
             samples: 1
         }),
         signal
@@ -4758,8 +4872,8 @@ async function regenerateImage() {
             checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
-                const finalUrl = await maybeFinalizeUrl(result, lastPrompt, lastNegative, getMetadataSettings(s));
-                if (finalUrl) displayImage(finalUrl);
+                const entry = await finalizeGeneratedEntry(result, lastPrompt, lastNegative, s, { promptWasLLM: lastPromptWasLLM });
+                if (entry) displayImage(entry);
             }
         } else {
             const results = [];
@@ -4772,8 +4886,8 @@ async function regenerateImage() {
                 const expandedNegative = expandWildcards(lastNegative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                 if (result) {
-                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
-                    if (finalUrl) results.push(finalUrl);
+                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                    if (entry) results.push(entry);
                 }
             }
             hideStatus();
@@ -8176,23 +8290,23 @@ async function generateImageInjectPalette() {
                 const expandedNegative = expandWildcards(negative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                 if (result) {
-                    const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
-                    if (finalUrl) results.push(finalUrl);
+                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                    if (entry) results.push(entry);
                 }
             }
             s.seed = originalSeed;
 
-            if (results.length > 0) {
-                if (results.length === 1) {
-                    if (s.autoInsert) {
-                        addToGallery(results[0]);
-                        try {
-                            await autoInsertInjectImage(results[0], {
-                                insertMode: s.injectInsertMode,
-                            });
-                        } catch (err) {
-                            log(`Palette inject: Auto-insert failed: ${err.message}`);
-                            displayImage(results[0]);
+                if (results.length > 0) {
+                    if (results.length === 1) {
+                        if (s.autoInsert) {
+                            addToGallery(results[0]);
+                            try {
+                                await autoInsertInjectImage(results[0].url, {
+                                    insertMode: s.injectInsertMode,
+                                });
+                            } catch (err) {
+                                log(`Palette inject: Auto-insert failed: ${err.message}`);
+                                displayImage(results[0]);
                         }
                     } else {
                         displayImage(results[0]);
@@ -8313,32 +8427,32 @@ async function generateImage() {
     log(`Final prompt: ${prompt.substring(0, 100)}...`);
     log(`Negative: ${negative.substring(0, 50)}...`);
 
-        const results = [];
-        log(`Using provider: ${s.provider}, batch: ${batchCount}`);
-        let baseSeed = originalSeed;
-        if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
-            baseSeed = Math.floor(Math.random() * 2147483647);
+            const results = [];
+            log(`Using provider: ${s.provider}, batch: ${batchCount}`);
+            let baseSeed = originalSeed;
+            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+                baseSeed = Math.floor(Math.random() * 2147483647);
         }
         for (let i = 0; i < batchCount; i++) {
             checkAborted(cancelCheckpoint);
             if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
-            showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
-            const expandedPrompt = expandWildcards(prompt);
-            const expandedNegative = expandWildcards(negative);
-            const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
-            if (result) {
-                const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
-                if (finalUrl) results.push(finalUrl);
-            }
-        }
-        log(`Generated ${results.length} image(s) successfully`);
-        if (s.autoInsert) {
-            for (const r of results) {
-                addToGallery(r);
-                try { await insertImageIntoMessage(r); } catch (err) {
-                    console.error("[Quick Image Gen] Auto-insert failed:", err);
+                showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
+                const expandedPrompt = expandWildcards(prompt);
+                const expandedNegative = expandWildcards(negative);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                if (result) {
+                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                    if (entry) results.push(entry);
                 }
             }
+            log(`Generated ${results.length} image(s) successfully`);
+            if (s.autoInsert) {
+                for (const r of results) {
+                    addToGallery(r);
+                    try { await insertImageIntoMessage(r.url); } catch (err) {
+                        console.error("[Quick Image Gen] Auto-insert failed:", err);
+                    }
+                }
             toastr.success(`Image${results.length > 1 ? 's' : ''} inserted into chat`);
         } else if (results.length === 1) {
             displayImage(results[0]);
@@ -8560,8 +8674,8 @@ async function processInjectMessage(messageText, messageIndex) {
                     const expandedNegative = expandWildcards(negative);
                     const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                     if (result) {
-                        const finalUrl = await maybeFinalizeUrl(result, expandedPrompt, expandedNegative, getMetadataSettings(s));
-                        if (finalUrl) results.push(finalUrl);
+                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                        if (entry) results.push(entry);
                     }
                 }
                 s.seed = originalSeed;
@@ -8571,7 +8685,7 @@ async function processInjectMessage(messageText, messageIndex) {
                         if (s.autoInsert) {
                             addToGallery(results[0]);
                             try {
-                                await autoInsertInjectImage(results[0], {
+                                await autoInsertInjectImage(results[0].url, {
                                     messageIndex,
                                     insertMode: s.injectInsertMode,
                                 });
@@ -8724,25 +8838,56 @@ function warnSaveToServer(msg) {
     }
 }
 
-function getMetadataSettings(s) {
-    const isProxy = s.provider === "proxy";
-    const steps = isProxy ? (s.proxySteps ?? s.steps) : s.steps;
-    const sampler = isProxy ? (s.proxySampler || s.sampler) : s.sampler;
-    const cfgScale = isProxy ? (s.proxyCfg ?? s.cfgScale) : s.cfgScale;
-    const seed = isProxy ? (s.proxySeed ?? s.seed) : s.seed;
+function getProviderModelId(settings, provider = settings?.provider) {
+    switch (provider) {
+        case "pollinations": return settings?.pollinationsModel || "flux";
+        case "novelai": return settings?.naiModel || null;
+        case "arliai": return settings?.arliModel || null;
+        case "nanogpt": return settings?.nanogptModel || null;
+        case "chutes": return settings?.chutesModel || null;
+        case "civitai": return settings?.civitaiModel || null;
+        case "nanobanana": return settings?.nanobananaModel || null;
+        case "stability": return "stable-diffusion-xl-1024-v1-0";
+        case "replicate": return settings?.replicateModel || null;
+        case "fal": return settings?.falModel || null;
+        case "together": return settings?.togetherModel || null;
+        case "local": return settings?.localType === "a1111" ? (settings?.a1111Model || settings?.localModel || null) : (settings?.localModel || null);
+        case "proxy": return settings?.proxyModel || null;
+        default: return null;
+    }
+}
 
-    return {
-        steps,
-        sampler,
-        scheduler: s.provider === "local" && s.localType === "a1111" ? s.a1111Scheduler : undefined,
-        cfgScale,
+function getMetadataSettings(s, options = {}) {
+    const provider = options.provider || s.provider;
+    const isProxy = provider === "proxy";
+    const currentSeed = isProxy ? (s.proxySeed ?? s.seed) : s.seed;
+    const seed = Number.isFinite(options.resolvedSeed)
+        ? options.resolvedSeed
+        : (Number.isFinite(currentSeed) && currentSeed >= 0 ? currentSeed : undefined);
+
+    const metadata = {
+        steps: isProxy ? (s.proxySteps ?? s.steps) : s.steps,
+        sampler: isProxy ? (s.proxySampler || s.sampler) : s.sampler,
+        cfgScale: isProxy ? (s.proxyCfg ?? s.cfgScale) : s.cfgScale,
         seed,
         width: s.width,
         height: s.height,
-        provider: s.provider,
+        provider,
+        model: getProviderModelId(s, provider),
         saveToServer: s.saveToServer,
         saveToServerEmbedMetadata: s.saveToServerEmbedMetadata,
     };
+
+    if (provider === "local") {
+        metadata.backend = s.localType || "a1111";
+        metadata.scheduler = s.localType === "a1111" ? s.a1111Scheduler : (s.comfyScheduler || undefined);
+    } else if (provider === "civitai") {
+        metadata.scheduler = s.civitaiScheduler || undefined;
+    } else if (provider === "proxy" && s.proxyComfyMode) {
+        metadata.backend = "comfyui";
+    }
+
+    return metadata;
 }
 
 function getServerSubfolder() {
@@ -8774,20 +8919,35 @@ async function fetchImageBuffer(url) {
 function detectImageFormat(buffer, contentType = "", url = "") {
     const bytes = new Uint8Array(buffer);
     const isPng = bytes.length >= 8 && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4E && bytes[3] === 0x47;
-    if (isPng) return { ext: "png", isPng: true };
+    if (isPng) return { ext: "png", mime: "image/png", isPng: true };
     const isJpeg = bytes.length >= 3 && bytes[0] === 0xFF && bytes[1] === 0xD8 && bytes[2] === 0xFF;
-    if (isJpeg) return { ext: "jpg", isPng: false };
+    if (isJpeg) return { ext: "jpg", mime: "image/jpeg", isPng: false };
     const isWebp = bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
-    if (isWebp) return { ext: "webp", isPng: false };
+    if (isWebp) return { ext: "webp", mime: "image/webp", isPng: false };
     const ct = contentType.toLowerCase();
-    if (ct.includes("png")) return { ext: "png", isPng: true };
-    if (ct.includes("webp")) return { ext: "webp", isPng: false };
-    if (ct.includes("jpeg") || ct.includes("jpg")) return { ext: "jpg", isPng: false };
-    const lowerUrl = String(url).toLowerCase();
-    if (lowerUrl.includes(".png")) return { ext: "png", isPng: true };
-    if (lowerUrl.includes(".webp")) return { ext: "webp", isPng: false };
-    if (lowerUrl.includes(".jpg") || lowerUrl.includes(".jpeg")) return { ext: "jpg", isPng: false };
-    return { ext: "jpg", isPng: false };
+    if (ct.includes("png")) return { ext: "png", mime: "image/png", isPng: true };
+    if (ct.includes("webp")) return { ext: "webp", mime: "image/webp", isPng: false };
+    if (ct.includes("jpeg") || ct.includes("jpg")) return { ext: "jpg", mime: "image/jpeg", isPng: false };
+
+    let urlPath = "";
+    try {
+        urlPath = new URL(url, window.location?.href || "http://localhost/").pathname.toLowerCase();
+    } catch {
+        urlPath = String(url || "").split(/[?#]/, 1)[0].toLowerCase();
+    }
+
+    if (urlPath.endsWith(".png")) return { ext: "png", mime: "image/png", isPng: true };
+    if (urlPath.endsWith(".webp")) return { ext: "webp", mime: "image/webp", isPng: false };
+    if (urlPath.endsWith(".jpg") || urlPath.endsWith(".jpeg")) return { ext: "jpg", mime: "image/jpeg", isPng: false };
+    return { ext: "jpg", mime: "image/jpeg", isPng: false };
+}
+
+function replaceFilenameExtension(filename, ext) {
+    const safeExt = (ext || "png").replace(/^\./, "");
+    if (!filename) return `generated.${safeExt}`;
+    return /\.[^./\\]+$/.test(filename)
+        ? filename.replace(/\.[^./\\]+$/, `.${safeExt}`)
+        : `${filename}.${safeExt}`;
 }
 
 function arrayBufferToBase64(buffer) {
@@ -8853,13 +9013,20 @@ function buildMetadataString(prompt, negative, settings) {
     const parts = [prompt];
     if (negative) parts.push(`Negative prompt: ${negative}`);
     const params = [];
-    if (settings.steps) params.push(`Steps: ${settings.steps}`);
+    const steps = Number(settings.steps);
+    const cfgScale = Number(settings.cfgScale);
+    const width = Number(settings.width);
+    const height = Number(settings.height);
+
+    if (Number.isFinite(steps) && steps > 0) params.push(`Steps: ${steps}`);
     if (settings.sampler) params.push(`Sampler: ${SAMPLER_DISPLAY_NAMES[settings.sampler] || settings.sampler}`);
     if (settings.scheduler && settings.scheduler !== "Automatic") params.push(`Scheduler: ${settings.scheduler}`);
-    if (settings.cfgScale) params.push(`CFG scale: ${settings.cfgScale}`);
-    if (settings.seed !== undefined) params.push(`Seed: ${settings.seed}`);
-    if (settings.width && settings.height) params.push(`Size: ${settings.width}x${settings.height}`);
-    if (settings.provider) params.push(`Model: ${settings.provider}`);
+    if (Number.isFinite(cfgScale)) params.push(`CFG scale: ${cfgScale}`);
+    if (Number.isFinite(settings.seed) && settings.seed >= 0) params.push(`Seed: ${settings.seed}`);
+    if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) params.push(`Size: ${width}x${height}`);
+    if (settings.provider) params.push(`Provider: ${settings.provider}`);
+    if (settings.model) params.push(`Model: ${settings.model}`);
+    if (settings.backend) params.push(`Backend: ${settings.backend}`);
     if (params.length) parts.push(params.join(', '));
     return parts.join('\n');
 }
@@ -8915,15 +9082,15 @@ function embedPNGMetadata(arrayBuffer, text) {
 
 async function downloadWithMetadata(url, filename, prompt, negative, settings) {
     try {
-        const { buffer: arrayBuffer } = await fetchImageBuffer(url);
-        const metaText = buildMetadataString(prompt, negative, settings);
-        const isPNG = new Uint8Array(arrayBuffer).slice(0, 4).join(',') === '137,80,78,71';
-        const finalBuffer = isPNG ? embedPNGMetadata(arrayBuffer, metaText) : arrayBuffer;
-        const blob = new Blob([finalBuffer], { type: isPNG ? 'image/png' : 'image/jpeg' });
+        const { buffer: arrayBuffer, contentType } = await fetchImageBuffer(url);
+        const formatInfo = detectImageFormat(arrayBuffer, contentType, url);
+        const metaText = buildMetadataString(prompt, negative, settings || {});
+        const finalBuffer = formatInfo.isPng ? embedPNGMetadata(arrayBuffer, metaText) : arrayBuffer;
+        const blob = new Blob([finalBuffer], { type: formatInfo.mime });
         const blobUrl = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = blobUrl;
-        a.download = filename;
+        a.download = replaceFilenameExtension(filename, formatInfo.ext);
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -8936,10 +9103,62 @@ async function downloadWithMetadata(url, filename, prompt, negative, settings) {
 }
 
 // Metadata Drag and Drop Handlers
+async function decompressPngTextData(data) {
+    if (typeof DecompressionStream !== "function") return null;
+    try {
+        const stream = new Blob([data]).stream().pipeThrough(new DecompressionStream("deflate"));
+        const buffer = await new Response(stream).arrayBuffer();
+        return new Uint8Array(buffer);
+    } catch {
+        return null;
+    }
+}
+
+async function readPngParametersChunk(type, data) {
+    const keywordEnd = data.indexOf(0);
+    if (keywordEnd < 0) return null;
+
+    const keyword = new TextDecoder().decode(data.slice(0, keywordEnd));
+    if (keyword !== "parameters") return null;
+
+    if (type === "tEXt") {
+        return new TextDecoder().decode(data.slice(keywordEnd + 1));
+    }
+
+    if (type === "zTXt") {
+        const compressionMethod = data[keywordEnd + 1];
+        if (compressionMethod !== 0) return null;
+        const decompressed = await decompressPngTextData(data.slice(keywordEnd + 2));
+        return decompressed ? new TextDecoder().decode(decompressed) : null;
+    }
+
+    if (type === "iTXt") {
+        let cursor = keywordEnd + 1;
+        if (cursor + 2 > data.length) return null;
+        const compressionFlag = data[cursor++];
+        const compressionMethod = data[cursor++];
+
+        while (cursor < data.length && data[cursor] !== 0) cursor++;
+        cursor++;
+        while (cursor < data.length && data[cursor] !== 0) cursor++;
+        cursor++;
+
+        const textBytes = data.slice(cursor);
+        if (compressionFlag === 1) {
+            if (compressionMethod !== 0) return null;
+            const decompressed = await decompressPngTextData(textBytes);
+            return decompressed ? new TextDecoder().decode(decompressed) : null;
+        }
+        return new TextDecoder().decode(textBytes);
+    }
+
+    return null;
+}
+
 async function readInfoFromPNG(file) {
     return new Promise((resolve) => {
         const reader = new FileReader();
-        reader.onload = (e) => {
+        reader.onload = async (e) => {
             const buffer = e.target.result;
             const view = new DataView(buffer);
             let offset = 8; // Skip PNG signature
@@ -8947,7 +9166,7 @@ async function readInfoFromPNG(file) {
             while (offset < view.byteLength) {
                 if (offset + 12 > view.byteLength) break;
                 const length = view.getUint32(offset);
-                if (length === 0 || offset + length + 12 > view.byteLength) break;
+                if (offset + length + 12 > view.byteLength) break;
                 const type = String.fromCharCode(
                     view.getUint8(offset + 4),
                     view.getUint8(offset + 5),
@@ -8955,19 +9174,13 @@ async function readInfoFromPNG(file) {
                     view.getUint8(offset + 7)
                 );
 
-                if (type === 'tEXt') {
+                if (type === 'IEND') break;
+
+                if (type === 'tEXt' || type === 'zTXt' || type === 'iTXt') {
                     const dataOffset = offset + 8;
                     const data = new Uint8Array(buffer, dataOffset, length);
-                    let keywordEnd = 0;
-                    for (let i = 0; i < length; i++) {
-                        if (data[i] === 0) {
-                            keywordEnd = i;
-                            break;
-                        }
-                    }
-                    const keyword = new TextDecoder().decode(data.slice(0, keywordEnd));
-                    if (keyword === 'parameters') {
-                        const text = new TextDecoder().decode(data.slice(keywordEnd + 1));
+                    const text = await readPngParametersChunk(type, data);
+                    if (text) {
                         resolve(text);
                         return;
                     }
@@ -8977,6 +9190,7 @@ async function readInfoFromPNG(file) {
             }
             resolve(null);
         };
+        reader.onerror = () => resolve(null);
         reader.readAsArrayBuffer(file);
     });
 }
@@ -9012,8 +9226,9 @@ function parseGenerationParameters(text) {
     const result = { prompt, negativePrompt: negative };
 
     // Parse key-value params
+    const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const getParam = (key) => {
-        const match = params.match(new RegExp(`${key}: ([^,]+)`));
+        const match = params.match(new RegExp(`${escapeRegex(key)}: ([^,\n]+)`));
         return match ? match[1].trim() : null;
     };
 
@@ -9023,19 +9238,23 @@ function parseGenerationParameters(text) {
     const cfg = getParam("CFG scale");
     const seed = getParam("Seed");
     const size = getParam("Size");
+    const provider = getParam("Provider");
     const model = getParam("Model");
+    const backend = getParam("Backend");
 
-    if (steps) result.steps = parseInt(steps);
+    if (steps !== null) result.steps = parseInt(steps, 10);
     if (sampler) result.sampler = sampler;
     if (scheduler) result.scheduler = scheduler;
-    if (cfg) result.cfgScale = parseFloat(cfg);
-    if (seed) result.seed = parseInt(seed);
+    if (cfg !== null) result.cfgScale = parseFloat(cfg);
+    if (seed !== null) result.seed = parseInt(seed, 10);
     if (size) {
         const [w, h] = size.split("x").map(Number);
         result.width = w;
         result.height = h;
     }
+    if (provider) result.provider = provider;
     if (model) result.model = model;
+    if (backend) result.backend = backend;
 
     return result;
 }
@@ -9065,48 +9284,99 @@ async function handleMetadataDrop(e) {
         const params = parseGenerationParameters(info);
         if (params) {
             const s = getSettings();
+            const setValue = (id, value) => {
+                const el = document.getElementById(id);
+                if (el && value !== undefined && value !== null) el.value = value;
+            };
+            const explicitProvider = params.provider && PROVIDERS[params.provider] ? params.provider : null;
+            const legacyProvider = !explicitProvider && params.model && PROVIDERS[params.model] ? params.model : null;
+            const importedProvider = explicitProvider || legacyProvider || s.provider;
+
+            if (importedProvider !== s.provider) {
+                s.provider = importedProvider;
+                setValue("qig-provider", s.provider);
+                updateProviderUI();
+                renderProfileSelect();
+            }
+
+            if (importedProvider === "local" && params.backend) {
+                s.localType = params.backend === "comfyui" ? "comfyui" : "a1111";
+                setValue("qig-local-type", s.localType);
+                syncLocalTypeSections(s.localType);
+            }
+
             if (params.prompt) {
                 s.prompt = params.prompt;
-                const el = document.getElementById("qig-prompt");
-                if (el) el.value = s.prompt;
+                setValue("qig-prompt", s.prompt);
             }
             if (params.negativePrompt) {
                 s.negativePrompt = params.negativePrompt;
-                const el = document.getElementById("qig-negative");
-                if (el) el.value = s.negativePrompt;
+                setValue("qig-negative", s.negativePrompt);
             }
-            if (params.steps) {
-                s.steps = params.steps;
-                const el = document.getElementById("qig-steps");
-                if (el) el.value = s.steps;
+            if (params.steps !== undefined && !Number.isNaN(params.steps)) {
+                if (importedProvider === "proxy") {
+                    s.proxySteps = params.steps;
+                } else {
+                    s.steps = params.steps;
+                    setValue("qig-steps", s.steps);
+                }
             }
-            if (params.cfgScale) {
-                s.cfgScale = params.cfgScale;
-                const el = document.getElementById("qig-cfg");
-                if (el) el.value = s.cfgScale;
+            if (params.cfgScale !== undefined && !Number.isNaN(params.cfgScale)) {
+                if (importedProvider === "proxy") {
+                    s.proxyCfg = params.cfgScale;
+                } else {
+                    s.cfgScale = params.cfgScale;
+                    setValue("qig-cfg", s.cfgScale);
+                }
             }
             if (params.seed !== undefined && !Number.isNaN(params.seed)) {
-                s.seed = params.seed;
-                const el = document.getElementById("qig-seed");
-                if (el) el.value = s.seed;
+                if (importedProvider === "proxy") {
+                    s.proxySeed = params.seed;
+                } else {
+                    s.seed = params.seed;
+                    setValue("qig-seed", s.seed);
+                }
             }
             if (params.width && params.height) {
                 s.width = params.width;
                 s.height = params.height;
-                if (s.provider === "novelai") normalizeSize(s);
+                if (importedProvider === "novelai") normalizeSize(s);
                 syncSizeInputs(s.width, s.height);
-                if (s.provider === "novelai") syncNaiResolutionSelect();
+                if (importedProvider === "novelai") syncNaiResolutionSelect();
             }
-            if (params.model && PROVIDERS[params.model]) {
-                s.provider = params.model;
-                const providerEl = document.getElementById("qig-provider");
-                if (providerEl) providerEl.value = s.provider;
-                updateProviderUI();
-                renderProfileSelect();
+
+            if (explicitProvider && params.model) {
+                switch (importedProvider) {
+                    case "pollinations":
+                        s.pollinationsModel = params.model === "flux" ? "" : params.model;
+                        break;
+                    case "novelai": s.naiModel = params.model; break;
+                    case "arliai": s.arliModel = params.model; break;
+                    case "nanogpt": s.nanogptModel = params.model; break;
+                    case "chutes": s.chutesModel = params.model; break;
+                    case "civitai": s.civitaiModel = params.model; break;
+                    case "nanobanana": s.nanobananaModel = params.model; break;
+                    case "replicate": s.replicateModel = params.model; break;
+                    case "fal": s.falModel = params.model; break;
+                    case "together": s.togetherModel = params.model; break;
+                    case "local":
+                        if ((params.backend || s.localType) === "comfyui") {
+                            s.localModel = params.model;
+                        } else {
+                            s.a1111Model = params.model;
+                            if (!s.localModel) s.localModel = params.model;
+                        }
+                        break;
+                    case "proxy": s.proxyModel = params.model; break;
+                }
             }
+
             // Try to map sampler (approximate match)
             if (params.sampler) {
-                const samplerMap = {
+                if (importedProvider === "proxy") {
+                    s.proxySampler = params.sampler;
+                } else {
+                    const samplerMap = {
                     "Euler a": "euler_a", "Euler": "euler",
                     "DPM++ 2M Karras": "dpm++_2m", "DPM++ 2M": "dpm++_2m",
                     "DPM++ SDE Karras": "dpm++_sde", "DPM++ SDE": "dpm++_sde",
@@ -9123,23 +9393,31 @@ async function handleMetadataDrop(e) {
                     "UniPC": "uni_pc", "UniPC BH2": "uni_pc_bh2",
                     "LCM": "lcm", "DEIS": "deis", "Restart": "restart"
                 };
-                const mapped = samplerMap[params.sampler];
-                if (mapped) {
-                    const oldSampler = s.sampler;
-                    s.sampler = mapped;
-                    const el = document.getElementById("qig-sampler");
-                    if (el) el.value = s.sampler;
-                    if (oldSampler !== mapped) {
-                        toastr.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`);
+                    const mapped = samplerMap[params.sampler];
+                    if (mapped) {
+                        const oldSampler = s.sampler;
+                        s.sampler = mapped;
+                        setValue("qig-sampler", s.sampler);
+                        if (oldSampler !== mapped) {
+                            toastr.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`);
+                        }
                     }
                 }
             }
             // Apply scheduler from metadata
             if (params.scheduler) {
-                s.a1111Scheduler = params.scheduler;
-                const el = document.getElementById("qig-a1111-scheduler");
-                if (el) el.value = s.a1111Scheduler;
+                if (importedProvider === "local") {
+                    if ((params.backend || s.localType) === "comfyui") {
+                        s.comfyScheduler = params.scheduler;
+                    } else {
+                        s.a1111Scheduler = params.scheduler;
+                    }
+                } else if (importedProvider === "civitai") {
+                    s.civitaiScheduler = params.scheduler;
+                }
             }
+
+            if (importedProvider) refreshProviderInputs(importedProvider);
 
             saveSettingsDebounced();
             showStatus("✅ Settings updated from image!");
