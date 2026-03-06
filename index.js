@@ -345,6 +345,50 @@ function resolveRandomSeed(seedValue = -1, target = null) {
     return resolvedSeed;
 }
 
+function getGenerationSeedKey(settings = getSettings()) {
+    return settings?.provider === "proxy" ? "proxySeed" : "seed";
+}
+
+function getGenerationSeedValue(settings = getSettings()) {
+    const source = settings || getSettings();
+    const value = Number(source?.[getGenerationSeedKey(source)]);
+    return Number.isFinite(value) ? value : -1;
+}
+
+function setGenerationSeedValue(settings, value) {
+    if (!settings || typeof settings !== "object") return value;
+    settings[getGenerationSeedKey(settings)] = value;
+    return value;
+}
+
+function getAbortError(signal, message = "Generation cancelled by user") {
+    const reason = signal?.reason;
+    if (reason instanceof DOMException && reason.name === "AbortError") return reason;
+    return new DOMException(message, "AbortError");
+}
+
+async function runAbortableTask(taskFactory, signal) {
+    if (!signal) return await taskFactory();
+    if (signal.aborted) throw getAbortError(signal);
+
+    return await new Promise((resolve, reject) => {
+        let settled = false;
+        const finish = (handler, value) => {
+            if (settled) return;
+            settled = true;
+            signal.removeEventListener("abort", onAbort);
+            handler(value);
+        };
+        const onAbort = () => finish(reject, getAbortError(signal));
+        signal.addEventListener("abort", onAbort, { once: true });
+
+        Promise.resolve()
+            .then(taskFactory)
+            .then((value) => finish(resolve, value))
+            .catch((error) => finish(reject, error));
+    });
+}
+
 const HTML_MESSAGE_TAG_RE = /<\/?(?:div|span|button|i|p|br|ul|ol|li|a|img|svg|section|article|table|tr|td|th)\b/i;
 const UI_HTML_MESSAGE_RE = /menu_button|drawer-opener|data-target=|fa-solid|inline-flex|extensions-settings-button|sys-settings-button|rightNavHolder/i;
 
@@ -489,10 +533,44 @@ function resolveNovelAIProxyImageUrl(rawUrl, proxyUrl) {
 }
 
 function extractNovelAIProxyImageUrl(json, proxyUrl) {
-    if (json?.status !== "success" || !json?.url) {
-        throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
+    const urlCandidates = [
+        json?.url,
+        json?.image_url,
+        json?.imageUrl,
+        json?.data?.url,
+        json?.data?.[0]?.url,
+        json?.output?.[0]?.url,
+        json?.output?.[0],
+        json?.image,
+    ];
+    for (const candidate of urlCandidates) {
+        if (typeof candidate !== "string" || !candidate) continue;
+        if (/^[A-Za-z0-9+/]{100,}[=]{0,2}$/.test(candidate)) {
+            return `data:image/png;base64,${candidate}`;
+        }
+        if (candidate.startsWith("data:")) return candidate;
+        if (/^https?:\/\//i.test(candidate) || candidate.startsWith("/")) {
+            return resolveNovelAIProxyImageUrl(candidate, proxyUrl);
+        }
     }
-    return resolveNovelAIProxyImageUrl(json.url, proxyUrl);
+
+    const base64Candidates = [
+        json?.b64_json,
+        json?.base64,
+        json?.image_base64,
+        json?.imageBase64,
+        json?.data?.base64,
+        json?.data?.[0]?.base64,
+        json?.data?.[0]?.b64_json,
+        json?.output?.[0]?.b64_json,
+    ];
+    for (const candidate of base64Candidates) {
+        if (typeof candidate === "string" && candidate) {
+            return candidate.startsWith("data:") ? candidate : `data:image/png;base64,${candidate}`;
+        }
+    }
+
+    throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
 }
 
 const STYLES = {
@@ -901,12 +979,11 @@ function requestGenerationCancel() {
         }
     } catch (e) { /* best-effort */ }
 
-    // Safety timeout: force-reset UI if still generating after 5 seconds
+    // Cancellation watchdog: keep the UI busy until the active async chain actually settles.
     const thisCancelSerial = cancelRequestSerial;
     setTimeout(() => {
-        if (isGenerating && cancelRequestSerial === thisCancelSerial) {
-            log("Cancel safety timeout: forcing endGeneration()");
-            endGeneration();
+        if (isGenerating && cancelRequestSerial === thisCancelSerial && currentAbortController?.signal?.aborted) {
+            log("Cancel watchdog: generation is still settling after 5 seconds");
         }
     }, 5000);
 
@@ -1975,7 +2052,7 @@ function applyPromptReplacementMaps(prompt, negative) {
     return { prompt: p, negative: n, appliedCount, replacedTokenCount };
 }
 
-async function matchLLMFilters(sceneText) {
+async function matchLLMFilters(sceneText, signal = null) {
     const llmFilters = getActiveFilters().filter(f => f.enabled && f.matchMode === "LLM" && f.description);
     if (!llmFilters.length || !sceneText) return [];
     const sceneForMatching = enrichSceneTextForFilters(sceneText, "LLM filters");
@@ -1995,14 +2072,14 @@ ${conceptList}`;
     let response;
     try {
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
-            response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.");
+            response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.", signal);
         } else {
             const quietOptions = { skipWIAN: true, quietName: `FilterMatch_${Date.now()}`, quietToLoud: false };
             try {
-                response = await generateQuietPrompt(instruction, quietOptions);
+                response = await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
             } catch (e) {
                 if (e.name === "AbortError") throw e;
-                response = await generateQuietPrompt(instruction, false);
+                response = await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
             }
         }
         checkAborted();
@@ -2047,7 +2124,7 @@ function findSecretKeyForId(secretId) {
     return null;
 }
 
-async function callOverrideLLM(instruction, systemPrompt = "") {
+async function callOverrideLLM(instruction, systemPrompt = "", signal = null) {
     const s = getSettings();
     let CMRS = null;
     try {
@@ -2060,10 +2137,10 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
         log("LLM Override: No Connection Manager or profile, falling back to main AI");
         const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
         try {
-            return await generateQuietPrompt(instruction, quietOptions);
+            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
         } catch (e) {
             if (e.name === "AbortError") throw e;
-            return await generateQuietPrompt(instruction, false);
+            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
         }
     }
 
@@ -2108,12 +2185,12 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
     }
 
     try {
-        const response = await CMRS.sendRequest(
+        const response = await runAbortableTask(() => CMRS.sendRequest(
             s.llmOverrideProfileId,
             messages,
             s.llmOverrideMaxTokens || 500,
             { extractData: true, includePreset: true, stream: false }
-        );
+        ), signal);
         return extractLLMResponse(response);
     } catch (e) {
         if (e.name === "AbortError") throw e;
@@ -2121,10 +2198,10 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
         log("Falling back to main chat AI. Check your Connection Manager profile's API type, endpoint, and API key.");
         const quietOptions = { skipWIAN: true, quietName: `ImageGen_${Date.now()}`, quietToLoud: false };
         try {
-            return await generateQuietPrompt(instruction, quietOptions);
+            return await runAbortableTask(() => generateQuietPrompt(instruction, quietOptions), signal);
         } catch (e2) {
             if (e2.name === "AbortError") throw e2;
-            return await generateQuietPrompt(instruction, false);
+            return await runAbortableTask(() => generateQuietPrompt(instruction, false), signal);
         }
     } finally {
         // Restore original secret
@@ -2382,7 +2459,7 @@ Tags:`;
         let llmPrompt;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
-            llmPrompt = await callOverrideLLM(instructionWithEntropy);
+            llmPrompt = await callOverrideLLM(instructionWithEntropy, "", signal);
         } else {
             const quietOptions = {
                 skipWIAN: true,
@@ -2390,11 +2467,11 @@ Tags:`;
                 quietToLoud: false
             };
             try {
-                llmPrompt = await generateQuietPrompt(instructionWithEntropy, quietOptions);
+                llmPrompt = await runAbortableTask(() => generateQuietPrompt(instructionWithEntropy, quietOptions), signal);
             } catch (e) {
                 if (e.name === "AbortError") throw e;
                 log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                llmPrompt = await generateQuietPrompt(instructionWithEntropy, false);
+                llmPrompt = await runAbortableTask(() => generateQuietPrompt(instructionWithEntropy, false), signal);
             }
         }
 
@@ -2820,6 +2897,7 @@ async function decompressDeflate(compressedData) {
 }
 
 async function genArliAI(prompt, negative, s, signal) {
+    const seed = resolveRandomSeed(s.seed, s);
     const res = await fetch("https://api.arliai.com/v1/txt2img", {
         method: "POST",
         headers: {
@@ -2835,7 +2913,7 @@ async function genArliAI(prompt, negative, s, signal) {
             steps: s.steps,
             cfg_scale: s.cfgScale,
             sampler_name: s.sampler,
-            seed: s.seed === -1 ? -1 : s.seed
+            seed: seed
         }),
         signal
     });
@@ -2878,6 +2956,7 @@ async function genNanoGPT(prompt, negative, s, signal) {
 }
 
 async function genChutes(prompt, negative, s, signal) {
+    const seed = resolveRandomSeed(s.seed, s);
     const res = await fetch("https://image.chutes.ai/generate", {
         method: "POST",
         headers: {
@@ -2892,7 +2971,7 @@ async function genChutes(prompt, negative, s, signal) {
             height: s.height,
             num_inference_steps: s.steps,
             guidance_scale: s.cfgScale,
-            seed: s.seed === -1 ? undefined : s.seed
+            seed: seed
         }),
         signal
     });
@@ -2916,6 +2995,7 @@ async function genChutes(prompt, negative, s, signal) {
 }
 
 async function genCivitAI(prompt, negative, s, signal) {
+    const seed = resolveRandomSeed(s.seed, s);
     // Parse LoRAs into additionalNetworks map
     let additionalNetworks;
     if (s.civitaiLoras && s.civitaiLoras.trim()) {
@@ -2947,7 +3027,7 @@ async function genCivitAI(prompt, negative, s, signal) {
             cfgScale: s.cfgScale,
             width: s.width,
             height: s.height,
-            seed: s.seed === -1 ? -1 : s.seed,
+            seed: seed,
             clipSkip: parseInt(s.a1111ClipSkip) || 2
         },
         batchSize: 1
@@ -3688,6 +3768,7 @@ async function genProxy(prompt, negative, s, signal) {
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
     const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
+    const proxySeed = resolveRandomSeed(s.proxySeed, s);
 
     if (isChatProxy) {
         const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
@@ -3718,6 +3799,7 @@ async function genProxy(prompt, negative, s, signal) {
                 steps: s.proxySteps || 25,
                 cfg_scale: s.proxyCfg || 6,
                 sampler: s.proxySampler || "Euler a",
+                seed: proxySeed,
                 negative_prompt: negative,
                 loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
                 facefix: s.proxyFacefix || undefined
@@ -3817,6 +3899,17 @@ async function genProxy(prompt, negative, s, signal) {
             }
         }
 
+        for (const candidate of data.candidates || []) {
+            for (const part of candidate.content?.parts || []) {
+                if (part.inlineData?.data) {
+                    return `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
+                }
+                if (part.inline_data?.data) {
+                    return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
+                }
+            }
+        }
+
         // Log full response structure for debugging
         log(`Full message structure: ${JSON.stringify(data.choices?.[0]?.message || {}).substring(0, 500)}`);
         throw new Error(msgContent === null
@@ -3844,7 +3937,7 @@ async function genProxy(prompt, negative, s, signal) {
                 steps: s.proxySteps || 25,
                 cfg_scale: s.proxyCfg || 6,
                 sampler: s.proxySampler || "Euler a",
-                seed: (s.proxySeed ?? -1) >= 0 ? s.proxySeed : undefined,
+                seed: proxySeed,
                 loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
                 facefix: s.proxyFacefix || undefined,
                 reference_images: s.proxyRefImages?.length ? s.proxyRefImages : undefined
@@ -4101,23 +4194,29 @@ async function autoInsertInjectImage(imageUrl, { messageIndex, insertMode } = {}
     return await insertImageIntoMessage(imageUrl);
 }
 
-function persistImageUrl(url) {
-    if (url.startsWith('data:')) return Promise.resolve(url);
-    return new Promise((resolve) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.onload = () => {
-            try {
-                const canvas = document.createElement("canvas");
-                canvas.width = img.width;
-                canvas.height = img.height;
-                canvas.getContext("2d").drawImage(img, 0, 0);
-                resolve(canvas.toDataURL("image/jpeg", 0.9));
-            } catch { resolve(url); }
-        };
-        img.onerror = () => resolve(url);
-        img.src = url;
-    });
+function shouldPersistImageUrl(url) {
+    const source = String(url || "");
+    if (!source || source.startsWith("data:")) return false;
+    if (source.startsWith("blob:")) return true;
+
+    try {
+        const parsed = new URL(source, window.location?.href || "http://localhost/");
+        if (!/^https?:$/i.test(parsed.protocol)) return false;
+        return parsed.origin !== (window.location?.origin || parsed.origin);
+    } catch {
+        return /^https?:/i.test(source);
+    }
+}
+
+async function persistImageUrl(url) {
+    if (!shouldPersistImageUrl(url)) return url;
+    try {
+        const { buffer, contentType } = await fetchImageBuffer(url);
+        const formatInfo = detectImageFormat(buffer, contentType, url);
+        return `data:${formatInfo.mime};base64,${arrayBufferToBase64(buffer)}`;
+    } catch {
+        return url;
+    }
 }
 
 function createThumbnail(url, maxSize = 150) {
@@ -4194,7 +4293,8 @@ async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, option
     const metadataSettings = getMetadataSettings(settings, { resolvedSeed });
     const finalUrl = await maybeFinalizeUrl(rawUrl, prompt, negative, metadataSettings);
     if (!finalUrl) return null;
-    return createGenerationEntry(finalUrl, prompt, negative, metadataSettings, options);
+    const stableUrl = metadataSettings.saveToServer ? finalUrl : await persistImageUrl(finalUrl);
+    return createGenerationEntry(stableUrl, prompt, negative, metadataSettings, options);
 }
 
 async function addToGallery(entryOrUrl) {
@@ -4259,6 +4359,7 @@ function displayImage(entryOrUrl, skipGallery) {
         </div>
         <div class="qig-popup-actions">
             <button id="qig-regenerate-btn" title="Generate a new image with the same settings">🔄 Regenerate</button>
+            <button id="qig-use-as-ref" title="Use this image as reference for img2img">🖼 Use as Reference</button>
             <button id="qig-insert-btn" title="Insert this image into the chat">📌 Insert</button>
             <button id="qig-gallery-btn" title="Save to gallery">🖼️ Gallery</button>
             <button id="qig-download-btn" title="Download image with metadata">💾 Download</button>
@@ -4339,6 +4440,22 @@ function displayImage(entryOrUrl, skipGallery) {
                 toastr.error("Failed to insert image: " + err.message);
             }
         };
+        document.getElementById("qig-use-as-ref").onclick = (e) => {
+            e.stopPropagation();
+            const imgSrc = document.getElementById("qig-result-img")?.src;
+            if (!imgSrc) return;
+            const s = getSettings();
+            s.localRefImage = imgSrc;
+            saveSettingsDebounced();
+            const preview = document.getElementById("qig-local-ref-preview");
+            if (preview) { preview.src = imgSrc; preview.style.display = "block"; }
+            const clearBtn = document.getElementById("qig-local-ref-clear");
+            if (clearBtn) clearBtn.style.display = "block";
+            const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
+            if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
+            popup.style.display = "none";
+            toastr.success("Image set as reference for img2img");
+        };
         document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
     });
 }
@@ -4379,6 +4496,7 @@ function displayBatchResults(results) {
         </div>
         <div class="qig-popup-actions">
             <button id="qig-batch-regenerate" title="Regenerate all images in this batch">🔄 Regenerate</button>
+            <button id="qig-batch-use-as-ref" title="Use selected image as reference for img2img">🖼 Use as Reference</button>
             <button id="qig-batch-insert" title="Insert selected image into chat">📌 Insert</button>
             <button id="qig-batch-insert-all" title="Insert all images into chat">📌 Insert All</button>
             <button id="qig-batch-gallery" title="Save all to gallery">🖼️ Gallery</button>
@@ -4533,6 +4651,22 @@ function displayBatchResults(results) {
                 console.error("[Quick Image Gen] Insert failed:", err);
                 toastr.error("Failed to insert image: " + err.message);
             }
+        };
+        document.getElementById("qig-batch-use-as-ref").onclick = (e) => {
+            e.stopPropagation();
+            const imgSrc = document.getElementById("qig-batch-img")?.src;
+            if (!imgSrc) return;
+            const s = getSettings();
+            s.localRefImage = imgSrc;
+            saveSettingsDebounced();
+            const preview = document.getElementById("qig-local-ref-preview");
+            if (preview) { preview.src = imgSrc; preview.style.display = "block"; }
+            const clearBtn = document.getElementById("qig-local-ref-clear");
+            if (clearBtn) clearBtn.style.display = "block";
+            const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
+            if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
+            popup.style.display = "none";
+            toastr.success("Image set as reference for img2img");
         };
         document.getElementById("qig-batch-close").onclick = () => popup.style.display = "none";
     });
@@ -4715,6 +4849,7 @@ async function genStability(prompt, negative, s, signal) {
 
 async function genReplicate(prompt, negative, s, signal) {
     if (!s.replicateKey) throw new Error("Replicate API key required");
+    const seed = resolveRandomSeed(s.seed, s);
     // Default to SDXL if no model specified
     const version = s.replicateModel || "stability-ai/sdxl:39ed52f2a78e934b3ba6e2a89f5b1c712de7dfea535525255b1aa35c5565e08b";
 
@@ -4734,7 +4869,7 @@ async function genReplicate(prompt, negative, s, signal) {
                 height: s.height,
                 num_inference_steps: s.steps,
                 guidance_scale: s.cfgScale,
-                seed: s.seed === -1 ? undefined : s.seed,
+                seed: seed,
                 num_outputs: 1,
                 scheduler: ({
                     "euler_a": "K_EULER_ANCESTRAL",
@@ -4762,7 +4897,16 @@ async function genReplicate(prompt, negative, s, signal) {
         });
         if (!statusRes.ok) throw new Error(`Replicate polling error: ${statusRes.status}`);
         const status = await statusRes.json();
-        if (status.status === "succeeded" && status.output?.[0]) return status.output[0];
+        if (status.status === "succeeded") {
+            const outputs = Array.isArray(status.output) ? status.output : [status.output];
+            for (const output of outputs) {
+                if (typeof output === "string" && output) return output;
+                if (typeof output?.url === "string" && output.url) return output.url;
+                if (typeof output?.image === "string" && output.image) return output.image;
+                if (typeof output?.image?.url === "string" && output.image.url) return output.image.url;
+            }
+            throw new Error("Replicate returned no image in response");
+        }
         if (status.status === "failed") throw new Error(status.error || "Generation failed");
     }
     throw new Error("Replicate timeout");
@@ -4770,6 +4914,7 @@ async function genReplicate(prompt, negative, s, signal) {
 
 async function genFal(prompt, negative, s, signal) {
     if (!s.falKey) throw new Error("Fal.ai API key required");
+    const seed = resolveRandomSeed(s.seed, s);
     // Default to Flux Schnell
     const model = s.falModel || "fal-ai/flux/schnell";
     const endpoint = `https://fal.run/${model}`;
@@ -4786,7 +4931,7 @@ async function genFal(prompt, negative, s, signal) {
             image_size: { width: s.width, height: s.height },
             num_inference_steps: s.steps,
             guidance_scale: s.cfgScale,
-            seed: s.seed === -1 ? undefined : s.seed,
+            seed: seed,
             num_images: 1,
             enable_safety_checker: false
         }),
@@ -4800,6 +4945,7 @@ async function genFal(prompt, negative, s, signal) {
 
 async function genTogether(prompt, negative, s, signal) {
     if (!s.togetherKey) throw new Error("Together AI API key required");
+    const seed = resolveRandomSeed(s.seed, s);
     const model = s.togetherModel || "stabilityai/stable-diffusion-xl-base-1.0";
 
     const res = await fetch("https://api.together.xyz/v1/images/generations", {
@@ -4815,7 +4961,7 @@ async function genTogether(prompt, negative, s, signal) {
             width: s.width,
             height: s.height,
             steps: Math.min(s.steps, 50),
-            seed: s.seed === -1 ? undefined : s.seed,
+            seed: seed,
             n: 1
         }),
         signal
@@ -4859,9 +5005,9 @@ async function regenerateImage() {
     beginGeneration({ disableGenerateButton: true });
     const s = getSettings();
     const batchCount = s.batchCount || 1;
-    const originalSeed = s.seed;
+    const originalSeed = getGenerationSeedValue(s);
     const cancelCheckpoint = getCancelCheckpoint();
-    s.seed = -1;
+    setGenerationSeedValue(s, -1);
 
     log(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
@@ -4907,7 +5053,7 @@ async function regenerateImage() {
             setTimeout(hideStatus, 3000);
         }
     } finally {
-        s.seed = originalSeed;
+        setGenerationSeedValue(s, originalSeed);
         endGeneration({ disableGenerateButton: true });
     }
 }
@@ -5705,11 +5851,59 @@ window.duplicatePromptReplacement = duplicatePromptReplacement;
 window.clearPromptReplacements = clearPromptReplacements;
 
 // Character-specific settings
+let charSettingsBaseState = null;
+let charSettingsBaseCharId = null;
+
 function getCurrentRefImages(s) {
     if (s.provider === "proxy") return s.proxyRefImages || [];
     if (s.provider === "nanobanana") return s.nanobananaRefImages || [];
     if (s.provider === "nanogpt") return s.nanogptRefImages || [];
     return [];
+}
+
+function cloneCharScopedState(s = getSettings()) {
+    return {
+        prompt: s.prompt,
+        negativePrompt: s.negativePrompt,
+        style: s.style,
+        width: s.width,
+        height: s.height,
+        proxyRefImages: [...(s.proxyRefImages || [])],
+        nanobananaRefImages: [...(s.nanobananaRefImages || [])],
+        nanogptRefImages: [...(s.nanogptRefImages || [])],
+    };
+}
+
+function applyCharScopedState(state, s = getSettings()) {
+    if (!state) return;
+    s.prompt = state.prompt ?? defaultSettings.prompt;
+    s.negativePrompt = state.negativePrompt ?? defaultSettings.negativePrompt;
+    s.style = state.style ?? defaultSettings.style;
+    s.width = state.width ?? defaultSettings.width;
+    s.height = state.height ?? defaultSettings.height;
+    s.proxyRefImages = [...(state.proxyRefImages || [])];
+    s.nanobananaRefImages = [...(state.nanobananaRefImages || [])];
+    s.nanogptRefImages = [...(state.nanogptRefImages || [])];
+
+    const promptEl = document.getElementById("qig-prompt");
+    const negativeEl = document.getElementById("qig-negative");
+    const styleEl = document.getElementById("qig-style");
+    const widthEl = document.getElementById("qig-width");
+    const heightEl = document.getElementById("qig-height");
+    if (promptEl) promptEl.value = s.prompt ?? "";
+    if (negativeEl) negativeEl.value = s.negativePrompt ?? "";
+    if (styleEl) styleEl.value = s.style ?? defaultSettings.style;
+    if (widthEl) widthEl.value = s.width ?? defaultSettings.width;
+    if (heightEl) heightEl.value = s.height ?? defaultSettings.height;
+
+    if (s.provider === "novelai") {
+        normalizeSize(s);
+        syncNaiResolutionSelect();
+    }
+    syncSizeInputs(s.width, s.height);
+    renderRefImages();
+    renderNanobananaRefImages();
+    renderNanogptRefImages();
 }
 
 function getCurrentCharId() {
@@ -5751,38 +5945,82 @@ function saveCharSettings() {
 }
 
 function loadCharSettings() {
-    const charId = getCurrentCharId();
-    if (charId == null) return false;
-    if (!document.getElementById("qig-prompt")) return false;
-    const hasSettings = !!charSettings[charId];
-    const hasRefs = !!(charRefImages[charId] && charRefImages[charId].length > 0);
-    if (!hasSettings && !hasRefs) return false;
-    const cs = charSettings[charId] || {};
     const s = getSettings();
-    if (cs.prompt) { s.prompt = cs.prompt; document.getElementById("qig-prompt").value = cs.prompt; }
-    if (cs.negativePrompt) { s.negativePrompt = cs.negativePrompt; document.getElementById("qig-negative").value = cs.negativePrompt; }
-    if (cs.style) { s.style = cs.style; document.getElementById("qig-style").value = cs.style; }
-    if (cs.width) { s.width = cs.width; document.getElementById("qig-width").value = cs.width; }
-    if (cs.height) { s.height = cs.height; document.getElementById("qig-height").value = cs.height; }
+    const charId = getCurrentCharId();
+    if (!document.getElementById("qig-prompt")) return false;
+
+    if (charId == null) {
+        if (charSettingsBaseState) {
+            applyCharScopedState(charSettingsBaseState, s);
+            saveSettingsDebounced();
+        }
+        charSettingsBaseState = null;
+        charSettingsBaseCharId = null;
+        return false;
+    }
+
+    if (charSettingsBaseCharId !== charId) {
+        if (charSettingsBaseState) {
+            applyCharScopedState(charSettingsBaseState, s);
+        }
+        charSettingsBaseState = cloneCharScopedState(s);
+        charSettingsBaseCharId = charId;
+    }
+
+    const hasSettings = !!charSettings[charId];
+    const refs = Array.isArray(charRefImages[charId]) ? charRefImages[charId] : [];
+    const hasRefs = refs.length > 0;
+    if (!hasSettings && !hasRefs) {
+        applyCharScopedState(charSettingsBaseState, s);
+        saveSettingsDebounced();
+        renderContextualFilters();
+        renderPromptReplacements();
+        return false;
+    }
+
+    const cs = charSettings[charId] || {};
+    if (Object.prototype.hasOwnProperty.call(cs, "prompt")) {
+        s.prompt = cs.prompt ?? "";
+        document.getElementById("qig-prompt").value = s.prompt;
+    }
+    if (Object.prototype.hasOwnProperty.call(cs, "negativePrompt")) {
+        s.negativePrompt = cs.negativePrompt ?? "";
+        document.getElementById("qig-negative").value = s.negativePrompt;
+    }
+    if (Object.prototype.hasOwnProperty.call(cs, "style")) {
+        s.style = cs.style ?? defaultSettings.style;
+        document.getElementById("qig-style").value = s.style;
+    }
+    if (Object.prototype.hasOwnProperty.call(cs, "width")) {
+        s.width = cs.width ?? defaultSettings.width;
+        document.getElementById("qig-width").value = s.width;
+    }
+    if (Object.prototype.hasOwnProperty.call(cs, "height")) {
+        s.height = cs.height ?? defaultSettings.height;
+        document.getElementById("qig-height").value = s.height;
+    }
     if (s.provider === "novelai") {
         normalizeSize(s);
-        syncSizeInputs(s.width, s.height);
         syncNaiResolutionSelect();
     }
-    const refs = charRefImages[charId];
-    if (refs && refs.length > 0) {
+    syncSizeInputs(s.width, s.height);
+
+    s.proxyRefImages = [];
+    s.nanobananaRefImages = [];
+    s.nanogptRefImages = [];
+    if (hasRefs) {
         if (s.provider === "proxy") {
             s.proxyRefImages = [...refs];
-            renderRefImages();
         } else if (s.provider === "nanobanana") {
             s.nanobananaRefImages = [...refs];
-            renderNanobananaRefImages();
         } else if (s.provider === "nanogpt") {
             s.nanogptRefImages = [...refs];
-            renderNanogptRefImages();
         }
-        saveSettingsDebounced();
     }
+    renderRefImages();
+    renderNanobananaRefImages();
+    renderNanogptRefImages();
+    saveSettingsDebounced();
     renderContextualFilters();
     renderPromptReplacements();
     return true;
@@ -6263,6 +6501,11 @@ function syncLocalTypeSections(localType) {
     const comfyOpts = document.getElementById("qig-local-comfyui-opts");
     if (a1111Opts) a1111Opts.style.display = localType === "a1111" ? "block" : "none";
     if (comfyOpts) comfyOpts.style.display = localType === "comfyui" ? "block" : "none";
+    const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
+    if (denoiseWrap) {
+        const s = getSettings();
+        denoiseWrap.style.display = localType === "a1111" && s.localRefImage ? "block" : "none";
+    }
 }
 
 function syncA1111VisibilityFromSettings(s) {
@@ -6963,20 +7206,20 @@ function createUI() {
                              <input type="file" id="qig-a1111-cn-upload" accept="image/*" style="display:none">
                              <div class="form-hint">Upload a preprocessed control image (edge map, depth map, pose, etc.) or let the preprocessor extract it</div>
                          </div>
-                         <hr style="margin:8px 0;opacity:0.2;">
-                         <label>Reference Image</label>
-                         <div style="display:flex;gap:4px;align-items:center;">
-                             <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
-                             <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
-                             <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
-                         </div>
-                         <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
-                         
-                         <div style="display:${s.localRefImage ? 'block' : 'none'};margin-top:4px;">
-                            <label>Denoising Strength: <span id="qig-local-denoise-val">${s.localDenoise}</span></label>
-                            <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.localDenoise)}">
-                         </div>
                     </div>
+                    <hr style="margin:8px 0;opacity:0.2;">
+                    <label>Reference Image</label>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                        <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
+                        <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
+                    </div>
+                    <input type="file" id="qig-local-ref-input" accept="image/*" style="display:none">
+                    <div id="qig-local-denoise-wrap" style="display:${s.localType === "a1111" && s.localRefImage ? "block" : "none"};margin-top:4px;">
+                       <label>Denoising Strength: <span id="qig-local-denoise-val">${s.localDenoise}</span></label>
+                       <input id="qig-local-denoise" type="range" min="0" max="1" step="0.05" value="${esc(s.localDenoise)}">
+                    </div>
+                    <div class="form-hint" style="margin-top:4px;">Upload a source image for img2img. ${s.localType === "comfyui" ? "Use the Denoise slider in ComfyUI settings above to control strength." : "Adjust Denoising Strength to control how much the output differs."}</div>
                 </div>
                 
                 <div id="qig-proxy-settings" class="qig-provider-section">
@@ -7708,7 +7951,7 @@ function createUI() {
         document.getElementById("qig-local-ref-preview").style.display = "none";
         document.getElementById("qig-local-ref-preview").src = "";
         localRefClear.style.display = "none";
-        document.getElementById("qig-local-denoise").parentElement.style.display = "none";
+        document.getElementById("qig-local-denoise-wrap").style.display = "none";
     };
     localRefInput.onchange = (e) => {
         const file = e.target.files[0];
@@ -7721,7 +7964,7 @@ function createUI() {
             document.getElementById("qig-local-ref-preview").src = s.localRefImage;
             document.getElementById("qig-local-ref-preview").style.display = "block";
             localRefClear.style.display = "block";
-            document.getElementById("qig-local-denoise").parentElement.style.display = "block";
+            document.getElementById("qig-local-denoise-wrap").style.display = s.localType === "a1111" ? "block" : "none";
             localRefInput.value = "";
         };
         reader.readAsDataURL(file);
@@ -8258,7 +8501,7 @@ async function generateImageInjectPalette() {
             negative = filtered.negative;
 
             // Apply LLM-matched concept filters
-            const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt);
+            const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt, currentAbortController?.signal);
             checkAborted(cancelCheckpoint);
     if (llmMatched.length) {
         const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
@@ -8277,14 +8520,14 @@ async function generateImageInjectPalette() {
 
             const batchCount = s.batchCount || 1;
             const results = [];
-            const originalSeed = s.seed;
+            const originalSeed = getGenerationSeedValue(s);
             let baseSeed = originalSeed;
             if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
                 baseSeed = Math.floor(Math.random() * 2147483647);
             }
             for (let i = 0; i < batchCount; i++) {
                 checkAborted(cancelCheckpoint);
-                if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+                if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
                 showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
@@ -8294,7 +8537,7 @@ async function generateImageInjectPalette() {
                     if (entry) results.push(entry);
                 }
             }
-            s.seed = originalSeed;
+            setGenerationSeedValue(s, originalSeed);
 
                 if (results.length > 0) {
                     if (results.length === 1) {
@@ -8340,7 +8583,7 @@ async function generateImage() {
     beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
-    const originalSeed = s.seed;
+    const originalSeed = getGenerationSeedValue(s);
 
     try {
     checkAborted(cancelCheckpoint);
@@ -8405,7 +8648,7 @@ async function generateImage() {
 
     // Apply LLM-matched concept filters — use raw scene text for natural language analysis
     const llmSceneText = scenePrompt || basePrompt;
-    const llmMatched = await matchLLMFilters(llmSceneText);
+    const llmMatched = await matchLLMFilters(llmSceneText, currentAbortController?.signal);
     checkAborted(cancelCheckpoint);
     if (llmMatched.length) {
         const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
@@ -8435,7 +8678,7 @@ async function generateImage() {
         }
         for (let i = 0; i < batchCount; i++) {
             checkAborted(cancelCheckpoint);
-            if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+            if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
                 showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
@@ -8468,7 +8711,7 @@ async function generateImage() {
             toastr.error("Generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
-        s.seed = originalSeed;
+        setGenerationSeedValue(s, originalSeed);
         endGeneration({ disableGenerateButton: true });
         // Clear caches after each generation to prevent reusing stale prompts
         clearStyleCache();
@@ -8579,7 +8822,7 @@ async function processInjectMessage(messageText, messageIndex) {
         // Generate images for each extracted prompt
         const sceneTextForFilters = getMessages() || "";
         for (const extractedPrompt of matches) {
-            const originalSeed = s.seed;
+            const originalSeed = getGenerationSeedValue(s);
             let startedGeneration = false;
             try {
                 checkAborted(cancelCheckpoint);
@@ -8643,7 +8886,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 negative = filtered.negative;
 
                 // Apply LLM-matched concept filters
-                const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt);
+                const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt, currentAbortController?.signal);
                 checkAborted(cancelCheckpoint);
                 if (llmMatched.length) {
                     const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
@@ -8668,7 +8911,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 }
                 for (let i = 0; i < batchCount; i++) {
                     checkAborted(cancelCheckpoint);
-                    if (s.sequentialSeeds && batchCount > 1) s.seed = baseSeed + i;
+                    if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
                     showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
                     const expandedPrompt = expandWildcards(prompt);
                     const expandedNegative = expandWildcards(negative);
@@ -8678,7 +8921,7 @@ async function processInjectMessage(messageText, messageIndex) {
                         if (entry) results.push(entry);
                     }
                 }
-                s.seed = originalSeed;
+                setGenerationSeedValue(s, originalSeed);
 
                 if (results.length > 0) {
                     if (results.length === 1) {
@@ -8712,7 +8955,7 @@ async function processInjectMessage(messageText, messageIndex) {
                     toastr.error("Inject generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
                 }
             } finally {
-                s.seed = originalSeed;
+                setGenerationSeedValue(s, originalSeed);
                 if (startedGeneration || cancelRequested) endGeneration();
             }
         }
@@ -8811,6 +9054,10 @@ jQuery(function () {
                     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
                 }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
+                    if (_autoGenTimeout) {
+                        clearTimeout(_autoGenTimeout);
+                        _autoGenTimeout = null;
+                    }
                     if (_injectProcessingCount <= 0) {
                         _processedInjectIndices.clear();
                     }
@@ -8924,10 +9171,13 @@ function detectImageFormat(buffer, contentType = "", url = "") {
     if (isJpeg) return { ext: "jpg", mime: "image/jpeg", isPng: false };
     const isWebp = bytes.length >= 12 && bytes[0] === 0x52 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x46 && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
     if (isWebp) return { ext: "webp", mime: "image/webp", isPng: false };
+    const isGif = bytes.length >= 6 && bytes[0] === 0x47 && bytes[1] === 0x49 && bytes[2] === 0x46 && bytes[3] === 0x38 && (bytes[4] === 0x37 || bytes[4] === 0x39) && bytes[5] === 0x61;
+    if (isGif) return { ext: "gif", mime: "image/gif", isPng: false };
     const ct = contentType.toLowerCase();
     if (ct.includes("png")) return { ext: "png", mime: "image/png", isPng: true };
     if (ct.includes("webp")) return { ext: "webp", mime: "image/webp", isPng: false };
     if (ct.includes("jpeg") || ct.includes("jpg")) return { ext: "jpg", mime: "image/jpeg", isPng: false };
+    if (ct.includes("gif")) return { ext: "gif", mime: "image/gif", isPng: false };
 
     let urlPath = "";
     try {
@@ -8938,6 +9188,7 @@ function detectImageFormat(buffer, contentType = "", url = "") {
 
     if (urlPath.endsWith(".png")) return { ext: "png", mime: "image/png", isPng: true };
     if (urlPath.endsWith(".webp")) return { ext: "webp", mime: "image/webp", isPng: false };
+    if (urlPath.endsWith(".gif")) return { ext: "gif", mime: "image/gif", isPng: false };
     if (urlPath.endsWith(".jpg") || urlPath.endsWith(".jpeg")) return { ext: "jpg", mime: "image/jpeg", isPng: false };
     return { ext: "jpg", mime: "image/jpeg", isPng: false };
 }
