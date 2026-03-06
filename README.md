@@ -5,6 +5,13 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.4.14
+- Fixed welcome-page / HTML prompt leakage when `Use chat message` is enabled, so QIG now falls back to clean text instead of ingesting UI markup.
+- Fixed random-seed provenance across providers, including Stability, and preserved resolved seeds in gallery/download metadata.
+- Fixed image metadata round-tripping by saving per-image settings snapshots, expanding provider/model/backend metadata, and improving PNG `tEXt`/`zTXt`/`iTXt` import support.
+- Added a reusable Playwright smoke script plus GitHub Actions smoke workflow for regression coverage.
+- Hardened format detection and metadata export edge cases for non-PNG downloads and numeric zero-valued fields.
+
 ## What's New in v1.4.9
 - Group-chat context improvements: `{{char}}` now resolves to all active group member names (comma-separated) instead of a single fallback name.
 - Character-scoped contextual filters, pools, and prompt replacement maps now apply correctly in group chats by matching active group member IDs.
