@@ -306,6 +306,7 @@ let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
 const _processedInjectIndices = new Set();
+let _injectProcessingCount = 0;
 let currentAbortController = null;
 let _autoGenTimeout = null;
 let cancelRequested = false;
@@ -8093,6 +8094,7 @@ async function generateImageInjectPalette() {
         log(`Palette inject: Found ${matches.length} <pic> tag(s), generating images...`);
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
+        const sceneTextForFilters = getMessages() || "";
         for (const extractedPrompt of matches) {
             checkAborted(cancelCheckpoint);
             showStatus(`🖼️ Generating palette-inject image...`);
@@ -8130,12 +8132,12 @@ async function generateImageInjectPalette() {
             }
 
             // Apply contextual filters
-            const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
+            const filtered = applyContextualFilters(prompt, negative, sceneTextForFilters || prompt);
             prompt = filtered.prompt;
             negative = filtered.negative;
 
             // Apply LLM-matched concept filters
-            const llmMatched = await matchLLMFilters(extractedPrompt);
+            const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt);
             checkAborted(cancelCheckpoint);
     if (llmMatched.length) {
         const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
@@ -8408,6 +8410,7 @@ async function processInjectMessage(messageText, messageIndex) {
     const shouldReleaseIndex = messageIndex !== undefined;
 
     try {
+        _injectProcessingCount++;
         const s = getSettings();
         if (!s.injectEnabled || !s.injectRegex) return;
 
@@ -8453,6 +8456,7 @@ async function processInjectMessage(messageText, messageIndex) {
         }
 
         // Generate images for each extracted prompt
+        const sceneTextForFilters = getMessages() || "";
         for (const extractedPrompt of matches) {
             const originalSeed = s.seed;
             let startedGeneration = false;
@@ -8513,12 +8517,12 @@ async function processInjectMessage(messageText, messageIndex) {
                 }
 
                 // Apply contextual filters
-                const filtered = applyContextualFilters(prompt, negative, extractedPrompt);
+                const filtered = applyContextualFilters(prompt, negative, sceneTextForFilters || prompt);
                 prompt = filtered.prompt;
                 negative = filtered.negative;
 
                 // Apply LLM-matched concept filters
-                const llmMatched = await matchLLMFilters(extractedPrompt);
+                const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt);
                 checkAborted(cancelCheckpoint);
                 if (llmMatched.length) {
                     const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
@@ -8592,10 +8596,11 @@ async function processInjectMessage(messageText, messageIndex) {
             }
         }
     } finally {
+        _injectProcessingCount--;
         // Expire this index after a delay so future messages at the same index can be processed,
         // even when returning early (invalid regex, no matches, disabled mode, etc).
         if (shouldReleaseIndex) {
-            setTimeout(() => _processedInjectIndices.delete(messageIndex), 5000);
+            setTimeout(() => _processedInjectIndices.delete(messageIndex), 15000);
         }
     }
 }
@@ -8685,7 +8690,9 @@ jQuery(function () {
                     eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, onChatCompletionPromptReady);
                 }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
-                    _processedInjectIndices.clear();
+                    if (_injectProcessingCount <= 0) {
+                        _processedInjectIndices.clear();
+                    }
                     loadCharSettings();
                     renderContextualFilters();
                     renderPromptReplacements();
