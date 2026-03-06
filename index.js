@@ -312,6 +312,7 @@ let cancelRequested = false;
 let cancelRequestSerial = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
+let _paletteInjectActive = false;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
@@ -1097,7 +1098,7 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         filter.poolIds = after;
     }
 
-    if (persist && changed) {
+    if (persist) {
         persistFilterPoolState();
     }
     return changed;
@@ -1963,7 +1964,7 @@ ${conceptList}`;
                 response = await generateQuietPrompt(instruction, quietOptions);
             } catch (e) {
                 if (e.name === "AbortError") throw e;
-                response = await generateQuietPrompt(instruction);
+                response = await generateQuietPrompt(instruction, false);
             }
         }
         checkAborted();
@@ -2024,7 +2025,7 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             return await generateQuietPrompt(instruction, quietOptions);
         } catch (e) {
             if (e.name === "AbortError") throw e;
-            return await generateQuietPrompt(instruction);
+            return await generateQuietPrompt(instruction, false);
         }
     }
 
@@ -2085,7 +2086,7 @@ async function callOverrideLLM(instruction, systemPrompt = "") {
             return await generateQuietPrompt(instruction, quietOptions);
         } catch (e2) {
             if (e2.name === "AbortError") throw e2;
-            return await generateQuietPrompt(instruction);
+            return await generateQuietPrompt(instruction, false);
         }
     } finally {
         // Restore original secret
@@ -2355,7 +2356,7 @@ Tags:`;
             } catch (e) {
                 if (e.name === "AbortError") throw e;
                 log(`generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                llmPrompt = await generateQuietPrompt(instructionWithEntropy);
+                llmPrompt = await generateQuietPrompt(instructionWithEntropy, false);
             }
         }
 
@@ -5005,6 +5006,7 @@ function setVisiblePoolsEnabled(enabled) {
             else delete activeFilterPoolIdsByChar[key];
         }
     }
+    saveActiveFilterPools();
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -7973,6 +7975,7 @@ function addInputButton() {
             return;
         }
         paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
+        if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
         const mode = getSettings().paletteMode || "direct";
         if (mode === "inject") generateImageInjectPalette();
         else generateImage();
@@ -7987,7 +7990,8 @@ function addInputButton() {
 
 async function generateImageInjectPalette() {
     if (isGenerating) return;
-    beginGeneration();
+    beginGeneration({ clearPendingAuto: true });
+    _paletteInjectActive = true;
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
 
@@ -8045,7 +8049,7 @@ async function generateImageInjectPalette() {
                     llmResponse = await generateQuietPrompt(fullInstruction, quietOptions);
                 } catch (e) {
                     log(`Palette inject: generateQuietPrompt with options failed: ${e.message}, using simple call`);
-                    llmResponse = await generateQuietPrompt(fullInstruction);
+                    llmResponse = await generateQuietPrompt(fullInstruction, false);
                 }
             }
             checkAborted(cancelCheckpoint);
@@ -8200,6 +8204,7 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
+        _paletteInjectActive = false;
         endGeneration();
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
@@ -8650,6 +8655,7 @@ jQuery(function () {
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
+                    if (_paletteInjectActive) return;
                     const s = getSettings();
                     // Inject mode: extract <pic> tags from AI response
                     // Checked first — if active, skip autoGenerate to prevent double generation
