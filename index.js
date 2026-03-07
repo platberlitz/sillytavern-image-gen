@@ -3150,6 +3150,32 @@ async function genLocal(prompt, negative, s, signal) {
             try {
                 let customWorkflow = JSON.parse(s.comfyWorkflow);
 
+                // Upload reference image for %reference_image% placeholder
+                let uploadedRefName = '';
+                if (s.localRefImage) {
+                    try {
+                        const imgData = s.localRefImage.replace(/^data:image\/.+;base64,/, '');
+                        const blob = await (await fetch(`data:image/png;base64,${imgData}`)).blob();
+                        const formData = new FormData();
+                        formData.append("image", blob, "qig_ref.png");
+                        formData.append("overwrite", "true");
+                        const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
+                            method: "POST",
+                            body: formData,
+                            signal
+                        });
+                        if (uploadRes.ok) {
+                            const uploadData = await uploadRes.json();
+                            uploadedRefName = uploadData.name || "qig_ref.png";
+                            log(`ComfyUI: Uploaded reference image as "${uploadedRefName}"`);
+                        } else {
+                            log(`ComfyUI: Failed to upload reference image (${uploadRes.status})`);
+                        }
+                    } catch (uploadErr) {
+                        log(`ComfyUI: Reference image upload error: ${uploadErr.message}`);
+                    }
+                }
+
                 // Replace placeholders like sd-proxy does
                 const replacements = {
                     '%prompt%': prompt,
@@ -3163,7 +3189,8 @@ async function genLocal(prompt, negative, s, signal) {
                     '%clip_skip%': String(clipSkip),
                     '%sampler%': samplerName,
                     '%scheduler%': schedulerName,
-                    '%model%': s.localModel || 'model.safetensors'
+                    '%model%': s.localModel || 'model.safetensors',
+                    '%reference_image%': uploadedRefName
                 };
 
                 const replaceInObj = (obj) => {
@@ -6956,8 +6983,8 @@ function createUI() {
                          </div>
                          <small style="opacity:0.6;font-size:10px;">Use presets for quick graph switching (e.g., with LoRA / without LoRA). Profiles save provider settings; workflow presets focus on Comfy graph fields.</small>
                          <label>Custom Workflow JSON</label>
-                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%'>${esc(s.comfyWorkflow || "")}</textarea>
-                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format.</div>
+                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%, %reference_image%'>${esc(s.comfyWorkflow || "")}</textarea>
+                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format. Use %reference_image% in a LoadImage node to include the uploaded reference image.</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Model</label>
