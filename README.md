@@ -328,6 +328,7 @@ Example: `{red|blue|green} hair, {indoor|outdoor} scene` → each batch image ge
 When using the Local provider, you can upload a reference image to perform Image-to-Image generation:
 - **A1111**: The extension handles switching between `/txt2img` and `/img2img` endpoints automatically.
 - **ComfyUI**: Upload a reference image and set Denoise < 1.0. The extension automatically builds an img2img workflow (no custom JSON needed).
+- **ComfyUI (custom workflow)**: Use `%reference_image%` in a `LoadImage` node's `"image"` field. The reference image is uploaded to ComfyUI and the placeholder is replaced with the filename.
 
 ## ComfyUI Setup (Friendly Step-by-Step)
 
@@ -380,6 +381,7 @@ Use these placeholders in custom workflows:
 - `%negative%` - Negative prompt
 - `%seed%`, `%width%`, `%height%`, `%steps%`, `%cfg%`
 - `%denoise%`, `%clip_skip%`, `%sampler%`, `%scheduler%`, `%model%`
+- `%reference_image%` - Uploaded reference image filename (for use in a `LoadImage` node). Empty string if no image uploaded.
 
 Custom Workflow JSON is optional for standard SD1.5/SDXL checkpoints, but required for non-standard pipelines (for example Flux/UNET-only, dual-CLIP, or custom node graphs).
 
