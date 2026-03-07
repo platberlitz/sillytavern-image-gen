@@ -11,6 +11,76 @@ function getRandomArtist(useTagFormat = false) {
 const extensionName = "quick-image-gen";
 let extension_settings, getContext, saveSettingsDebounced, generateQuietPrompt, secret_state, rotateSecret, getRequestHeaders;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
+
+const DEFAULT_INJECT_TAG_NAME = "image";
+const LEGACY_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">\nUse this for important visual moments. The prompt should describe the scene in detail including character appearances, poses, expressions, clothing, and setting.';
+const LEGACY_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>';
+const DUAL_INJECT_PROMPT_DEFAULT = 'When describing a scene visually, include an image tag using one of these formats:\n- Simple: <image>detailed visual description</image>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.';
+const DUAL_INJECT_REGEX_DEFAULT = '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\\S]*?)</image>';
+
+function escapeRegex(text) {
+    return String(text ?? "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeInjectTagName(value) {
+    const normalized = String(value ?? "")
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "");
+    return /^[a-z][a-z0-9_-]*$/.test(normalized) ? normalized : DEFAULT_INJECT_TAG_NAME;
+}
+
+function buildDefaultInjectPrompt(tagName = DEFAULT_INJECT_TAG_NAME) {
+    const safeTagName = normalizeInjectTagName(tagName);
+    return `When describing a scene visually, include an image tag in the final visible reply using this exact format:\n<${safeTagName}>detailed visual description</${safeTagName}>\nUse this for important visual moments. Do not put the image tag inside <think> blocks, hidden reasoning, analysis sections, or code fences. The description should detail character appearances, poses, expressions, clothing, and setting.`;
+}
+
+function buildDefaultInjectRegex(tagName = DEFAULT_INJECT_TAG_NAME) {
+    const normalizedTag = normalizeInjectTagName(tagName);
+    const pairedTagNames = [...new Set([normalizedTag, DEFAULT_INJECT_TAG_NAME])];
+    const pairedPatterns = pairedTagNames.map(name => `<${escapeRegex(name)}>([\\s\\S]*?)<\\/${escapeRegex(name)}>`);
+    return [...pairedPatterns, LEGACY_INJECT_REGEX_DEFAULT].join("|");
+}
+
+function isGeneratedInjectPrompt(value, tagName = DEFAULT_INJECT_TAG_NAME) {
+    if (typeof value !== "string") return false;
+    return [
+        buildDefaultInjectPrompt(tagName),
+        DUAL_INJECT_PROMPT_DEFAULT,
+        LEGACY_INJECT_PROMPT_DEFAULT,
+    ].includes(value);
+}
+
+function isGeneratedInjectRegex(value, tagName = DEFAULT_INJECT_TAG_NAME) {
+    if (typeof value !== "string") return false;
+    return [
+        buildDefaultInjectRegex(tagName),
+        DUAL_INJECT_REGEX_DEFAULT,
+        LEGACY_INJECT_REGEX_DEFAULT,
+    ].includes(value);
+}
+
+function getInjectTagName(settings) {
+    return normalizeInjectTagName(settings?.injectTagName ?? DEFAULT_INJECT_TAG_NAME);
+}
+
+function getInjectPromptTemplate(settings) {
+    return typeof settings?.injectPrompt === "string" && settings.injectPrompt.trim()
+        ? settings.injectPrompt
+        : buildDefaultInjectPrompt(getInjectTagName(settings));
+}
+
+function getInjectRegexPattern(settings) {
+    return typeof settings?.injectRegex === "string" && settings.injectRegex.trim()
+        ? settings.injectRegex
+        : buildDefaultInjectRegex(getInjectTagName(settings));
+}
+
+function getInjectTagPreview(tagName = DEFAULT_INJECT_TAG_NAME) {
+    const safeTagName = normalizeInjectTagName(tagName);
+    return `<${safeTagName}>detailed visual description</${safeTagName}>`;
+}
+
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -178,8 +248,9 @@ const defaultSettings = {
     useSTStyle: true,
     // Inject Mode (wickedcode01-style)
     injectEnabled: false,
-    injectPrompt: 'When describing a scene visually, include an image tag using one of these formats:\n- Simple: <image>detailed visual description</image>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.',
-    injectRegex: '<pic\\s+prompt="([^"]+)"\\s*/?>|<image>([\\s\\S]*?)</image>',
+    injectTagName: DEFAULT_INJECT_TAG_NAME,
+    injectPrompt: buildDefaultInjectPrompt(DEFAULT_INJECT_TAG_NAME),
+    injectRegex: buildDefaultInjectRegex(DEFAULT_INJECT_TAG_NAME),
     injectPosition: "afterScenario",
     injectDepth: 0,
     injectInsertMode: "replace",
@@ -999,20 +1070,22 @@ async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
+    const savedTagName = getInjectTagName(saved);
+    s.injectTagName = savedTagName;
     // Migrate old messageIndex to messageRange
     if (saved && "messageIndex" in saved && !("messageRange" in saved)) {
         s.messageRange = String(saved.messageIndex);
     }
     delete s.messageIndex;
-    // Migrate old inject regex/prompt to include <image> tag support
-    const oldDefaultRegex = '<pic\\s+prompt="([^"]+)"\\s*/?>';
-    const oldDefaultPrompt = 'When describing a scene visually, include an image tag: <pic prompt="detailed visual description">\nUse this for important visual moments. The prompt should describe the scene in detail including character appearances, poses, expressions, clothing, and setting.';
-    if (saved && saved.injectRegex === oldDefaultRegex) {
-        s.injectRegex = defaultSettings.injectRegex;
+    // Migrate generated inject defaults to the current tag-aware defaults while preserving custom overrides.
+    if (saved && isGeneratedInjectRegex(saved.injectRegex, savedTagName)) {
+        s.injectRegex = buildDefaultInjectRegex(savedTagName);
     }
-    if (saved && saved.injectPrompt === oldDefaultPrompt) {
-        s.injectPrompt = defaultSettings.injectPrompt;
+    if (saved && isGeneratedInjectPrompt(saved.injectPrompt, savedTagName)) {
+        s.injectPrompt = buildDefaultInjectPrompt(savedTagName);
     }
+    if (!s.injectRegex) s.injectRegex = buildDefaultInjectRegex(savedTagName);
+    if (!s.injectPrompt) s.injectPrompt = buildDefaultInjectPrompt(savedTagName);
     // Restore localStorage stores from extensionSettings backup if localStorage was wiped
     const restoreTargets = [
         { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
@@ -6269,7 +6342,7 @@ function savePreset() {
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
-    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!safeSetStorage("qig_gen_presets", JSON.stringify(generationPresets), "Failed to save preset. Browser storage may be full.")) return;
@@ -6313,7 +6386,7 @@ function loadPreset(i) {
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
-    const injectKeys = ["injectEnabled", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
     saveSettingsDebounced();
     refreshAllUI(s);
@@ -6351,6 +6424,36 @@ function renderPresets() {
         : '';
 }
 
+function syncInjectTagUI(settings = getSettings()) {
+    const safeTagName = getInjectTagName(settings);
+    const tagInput = document.getElementById("qig-inject-tag-name");
+    if (tagInput) tagInput.value = safeTagName;
+    const preview = document.getElementById("qig-inject-tag-preview");
+    if (preview) preview.textContent = getInjectTagPreview(safeTagName);
+}
+
+function syncInjectDefaultFields(settings = getSettings()) {
+    const promptEl = document.getElementById("qig-inject-prompt");
+    if (promptEl) promptEl.value = settings.injectPrompt ?? "";
+    const regexEl = document.getElementById("qig-inject-regex");
+    if (regexEl) regexEl.value = settings.injectRegex ?? "";
+    syncInjectTagUI(settings);
+}
+
+function applyInjectTagNameChange(nextTagName) {
+    const s = getSettings();
+    const previousTagName = getInjectTagName(s);
+    const normalizedTagName = normalizeInjectTagName(nextTagName);
+    const shouldUpdatePrompt = isGeneratedInjectPrompt(s.injectPrompt, previousTagName);
+    const shouldUpdateRegex = isGeneratedInjectRegex(s.injectRegex, previousTagName);
+
+    s.injectTagName = normalizedTagName;
+    if (shouldUpdatePrompt) s.injectPrompt = buildDefaultInjectPrompt(normalizedTagName);
+    if (shouldUpdateRegex) s.injectRegex = buildDefaultInjectRegex(normalizedTagName);
+    syncInjectDefaultFields(s);
+    return normalizedTagName;
+}
+
 function refreshAllUI(s) {
     const fields = {
         "qig-prompt": "prompt", "qig-negative": "negativePrompt", "qig-quality": "qualityTags",
@@ -6360,6 +6463,7 @@ function refreshAllUI(s) {
         "qig-llm-style": "llmPromptStyle",
         "qig-llm-prefill": "llmPrefill",
         "qig-llm-custom": "llmCustomInstruction",
+        "qig-inject-tag-name": "injectTagName",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
         "qig-inject-insert-mode": "injectInsertMode",
@@ -6379,6 +6483,7 @@ function refreshAllUI(s) {
         const el = document.getElementById(id);
         if (el) el.checked = !!s[key];
     });
+    syncInjectDefaultFields(s);
     updateProviderUI();
     refreshProviderInputs(s.provider);
     renderProfileSelect();
@@ -6741,12 +6846,20 @@ window.removeNanogptRefImage = function (idx) {
     renderNanogptRefImages();
 };
 
-function bind(id, key, isNum = false, isCheckbox = false) {
+function bind(id, key, isNum = false, isCheckbox = false, onChange = null) {
+    if (typeof isNum === "function") {
+        onChange = isNum;
+        isNum = false;
+    } else if (typeof isCheckbox === "function") {
+        onChange = isCheckbox;
+        isCheckbox = false;
+    }
     const el = getOrCacheElement(id);
     if (!el) return;
     el.onchange = (e) => {
         const value = isCheckbox ? e.target.checked : (isNum ? parseFloat(e.target.value) : e.target.value);
         getSettings()[key] = value;
+        if (typeof onChange === "function") onChange(value, e);
         saveSettingsDebounced();
     };
 }
@@ -7454,24 +7567,28 @@ function createUI() {
 
                     <!-- Inject tab -->
                     <div id="qig-tab-inject" class="qig-tab-panel" style="display:none;">
-                        <small style="opacity:0.7;">Let the RP AI describe scenes with &lt;pic&gt; tags, then auto-generate images from them</small>
+                        <small style="opacity:0.7;">Let the RP AI describe scenes with image tags, then auto-generate images from them</small>
                         <label class="checkbox_label" style="margin-top:6px;">
                             <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
                             <span>Enable inject mode</span>
                         </label>
                         <div id="qig-inject-options" style="display:${s.injectEnabled ? "block" : "none"};margin-left:16px;">
+                            <label>Tag name</label>
+                            <input id="qig-inject-tag-name" type="text" value="${esc(getInjectTagName(s))}" placeholder="image" style="width:100%;text-transform:lowercase;">
+                            <small style="opacity:0.6;font-size:10px;">Preview: <code id="qig-inject-tag-preview">${esc(getInjectTagPreview(getInjectTagName(s)))}</code>. Change this if your preset/model tends to swallow &lt;image&gt; tags inside reasoning.</small>
                             <label>Inject prompt template</label>
                             <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${esc(s.injectPrompt || "")}</textarea>
-                            <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Injected into chat completion to instruct AI to use &lt;pic&gt; tags.</small>
+                            <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Default prompt tells the AI to put the image tag in the final visible reply, not inside reasoning or &lt;think&gt;.</small>
                             <label>Extraction regex</label>
                             <input id="qig-inject-regex" type="text" value="${esc(s.injectRegex || '')}" style="width:100%;font-family:monospace;font-size:11px;">
-                            <small style="opacity:0.6;font-size:10px;">Capture group 1 = image prompt. Default extracts from &lt;pic prompt="..."&gt;</small>
+                            <small style="opacity:0.6;font-size:10px;">Capture groups extract the image prompt. Default matches your custom paired tag plus legacy &lt;pic prompt="..."&gt; tags.</small>
                             <label>Injection position</label>
                             <select id="qig-inject-position">
                                 <option value="afterScenario" ${s.injectPosition === "afterScenario" ? "selected" : ""}>After Scenario</option>
                                 <option value="inUser" ${s.injectPosition === "inUser" ? "selected" : ""}>Before User Message</option>
                                 <option value="atDepth" ${s.injectPosition === "atDepth" ? "selected" : ""}>At Depth</option>
                             </select>
+                            <small style="opacity:0.6;font-size:10px;">Before User Message may interfere with thinking/reasoning presets.</small>
                             <div id="qig-inject-depth-wrap" style="display:${s.injectPosition === "atDepth" ? "block" : "none"};">
                                 <label>Depth</label>
                                 <input id="qig-inject-depth" type="number" value="${esc(s.injectDepth || 0)}" min="0" max="100">
@@ -7484,7 +7601,7 @@ function createUI() {
                             </select>
                             <label class="checkbox_label">
                                 <input id="qig-inject-autoclean" type="checkbox" ${s.injectAutoClean !== false ? "checked" : ""}>
-                                <span>Remove &lt;pic&gt; tags from displayed message</span>
+                                <span>Remove detected image tags from the stored/displayed message</span>
                             </label>
                             <button id="qig-test-inject" style="margin-top:8px;padding:4px 8px;cursor:pointer;">🔍 Test Inject Detection</button>
                         </div>
@@ -7499,10 +7616,10 @@ function createUI() {
                     <label style="font-size:12px;white-space:nowrap;">Palette button mode</label>
                     <select id="qig-palette-mode" style="flex:1;">
                         <option value="direct" ${s.paletteMode === "inject" ? "" : "selected"}>Direct (manual prompt)</option>
-                        <option value="inject" ${s.paletteMode === "inject" ? "selected" : ""}>Inject (extract/generate &lt;pic&gt; tags)</option>
+                        <option value="inject" ${s.paletteMode === "inject" ? "selected" : ""}>Inject (extract/generate image tags)</option>
                     </select>
                 </div>
-                <small style="opacity:0.6;font-size:10px;">Direct = opens prompt editor · Inject = generates from AI's &lt;pic&gt; tags</small>
+                <small style="opacity:0.6;font-size:10px;">Direct = opens prompt editor · Inject = generates from AI-written image tags</small>
 
                 <div style="margin:6px 0;padding:8px;border:1px solid #555;border-radius:4px;">
                     <label class="checkbox_label">
@@ -8176,12 +8293,16 @@ function createUI() {
         document.getElementById("qig-inject-options").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced();
     };
+    document.getElementById("qig-inject-tag-name").onchange = (e) => {
+        e.target.value = applyInjectTagNameChange(e.target.value);
+        saveSettingsDebounced();
+    };
     bind("qig-inject-prompt", "injectPrompt");
     bind("qig-inject-regex", "injectRegex", (value) => {
         try {
-            const testRegex = new RegExp(value, "gi");
-            const testMatch = testRegex.exec('<image>test</image>');
-            if (!testMatch || testMatch.slice(1).every(g => g === undefined)) {
+            const sampleTag = getInjectTagPreview(getInjectTagName(getSettings()));
+            const testMatch = extractInjectMatchesFromText(sampleTag, value);
+            if (testMatch.length === 0) {
                 toastr.warning("Regex may not capture image descriptions. Test with sample tags.");
             }
         } catch (e) {
@@ -8209,39 +8330,25 @@ function createUI() {
         }
 
         // Find last AI message
-        let lastAiMsg = null;
-        for (let i = chat.length - 1; i >= 0; i--) {
-            if (!chat[i].is_user && chat[i].mes) {
-                lastAiMsg = chat[i].mes;
-                break;
-            }
-        }
-
-        if (!lastAiMsg) {
+        const lastAiMessage = findLastInjectCandidateMessage(chat);
+        if (!lastAiMessage) {
             toastr.info("No AI messages found");
             return;
         }
 
-        // Test regex
-        const regexPattern = s.injectRegex || '<pic\\s+prompt="([^"]+)"\\s*/?>';
-        let regex;
+        let detection;
         try {
-            regex = new RegExp(regexPattern, "gi");
+            detection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
         } catch (e) {
             toastr.error("Invalid regex: " + e.message);
             return;
         }
 
-        let matches = [];
-        let match;
-        while ((match = regex.exec(lastAiMsg)) !== null) {
-            const captured = match.slice(1).find(g => g !== undefined);
-            if (captured) matches.push(captured.trim());
-        }
-
-        const result = matches.length > 0
-            ? `Found ${matches.length} tag(s):\n${matches.join('\n')}`
-            : `No tags found in last AI message.\n\nMessage preview:\n${lastAiMsg.substring(0, 200)}...\n\nRegex used:\n${regexPattern}`;
+        const sourceSummary = detection.scannedSources.length > 0 ? detection.scannedSources.join(", ") : "none";
+        const visiblePreview = detection.sources[0]?.text?.substring(0, 200) || "";
+        const result = detection.matches.length > 0
+            ? `Found ${detection.matches.length} tag(s):\n${detection.matches.map(match => `[${match.sources.join(", ")}] ${match.prompt}`).join("\n")}`
+            : `No tags found in last AI message or reasoning.\n\nScanned sources: ${sourceSummary}\n\nMessage preview:\n${visiblePreview}...\n\nRegex used:\n${detection.regexPattern}`;
 
         alert(result);
     };
@@ -8389,32 +8496,24 @@ async function generateImageInjectPalette() {
 
     try {
         checkAborted(cancelCheckpoint);
-        // Build regex from settings (same as processInjectMessage)
-        const regexPattern = s.injectRegex || '<pic\\s+prompt="([^"]+)"\\s*/?>';
-        let regex;
+        const ctx = getContext();
+        const chat = ctx.chat;
+        let regexPattern;
+        let lastAiMessage = null;
+        let initialDetection = null;
+        let matches = [];
+
         try {
-            regex = new RegExp(regexPattern, "gi");
+            regexPattern = getInjectRegexPattern(s);
+            lastAiMessage = findLastInjectCandidateMessage(chat);
+            if (lastAiMessage) {
+                initialDetection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
+                matches = initialDetection.matches.map(match => match.prompt);
+            }
         } catch (e) {
             log(`Palette inject: Invalid regex: ${e.message}`);
             toastr.error("Invalid inject regex: " + e.message);
             return;
-        }
-
-        // Step 1: Scan last AI message for <pic> tags
-        let matches = [];
-        const ctx = getContext();
-        const chat = ctx.chat;
-        if (chat && chat.length > 0) {
-            for (let i = chat.length - 1; i >= 0; i--) {
-                if (!chat[i].is_user && chat[i].mes) {
-                    let match;
-                    while ((match = regex.exec(chat[i].mes)) !== null) {
-                        const captured = match.slice(1).find(g => g !== undefined);
-                        if (captured) matches.push(captured.trim());
-                    }
-                    break;
-                }
-            }
         }
 
         // Step 2: LLM fallback if no tags found
@@ -8423,7 +8522,7 @@ async function generateImageInjectPalette() {
             showStatus("🔍 No image tags found — asking LLM to generate them...");
 
             const sceneContext = getMessages() || "the current scene";
-            const injectInstruction = resolvePrompt(s.injectPrompt || 'When describing a scene visually, include an image tag using <image>detailed visual description</image> or <pic prompt="detailed visual description">');
+            const injectInstruction = resolvePrompt(getInjectPromptTemplate(s));
             const timestamp = Date.now();
             const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate image tags for the key visual moments. YOU MUST use the exact tag format shown above.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
 
@@ -8449,32 +8548,29 @@ async function generateImageInjectPalette() {
             log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
 
             if (llmResponse) {
-                regex.lastIndex = 0;
-                let match;
-                while ((match = regex.exec(llmResponse)) !== null) {
-                    const captured = match.slice(1).find(g => g !== undefined);
-                    if (captured) matches.push(captured.trim());
-                }
+                matches = [...new Set(extractInjectMatchesFromText(llmResponse, regexPattern))];
             }
 
             if (matches.length === 0) {
                 // Enhanced diagnostic logging
-                const lastAiMsgIndex = chat.findIndex((m, i) => i === chat.length - 1 - [...chat].reverse().findIndex(msg => !msg.is_user && msg.mes));
-                const aiMsgPreview = chat[lastAiMsgIndex]?.mes?.substring(0, 200) || 'none';
+                const aiSources = initialDetection?.scannedSources?.join(", ") || "none";
+                const aiMsgPreview = initialDetection?.sources?.[0]?.text?.substring(0, 200) || 'none';
                 const llmPreview = (llmResponse || 'none').substring(0, 200);
                 const regexPreview = regexPattern.substring(0, 100);
 
                 log(`Palette inject: Regex pattern used: ${regexPattern}`);
+                log(`Palette inject: AI sources scanned: ${aiSources}`);
                 log(`Palette inject: AI message scanned: ${aiMsgPreview}...`);
                 log(`Palette inject: LLM response received: ${llmPreview}...`);
                 log(`Palette inject: Full instruction sent: ${fullInstruction.substring(0, 300)}...`);
 
-                const debugInfo = `Regex: ${regexPreview}${regexPattern.length > 100 ? '...' : ''} | AI msg: ${aiMsgPreview.substring(0, 50)}... | LLM: ${llmPreview.substring(0, 50)}...`;
+                const debugInfo = `Regex: ${regexPreview}${regexPattern.length > 100 ? '...' : ''} | AI sources: ${aiSources} | AI msg: ${aiMsgPreview.substring(0, 50)}... | LLM: ${llmPreview.substring(0, 50)}...`;
                 toastr.warning("No image tags found. Check console for details.", "Image Generation");
                 log(`Palette inject: DIAGNOSTIC INFO - ${debugInfo}`);
                 console.warn("QIG Inject Mode Debug:", {
                     regexPattern,
-                    aiMessage: chat[lastAiMsgIndex]?.mes,
+                    aiSources,
+                    aiMessage: initialDetection?.sources?.map(source => ({ label: source.label, text: source.text })),
                     llmResponse,
                     instruction: fullInstruction
                 });
@@ -8482,7 +8578,7 @@ async function generateImageInjectPalette() {
             }
         }
 
-        log(`Palette inject: Found ${matches.length} <pic> tag(s), generating images...`);
+        log(`Palette inject: Found ${matches.length} image tag(s), generating images...`);
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
         const sceneTextForFilters = getMessages() || "";
@@ -8747,14 +8843,125 @@ async function generateImage() {
 }
 
 
-// === Inject Mode (AI-driven image generation via <pic> tags) ===
+// === Inject Mode (AI-driven image generation via image tags) ===
+
+function extractInjectMatchesFromText(text, regexPattern) {
+    if (typeof text !== "string" || !text.trim()) return [];
+    const regex = new RegExp(regexPattern, "gi");
+    const matches = [];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+        const captured = match.slice(1).find(group => typeof group === "string" && group.trim() !== "");
+        if (captured) matches.push(captured.trim());
+        if (match[0] === "") regex.lastIndex++;
+    }
+    return matches;
+}
+
+function getInjectCurrentSwipeText(message) {
+    if (!Array.isArray(message?.swipes)) return "";
+    const swipeId = Number.isInteger(message?.swipe_id) ? message.swipe_id : 0;
+    return typeof message.swipes[swipeId] === "string" ? message.swipes[swipeId] : "";
+}
+
+function getInjectMessageSources(message) {
+    if (!message || typeof message !== "object") return [];
+
+    const sources = [];
+    const seenTexts = new Set();
+    const pushSource = (key, label, text) => {
+        if (typeof text !== "string") return;
+        const trimmed = text.trim();
+        if (!trimmed || seenTexts.has(trimmed)) return;
+        seenTexts.add(trimmed);
+        sources.push({ key, label, text });
+    };
+
+    pushSource("extra.display_text", "display text", message?.extra?.display_text);
+    pushSource("mes", "message", message?.mes);
+    pushSource("swipes.current", "current swipe", getInjectCurrentSwipeText(message));
+    pushSource("extra.reasoning_display_text", "reasoning display", message?.extra?.reasoning_display_text);
+    pushSource("extra.reasoning", "reasoning", message?.extra?.reasoning);
+
+    return sources;
+}
+
+function extractInjectPromptsFromMessage(message, settings = getSettings()) {
+    const regexPattern = getInjectRegexPattern(settings);
+    const sources = getInjectMessageSources(message);
+    const promptMap = new Map();
+    const matches = [];
+
+    for (const source of sources) {
+        for (const prompt of extractInjectMatchesFromText(source.text, regexPattern)) {
+            if (!promptMap.has(prompt)) {
+                const entry = { prompt, sources: [source.label] };
+                promptMap.set(prompt, entry);
+                matches.push(entry);
+            } else if (!promptMap.get(prompt).sources.includes(source.label)) {
+                promptMap.get(prompt).sources.push(source.label);
+            }
+        }
+    }
+
+    return {
+        matches,
+        regexPattern,
+        sources,
+        scannedSources: sources.map(source => source.label),
+    };
+}
+
+function findLastInjectCandidateMessage(chat) {
+    if (!Array.isArray(chat)) return null;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const message = chat[i];
+        if (message?.is_user) continue;
+        if (getInjectMessageSources(message).length > 0) {
+            return { message, index: i };
+        }
+    }
+    return null;
+}
+
+function cleanInjectTagsFromMessage(message, regexPattern) {
+    if (!message || typeof message !== "object") return false;
+
+    let changed = false;
+    const replaceInField = (holder, key) => {
+        if (!holder || typeof holder[key] !== "string" || !holder[key].trim()) return;
+        const nextValue = holder[key].replace(new RegExp(regexPattern, "gi"), "").trim();
+        if (nextValue !== holder[key]) {
+            holder[key] = nextValue;
+            changed = true;
+        }
+    };
+
+    replaceInField(message, "mes");
+    replaceInField(message?.extra, "display_text");
+    replaceInField(message?.extra, "reasoning_display_text");
+    replaceInField(message?.extra, "reasoning");
+
+    if (Array.isArray(message.swipes)) {
+        const swipeId = Number.isInteger(message?.swipe_id) ? message.swipe_id : 0;
+        if (typeof message.swipes[swipeId] === "string") {
+            const nextValue = message.swipes[swipeId].replace(new RegExp(regexPattern, "gi"), "").trim();
+            if (nextValue !== message.swipes[swipeId]) {
+                message.swipes[swipeId] = nextValue;
+                changed = true;
+            }
+        }
+    }
+
+    return changed;
+}
 
 function onChatCompletionPromptReady(eventData) {
     if (isGenerating) return; // Don't inject into our own internal LLM calls
     const s = getSettings();
-    if (!s.injectEnabled || !s.injectPrompt) return;
+    if (!s.injectEnabled) return;
 
-    const promptText = resolvePrompt(s.injectPrompt);
+    const promptText = resolvePrompt(getInjectPromptTemplate(s));
     const position = s.injectPosition || "afterScenario";
     const depth = s.injectDepth || 0;
 
@@ -8803,38 +9010,32 @@ async function processInjectMessage(messageText, messageIndex) {
     try {
         _injectProcessingCount++;
         const s = getSettings();
-        if (!s.injectEnabled || !s.injectRegex) return;
+        if (!s.injectEnabled) return;
 
-        let regex;
+        const ctx = getContext();
+        const chat = ctx?.chat;
+        const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
+        const message = idx >= 0 ? chat?.[idx] : (typeof messageText === "string" ? { mes: messageText } : null);
+        if (!message) return;
+
+        let detection;
         try {
-            regex = new RegExp(s.injectRegex, "gi");
+            detection = extractInjectPromptsFromMessage(message, s);
         } catch (e) {
             log(`Inject: Invalid regex: ${e.message}`);
             return;
         }
 
-        const matches = [];
-        let match;
-        while ((match = regex.exec(messageText)) !== null) {
-            const captured = match.slice(1).find(g => g !== undefined);
-            if (captured) matches.push(captured.trim());
-        }
-
+        const matches = detection.matches.map(match => match.prompt);
         if (matches.length === 0) return;
 
-        log(`Inject: Found ${matches.length} image tag(s) in message`);
+        const sourceSummary = detection.scannedSources.join(", ") || "message";
+        log(`Inject: Found ${matches.length} image tag(s) in ${sourceSummary}`);
 
         // Clean tags from displayed message if enabled
-        if (s.injectAutoClean !== false) {
+        if (s.injectAutoClean !== false && idx >= 0 && chat?.[idx]) {
             try {
-                const ctx = getContext();
-                const chat = ctx.chat;
-                if (!chat || chat.length === 0) return;
-                const idx = messageIndex !== undefined ? messageIndex : chat.length - 1;
-                const msg = chat[idx];
-                if (msg) {
-                    const cleanRegex = new RegExp(s.injectRegex, "gi");
-                    msg.mes = msg.mes.replace(cleanRegex, "").trim();
+                if (cleanInjectTagsFromMessage(chat[idx], detection.regexPattern)) {
                     await ctx.saveChat();
                     if (typeof ctx.reloadCurrentChat === 'function') {
                         await ctx.reloadCurrentChat();
@@ -9053,7 +9254,7 @@ jQuery(function () {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
                     if (_paletteInjectActive) return;
                     const s = getSettings();
-                    // Inject mode: extract <pic> tags from AI response
+                    // Inject mode: extract image tags from AI response/reasoning
                     // Checked first — if active, skip autoGenerate to prevent double generation
                     if (s.injectEnabled) {
                         const ctx = getContext();
@@ -9061,9 +9262,9 @@ jQuery(function () {
                         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
                         if (idx < 0 || _processedInjectIndices.has(idx)) return;
                         const msg = chat?.[idx];
-                        if (msg?.mes) {
+                        if (msg && !msg.is_user) {
                             _processedInjectIndices.add(idx);
-                            setTimeout(() => processInjectMessage(msg.mes, idx), 300);
+                            setTimeout(() => processInjectMessage(msg.mes || "", idx), 300);
                         }
                         return;
                     }

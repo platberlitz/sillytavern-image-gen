@@ -1,7 +1,7 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven `<pic>`/`<image>` tag extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven custom-tag / `<image>` / legacy `<pic>` extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
@@ -72,7 +72,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 🔁 **Prompt Replacement Maps** - Native exact-token replacements for prompt tags/text with priority, target field control (positive/negative/both), and global or character scope
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
-- 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses `<image>` or `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
+- 💉 **Inject Mode** - AI-driven generation: injects a prompt into chat completion so the RP AI uses paired image tags (customizable, default `<image>`) or legacy `<pic>` tags, then extracts and generates images automatically (inspired by wickedcode01's st-image-auto-generation)
 - 🖼️ **Reference Images** - Upload up to 15 reference images (NanoGPT, Nanobanana, Proxy) with strength control for img2img
 - 📝 **Extra Instructions** - Additional model instructions for enhanced control
 
@@ -164,7 +164,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Auto-insert** | Skip popup and insert images directly into chat |
 | **Use ST Style** | Apply SillyTavern's Style panel settings (common prefix, negative, character-specific prompts) to generation |
 | **LLM Override** | Use a separate OpenAI-compatible API for image prompt generation (URL, key, model, temperature, max tokens, system prompt) |
-| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts `<image>` or `<pic>` tags from AI response |
+| **Inject Mode** | AI-driven generation — injects prompt into chat completion, extracts custom/legacy image tags from AI response or reasoning |
 
 ---
 
@@ -305,7 +305,7 @@ Works with any service that exposes an OpenAI-compatible `/chat/completions` end
 
 When enabled, the override endpoint is used for:
 - **Prompt generation** (direct mode) — converting scenes to image prompts
-- **Inject palette fallback** — generating image tags when none found in AI messages
+- **Inject palette fallback** — generating image tags when none found in AI messages or reasoning
 - **LLM concept filter matching** — evaluating concept filters against scenes
 
 ### Setup
@@ -583,8 +583,8 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 
 ### How it works
 
-1. **Injection**: A system prompt is injected into the chat completion telling the AI to use `<image>description</image>` or `<pic prompt="description">` tags for visual moments
-2. **Extraction**: When the AI responds, QIG scans for image tags using a configurable regex
+1. **Injection**: A system prompt is injected into the chat completion telling the AI to use a paired image tag such as `<image>description</image>` (or your custom tag name). Legacy `<pic prompt="description">` extraction is still supported for older configs.
+2. **Extraction**: When the AI responds, QIG scans the visible reply plus available reasoning fields for image tags using a configurable regex
 3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append] → prompt replacement maps → provider)
 4. **Cleanup**: Tags are optionally removed from the displayed message
 
@@ -593,16 +593,19 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 | Setting | Description |
 |---------|-------------|
 | **Enable inject mode** | Master toggle |
+| **Tag name** | First-class paired tag name (default `image`). Change this if your preset/model eats `<image>` inside reasoning or `<think>` blocks |
 | **Inject prompt template** | The instruction injected into chat completion. Supports `{{char}}`, `{{user}}` |
-| **Extraction regex** | Regex with capture groups for the image prompt. Default matches both `<pic prompt="...">` and `<image>...</image>` |
+| **Extraction regex** | Regex with capture groups for the image prompt. Default matches your paired tag, `<image>...</image>`, and legacy `<pic prompt="...">` |
 | **Injection position** | Where to inject: After Scenario, In User Message, or At Depth |
 | **Depth** | Depth from end of prompt array (when using At Depth) |
 | **Tag handling** | Replace tag with image, insert after message, or create new message |
-| **Auto-clean** | Remove image tags from the displayed message |
+| **Auto-clean** | Remove detected image tags from the stored/displayed message and reasoning text |
 
 ### Why use this?
 
 The RP AI naturally describes what's happening in the scene, so its image tag prompts tend to be more contextually accurate than a separate LLM call analyzing the scene after the fact. This is especially useful for immersive RP where you want images to appear organically as the story unfolds.
+
+If you're using thinking/reasoning presets, the default inject prompt asks the model to keep the image tag in the final visible reply instead of inside hidden reasoning. If a model still swallows `<image>`, change **Tag name** to something less collision-prone like `snapshot` and leave the default prompt/regex generated from that tag.
 
 ---
 
