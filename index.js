@@ -5694,8 +5694,8 @@ function renderContextualFilters() {
             <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">
                 <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolGlobal()">+ Global Pool</button>
                 <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(true)">Enable Visible</button>
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(false)">Disable Visible</button>
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(true)">Enable Shown Pools</button>
+                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(false)">Disable Shown Pools</button>
             </div>
             <div style="max-height:120px;overflow-y:auto;margin-bottom:4px;">${poolHtml}</div>
         </div>
