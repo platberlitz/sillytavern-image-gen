@@ -2381,13 +2381,14 @@ async function generateLLMPrompt(s, basePrompt, signal) {
 
         let instruction;
         if (isCustom) {
+            log(`Custom macros: scene=${basePrompt.length}ch, char="${charName}", user="${userName}", charDesc=${charDesc.length}ch, userDesc=${userPersona.length}ch`);
             log(`Using custom instruction: ${s.llmCustomInstruction.substring(0, 100)}...`);
             instruction = s.llmCustomInstruction
                 .replace(/\{\{scene\}\}/gi, basePrompt)
-                .replace(/\{\{char\}\}/gi, charName)
-                .replace(/\{\{user\}\}/gi, userName)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
-                .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800));
+                .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800))
+                .replace(/\{\{char\}\}/gi, charName)
+                .replace(/\{\{user\}\}/gi, userName);
 
             // Add enhancement options to custom instruction
             let customEnhancements = "";
