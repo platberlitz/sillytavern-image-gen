@@ -416,6 +416,12 @@ function resolveRandomSeed(seedValue = -1, target = null) {
     return resolvedSeed;
 }
 
+function normalizeSeedOverride(seedValue) {
+    const numericSeed = Number(seedValue);
+    if (!Number.isFinite(numericSeed) || numericSeed < 0) return null;
+    return Math.floor(numericSeed);
+}
+
 function getGenerationSeedKey(settings = getSettings()) {
     return settings?.provider === "proxy" ? "proxySeed" : "seed";
 }
@@ -1282,6 +1288,9 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         if (!after.length) after.push(DEFAULT_FILTER_POOL_ID);
         if (JSON.stringify(before) !== JSON.stringify(after)) changed = true;
         filter.poolIds = after;
+        const nextSeedOverride = normalizeSeedOverride(filter.seedOverride);
+        if (filter.seedOverride !== nextSeedOverride) changed = true;
+        filter.seedOverride = nextSeedOverride;
     }
 
     if (persist) {
@@ -2002,9 +2011,29 @@ function applyMatchedFiltersWithDebug(prompt, negative, filters, labelPrefix = "
     return { prompt: p, negative: n, removedCount };
 }
 
+function selectContextualSeedOverride(filters = []) {
+    let selected = null;
+    for (const filter of (filters || [])) {
+        const seedOverride = normalizeSeedOverride(filter?.seedOverride);
+        if (seedOverride == null) continue;
+        const priority = Number.isFinite(Number(filter?.priority)) ? Number(filter.priority) : 0;
+        if (!selected || priority > selected.priority) {
+            selected = {
+                seedOverride,
+                priority,
+                name: filter?.name || "(unnamed)",
+            };
+        }
+    }
+    if (selected) {
+        log(`Contextual seed override: ${selected.seedOverride} from "${selected.name}" p${selected.priority}`);
+    }
+    return selected;
+}
+
 function applyContextualFilters(prompt, negative, sceneText) {
     const activeFilters = getActiveFilters();
-    if (!activeFilters.length || !sceneText) return { prompt, negative };
+    if (!activeFilters.length || !sceneText) return { prompt, negative, matchedFilters: [] };
     const activeCharIds = new Set(getActiveCharacterScopeIds());
     const scopedFilterCount = contextualFilters.filter(f => !f?.charId || activeCharIds.has(String(f.charId))).length;
     if (scopedFilterCount > activeFilters.length) {
@@ -2023,7 +2052,7 @@ function applyContextualFilters(prompt, negative, sceneText) {
             : keywords.some(kw => scene.includes(kw));
         if (hit) matched.push({ ...f, _keywords: new Set(keywords) });
     }
-    if (!matched.length) return { prompt, negative };
+    if (!matched.length) return { prompt, negative, matchedFilters: [] };
     matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
     // Suppress OR filters whose keywords are a subset of a higher-priority AND filter
     const andFilters = matched.filter(f => f.matchMode === "AND");
@@ -2036,7 +2065,43 @@ function applyContextualFilters(prompt, negative, sceneText) {
     });
     const applied = applyMatchedFiltersWithDebug(prompt, negative, surviving, "Contextual filter");
     log(`Contextual filters: ${surviving.length} applied (${matched.length - surviving.length} suppressed, ${applied.removedCount} token(s) removed)`);
-    return { prompt: applied.prompt, negative: applied.negative };
+    return { prompt: applied.prompt, negative: applied.negative, matchedFilters: surviving };
+}
+
+async function applyResolvedContextualFilters(prompt, negative, {
+    matchText,
+    llmSceneText,
+    signal = null,
+} = {}) {
+    const applied = applyContextualFilters(prompt, negative, matchText);
+    let nextPrompt = applied.prompt;
+    let nextNegative = applied.negative;
+    const matchedFilters = [...(applied.matchedFilters || [])];
+
+    const llmMatched = await matchLLMFilters(llmSceneText || matchText, signal);
+    if (llmMatched.length) {
+        const llmApplied = applyMatchedFiltersWithDebug(nextPrompt, nextNegative, llmMatched, "LLM contextual filter");
+        nextPrompt = llmApplied.prompt;
+        nextNegative = llmApplied.negative;
+        matchedFilters.push(...llmMatched);
+        log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
+    }
+
+    const selectedSeed = selectContextualSeedOverride(matchedFilters);
+    return {
+        prompt: nextPrompt,
+        negative: nextNegative,
+        matchedFilters,
+        seedOverride: selectedSeed?.seedOverride ?? null,
+    };
+}
+
+function getBatchBaseSeed(settings, batchCount, seedOverride = null) {
+    let baseSeed = seedOverride != null ? seedOverride : getGenerationSeedValue(settings);
+    if (settings?.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
+        baseSeed = generateRandomSeed();
+    }
+    return baseSeed;
 }
 
 function parsePromptReplacementTriggers(triggerText) {
@@ -4103,7 +4168,45 @@ function initResizeHandle(popup) {
     }, { signal });
 }
 
-function createPopup(id, title, content, onShow) {
+function bindPopupDismiss(popup, onClose, { closeOnBackdrop = true } = {}) {
+    if (!popup) return;
+    const contentEl = popup.querySelector(".qig-popup-content");
+    const stopBubble = (e) => {
+        e?.stopPropagation?.();
+    };
+    const stopClick = (e) => {
+        e?.preventDefault?.();
+        e?.stopPropagation?.();
+    };
+
+    if (contentEl) {
+        contentEl.onpointerdown = stopBubble;
+        contentEl.onmousedown = stopBubble;
+        contentEl.onclick = stopBubble;
+    }
+
+    popup.onpointerdown = (e) => {
+        if (e.target === popup) stopBubble(e);
+    };
+    popup.onmousedown = (e) => {
+        if (e.target === popup) stopBubble(e);
+    };
+    popup.onclick = (e) => {
+        if (e.target !== popup) return;
+        stopClick(e);
+        if (closeOnBackdrop) onClose?.(e);
+    };
+
+    const popupCloseBtn = popup.querySelector(".qig-close-btn");
+    if (popupCloseBtn) {
+        popupCloseBtn.onclick = (e) => {
+            stopClick(e);
+            onClose?.(e);
+        };
+    }
+}
+
+function createPopup(id, title, content, onShow, options = {}) {
     let popup = document.getElementById(id);
     if (!popup) {
         popup = document.createElement("div");
@@ -4112,23 +4215,26 @@ function createPopup(id, title, content, onShow) {
         popup.style.cssText = "display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,0.95);z-index:2147483647;justify-content:center;align-items:center;";
         document.body.appendChild(popup);
     }
+    const popupClass = options.popupClass ? ` qig-popup--${options.popupClass}` : "";
+    const contentClass = options.contentClass ? ` ${options.contentClass}` : "";
+    const resizeHandleHtml = options.resizable === false ? "" : `<div class="qig-resize-handle"></div>`;
+    popup.className = `qig-popup${popupClass}`;
     // ALWAYS update innerHTML to ensure fresh content each time
     popup.innerHTML = `
-        <div class="qig-popup-content" onclick="event.stopPropagation()">
+        <div class="qig-popup-content${contentClass}">
             <div class="qig-popup-header">
                 <span>${title}</span>
                 <button class="qig-close-btn">✕</button>
             </div>
             ${content}
-            <div class="qig-resize-handle"></div>
+            ${resizeHandleHtml}
         </div>`;
     const closePopup = (e) => {
         e?.preventDefault?.();
         e?.stopPropagation?.();
         setTimeout(() => { popup.style.display = "none"; }, 0);
     };
-    popup.querySelector(".qig-close-btn").onclick = closePopup;
-    popup.onclick = (e) => { if (e.target === popup) closePopup(e); };
+    bindPopupDismiss(popup, closePopup, { closeOnBackdrop: options.closeOnBackdrop !== false });
     if (onShow) onShow(popup);
     popup.style.display = "flex";
     return popup;
@@ -4856,10 +4962,7 @@ function showPromptEditDialog(prompt) {
             cancelBtn.onclick = close;
             useBtn.onclick = use;
 
-            // Override createPopup's generic handlers so overlay/close resolve the Promise
-            popup.onclick = (e) => { if (e.target === popup) close(); };
-            const popupCloseBtn = popup.querySelector(".qig-close-btn");
-            if (popupCloseBtn) popupCloseBtn.onclick = close;
+            bindPopupDismiss(popup, close);
 
             textarea.onkeydown = (e) => {
                 if (e.key === "Enter" && e.ctrlKey) {
@@ -4914,7 +5017,7 @@ function showParagraphPicker(messageText) {
 
             document.getElementById("qig-para-cancel").onclick = close;
             document.getElementById("qig-para-use").onclick = use;
-            popup.onclick = (e) => { if (e.target === popup) close(); };
+            bindPopupDismiss(popup, close);
         });
     });
 }
@@ -5382,51 +5485,92 @@ function setVisiblePoolsEnabled(enabled) {
 
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null, poolIds: [DEFAULT_FILTER_POOL_ID] };
+    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null, poolIds: [DEFAULT_FILTER_POOL_ID], seedOverride: null };
     const isLLM = f.matchMode === "LLM";
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
     const editingDifferentChar = f.charId && (!currentCharId || String(f.charId) !== String(currentCharId));
     const initialPoolIds = normalizePoolIdList(f.poolIds);
+    const initialSeedOverride = normalizeSeedOverride(f.seedOverride);
     return new Promise((resolve) => {
         const popup = createPopup("qig-filter-dialog", isNew ? "Add Contextual Filter" : "Edit Contextual Filter", `
-            <div style="padding:12px;">
-                <label style="font-size:11px;">Name</label>
-                <input id="qig-fd-name" type="text" value="${escapeHtml(f.name)}" placeholder="e.g., Goku & Vegeta" style="width:100%;margin-bottom:8px;">
-                <label style="font-size:11px;">Scope</label>
-                <select id="qig-fd-scope" style="width:100%;margin-bottom:8px;">
-                    <option value="" ${!f.charId ? "selected" : ""}>Global (all characters)</option>
-                    ${currentCharId != null ? `<option value="${escapeHtml(String(currentCharId))}" ${f.charId && String(f.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
-                    ${editingDifferentChar ? `<option value="${escapeHtml(String(f.charId))}" selected disabled>Other Character (${escapeHtml(String(f.charId))})</option>` : ""}
-                </select>
-                <label style="font-size:11px;">Pools</label>
-                <div id="qig-fd-pools-wrap" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px;"></div>
-                <label style="font-size:11px;">Match Mode</label>
-                <select id="qig-fd-mode" style="width:100%;margin-bottom:8px;">
-                    <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
-                    <option value="AND" ${f.matchMode === "AND" ? "selected" : ""}>AND — all keywords required</option>
-                    <option value="LLM" ${f.matchMode === "LLM" ? "selected" : ""}>LLM — AI concept recognition</option>
-                </select>
-                <div id="qig-fd-keywords-wrap" style="display:${isLLM ? 'none' : ''};">
-                    <label style="font-size:11px;">Keywords (comma-separated)</label>
-                    <textarea id="qig-fd-keywords" style="width:100%;height:40px;resize:vertical;" placeholder="goku, vegeta">${escapeHtml(f.keywords || "")}</textarea>
-                </div>
-                <div id="qig-fd-desc-wrap" style="display:${isLLM ? '' : 'none'};">
-                    <label style="font-size:11px;">Concept Description (what the LLM should look for)</label>
-                    <textarea id="qig-fd-description" style="width:100%;height:60px;resize:vertical;" placeholder="Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes">${escapeHtml(f.description || "")}</textarea>
-                </div>
-                <label style="font-size:11px;">Positive Prompt</label>
-                <textarea id="qig-fd-positive" style="width:100%;height:60px;resize:vertical;" placeholder="1boy, goku, <lora:goku:0.8>">${escapeHtml(f.positive)}</textarea>
-                <label style="font-size:11px;">Negative Prompt</label>
-                <textarea id="qig-fd-negative" style="width:100%;height:40px;resize:vertical;" placeholder="solo, 1boy">${escapeHtml(f.negative)}</textarea>
-                <label style="font-size:11px;">Remove From Positive (comma-separated)</label>
-                <textarea id="qig-fd-remove-positive" style="width:100%;height:40px;resize:vertical;" placeholder="<lora:general_style>, solo">${escapeHtml(f.removePositive || "")}</textarea>
-                <label style="font-size:11px;">Remove From Negative (comma-separated)</label>
-                <textarea id="qig-fd-remove-negative" style="width:100%;height:40px;resize:vertical;" placeholder="blurry, watermark">${escapeHtml(f.removeNegative || "")}</textarea>
-                <small style="display:block;opacity:0.65;font-size:10px;margin-bottom:8px;">LoRA removals match by name (weight-insensitive): &lt;lora:foo&gt; removes any &lt;lora:foo:*&gt;</small>
-                <label style="font-size:11px;">Priority (higher overrides lower)</label>
-                <input id="qig-fd-priority" type="number" value="${f.priority || 0}" style="width:80px;margin-bottom:12px;">
-                <div style="display:flex;gap:8px;justify-content:flex-end;">
+            <div class="qig-popup-form qig-filter-dialog-form">
+                <section class="qig-form-section">
+                    <div class="qig-form-grid">
+                        <div class="qig-form-field">
+                            <label for="qig-fd-name">Name</label>
+                            <input id="qig-fd-name" type="text" value="${escapeHtml(f.name)}" placeholder="e.g., Goku & Vegeta">
+                        </div>
+                        <div class="qig-form-field">
+                            <label for="qig-fd-scope">Scope</label>
+                            <select id="qig-fd-scope">
+                                <option value="" ${!f.charId ? "selected" : ""}>Global (all characters)</option>
+                                ${currentCharId != null ? `<option value="${escapeHtml(String(currentCharId))}" ${f.charId && String(f.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
+                                ${editingDifferentChar ? `<option value="${escapeHtml(String(f.charId))}" selected disabled>Other Character (${escapeHtml(String(f.charId))})</option>` : ""}
+                            </select>
+                        </div>
+                        <div class="qig-form-field qig-form-field--full">
+                            <label>Pools</label>
+                            <div id="qig-fd-pools-wrap" class="qig-pool-choice-grid"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="qig-form-section">
+                    <div class="qig-form-grid">
+                        <div class="qig-form-field">
+                            <label for="qig-fd-mode">Match Mode</label>
+                            <select id="qig-fd-mode">
+                                <option value="OR" ${f.matchMode === "OR" ? "selected" : ""}>OR — any keyword triggers</option>
+                                <option value="AND" ${f.matchMode === "AND" ? "selected" : ""}>AND — all keywords required</option>
+                                <option value="LLM" ${f.matchMode === "LLM" ? "selected" : ""}>LLM — AI concept recognition</option>
+                            </select>
+                        </div>
+                        <div class="qig-form-field">
+                            <label for="qig-fd-priority">Priority</label>
+                            <input id="qig-fd-priority" type="number" value="${f.priority || 0}">
+                            <small class="qig-help">Higher priority filters apply first and seed ties resolve in that order.</small>
+                        </div>
+                        <div class="qig-form-field">
+                            <label for="qig-fd-seed">Seed Override</label>
+                            <input id="qig-fd-seed" type="number" min="0" step="1" value="${initialSeedOverride == null ? "" : escapeHtml(String(initialSeedOverride))}" placeholder="Leave blank to use the main seed">
+                            <small class="qig-help">Optional. When this filter matches, it can override the generation seed.</small>
+                        </div>
+                        <div class="qig-form-field qig-form-field--full" id="qig-fd-keywords-wrap" style="display:${isLLM ? 'none' : ''};">
+                            <label for="qig-fd-keywords">Keywords (comma-separated)</label>
+                            <textarea id="qig-fd-keywords" rows="3" placeholder="goku, vegeta">${escapeHtml(f.keywords || "")}</textarea>
+                        </div>
+                        <div class="qig-form-field qig-form-field--full" id="qig-fd-desc-wrap" style="display:${isLLM ? '' : 'none'};">
+                            <label for="qig-fd-description">Concept Description</label>
+                            <textarea id="qig-fd-description" rows="4" placeholder="Scenes with a cyberpunk or futuristic urban aesthetic — neon lights, holograms, high-tech cityscapes">${escapeHtml(f.description || "")}</textarea>
+                            <small class="qig-help">Used by LLM match mode to detect concepts that are not literal keywords.</small>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="qig-form-section">
+                    <div class="qig-form-grid">
+                        <div class="qig-form-field qig-form-field--full">
+                            <label for="qig-fd-positive">Positive Prompt</label>
+                            <textarea id="qig-fd-positive" rows="4" placeholder="1boy, goku, &lt;lora:goku:0.8&gt;">${escapeHtml(f.positive)}</textarea>
+                        </div>
+                        <div class="qig-form-field qig-form-field--full">
+                            <label for="qig-fd-negative">Negative Prompt</label>
+                            <textarea id="qig-fd-negative" rows="3" placeholder="solo, 1boy">${escapeHtml(f.negative)}</textarea>
+                        </div>
+                        <div class="qig-form-field">
+                            <label for="qig-fd-remove-positive">Remove From Positive</label>
+                            <textarea id="qig-fd-remove-positive" rows="3" placeholder="&lt;lora:general_style&gt;, solo">${escapeHtml(f.removePositive || "")}</textarea>
+                        </div>
+                        <div class="qig-form-field">
+                            <label for="qig-fd-remove-negative">Remove From Negative</label>
+                            <textarea id="qig-fd-remove-negative" rows="3" placeholder="blurry, watermark">${escapeHtml(f.removeNegative || "")}</textarea>
+                        </div>
+                    </div>
+                    <small class="qig-help">LoRA removals match by name only, so &lt;lora:foo&gt; removes any &lt;lora:foo:*&gt; variant.</small>
+                </section>
+
+                <div class="qig-dialog-actions">
                     <button id="qig-fd-cancel" class="menu_button">Cancel</button>
                     <button id="qig-fd-save" class="menu_button">Save</button>
                 </div>
@@ -5455,17 +5599,17 @@ function showFilterDialog(filter) {
                     else if (poolChoices[0]) selectedPoolIds.add(poolChoices[0].id);
                 }
                 if (!poolChoices.length) {
-                    poolWrap.innerHTML = `<div style="font-size:10px;opacity:0.7;">No pools available for this scope.</div>`;
+                    poolWrap.innerHTML = `<div class="qig-help">No pools available for this scope.</div>`;
                     return;
                 }
                 poolWrap.innerHTML = poolChoices.map(pool => {
                     const isChecked = selectedPoolIds.has(pool.id);
                     const scopeBadge = pool.scope === "global"
-                        ? '<span style="font-size:8px;background:#4a90d9;color:#fff;padding:1px 4px;border-radius:3px;">G</span>'
-                        : '<span style="font-size:8px;background:#5cb85c;color:#fff;padding:1px 4px;border-radius:3px;">C</span>';
-                    return `<label style="display:flex;align-items:center;gap:6px;font-size:10px;">
+                        ? '<span class="qig-scope-badge qig-scope-badge--global">G</span>'
+                        : '<span class="qig-scope-badge qig-scope-badge--char">C</span>';
+                    return `<label class="qig-pool-choice">
                         <input class="qig-fd-pool-cb" type="checkbox" value="${escapeHtml(pool.id)}" ${isChecked ? "checked" : ""}>
-                        <span style="flex:1;">${escapeHtml(pool.name)}</span>
+                        <span class="qig-pool-choice-name">${escapeHtml(pool.name)}</span>
                         ${scopeBadge}
                     </label>`;
                 }).join("");
@@ -5482,11 +5626,10 @@ function showFilterDialog(filter) {
             const close = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
-                setTimeout(() => {
-                    popup.style.display = "none";
-                    resolve(null);
-                }, 0);
+                popup.style.display = "none";
+                resolve(null);
             };
+            bindPopupDismiss(popup, close);
             document.getElementById("qig-fd-cancel").onclick = close;
             document.getElementById("qig-fd-save").onclick = (e) => {
                 e?.preventDefault?.();
@@ -5495,13 +5638,19 @@ function showFilterDialog(filter) {
                 const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
                 const description = document.getElementById("qig-fd-description").value.trim();
+                const seedInput = document.getElementById("qig-fd-seed").value.trim();
                 if (!name) { alert("Name is required."); return; }
                 if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
                 if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
+                const seedOverride = seedInput === "" ? null : normalizeSeedOverride(seedInput);
+                if (seedInput !== "" && seedOverride == null) {
+                    alert("Seed Override must be a non-negative integer or left blank.");
+                    return;
+                }
                 const selected = [...popup.querySelectorAll(".qig-fd-pool-cb:checked")].map(cb => String(cb.value));
                 const poolIds = normalizePoolIdList(selected);
                 if (!poolIds.length) { alert("Select at least one pool."); return; }
-                setTimeout(() => { popup.style.display = "none"; }, 0);
+                popup.style.display = "none";
                 const scopeVal = document.getElementById("qig-fd-scope").value;
                 resolve({
                     name,
@@ -5516,12 +5665,10 @@ function showFilterDialog(filter) {
                     priority: parseInt(document.getElementById("qig-fd-priority").value) || 0,
                     charId: scopeVal || null,
                     poolIds,
+                    seedOverride,
                 });
             };
-            popup.onclick = (e) => { if (e.target === popup) close(e); };
-            const popupCloseBtn = popup.querySelector(".qig-close-btn");
-            if (popupCloseBtn) popupCloseBtn.onclick = close;
-        });
+        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
     });
 }
 
@@ -5533,6 +5680,7 @@ async function addContextualFilter() {
     result.id = generateUUID();
     result.enabled = true;
     result.poolIds = normalizePoolIdList(result.poolIds);
+    result.seedOverride = normalizeSeedOverride(result.seedOverride);
     contextualFilters.push(result);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
@@ -5545,6 +5693,7 @@ async function editContextualFilter(id) {
     if (!result) return;
     Object.assign(f, result);
     f.poolIds = normalizePoolIdList(f.poolIds);
+    f.seedOverride = normalizeSeedOverride(f.seedOverride);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5606,9 +5755,7 @@ function duplicateContextualFilter(id) {
     renderContextualFilters();
 }
 
-function renderContextualFilters() {
-    const container = document.getElementById("qig-contextual-filters");
-    if (!container) return;
+function getContextualFilterViewState() {
     ensureFilterPoolsState();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
@@ -5617,19 +5764,96 @@ function renderContextualFilters() {
     const otherCount = contextualFilters.filter(f => f.charId && (!currentCharId || String(f.charId) !== String(currentCharId))).length;
     const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
     const { globalPools, charPools } = getVisibleFilterPools();
+    const visibleFilters = [...globalFilters, ...charFilters];
+    const activeVisibleCount = visibleFilters.filter(f => {
+        if (!f?.enabled) return false;
+        const poolIds = normalizePoolIdList(f.poolIds);
+        return !poolIds.length ? enabledPoolIds.has(DEFAULT_FILTER_POOL_ID) : poolIds.some(id => enabledPoolIds.has(id));
+    }).length;
+    const seededFilterCount = contextualFilters.filter(f => normalizeSeedOverride(f?.seedOverride) != null).length;
+    return {
+        currentCharId,
+        charName,
+        globalFilters,
+        charFilters,
+        otherCount,
+        enabledPoolIds,
+        globalPools,
+        charPools,
+        visibleFilters,
+        activeVisibleCount,
+        seededFilterCount,
+    };
+}
+
+function renderContextualFiltersSummary(container, viewState = getContextualFilterViewState()) {
+    if (!container) return;
+    const totalPools = viewState.globalPools.length + viewState.charPools.length;
+    const scopeLabel = viewState.currentCharId != null ? (viewState.charName || "Current character") : "Global-only context";
+    const hiddenNote = viewState.otherCount > 0
+        ? `${viewState.otherCount} other character filter(s) are hidden from this summary.`
+        : "All filters shown here belong to the current scope.";
+    container.innerHTML = `
+        <div class="qig-filter-summary">
+            <div class="qig-filter-summary-grid">
+                <div class="qig-filter-summary-card">
+                    <span class="qig-filter-summary-label">Visible Filters</span>
+                    <strong>${viewState.visibleFilters.length}</strong>
+                    <small>${scopeLabel}</small>
+                </div>
+                <div class="qig-filter-summary-card">
+                    <span class="qig-filter-summary-label">Active Now</span>
+                    <strong>${viewState.activeVisibleCount}</strong>
+                    <small>${viewState.enabledPoolIds.size} enabled pool(s)</small>
+                </div>
+                <div class="qig-filter-summary-card">
+                    <span class="qig-filter-summary-label">Seed Overrides</span>
+                    <strong>${viewState.seededFilterCount}</strong>
+                    <small>${totalPools} pool(s) available</small>
+                </div>
+            </div>
+            <p class="qig-filter-summary-note">${hiddenNote}</p>
+            <button id="qig-manage-filters-btn-inline" class="menu_button" onclick="showContextualFilterManager()">Manage Filters</button>
+        </div>`;
+}
+
+function showContextualFilterManager() {
+    return createPopup("qig-filter-manager-popup", "Contextual Filters", `
+        <div class="qig-filter-manager-shell">
+            <div id="qig-filter-manager-actions" class="qig-filter-manager-topbar"></div>
+            <div class="qig-filter-manager-grid">
+                <section class="qig-filter-manager-pane">
+                    <div class="qig-filter-manager-pane-header">Pools</div>
+                    <div id="qig-filter-manager-pools" class="qig-filter-manager-scroll"></div>
+                </section>
+                <section class="qig-filter-manager-pane">
+                    <div class="qig-filter-manager-pane-header">Filters</div>
+                    <div id="qig-filter-manager-filters" class="qig-filter-manager-scroll"></div>
+                </section>
+            </div>
+        </div>`, (popup) => {
+        renderContextualFilterManager(popup);
+    }, { popupClass: "manager", contentClass: "qig-popup-content--wide", resizable: false });
+}
+
+function renderContextualFilterManager(popup = document.getElementById("qig-filter-manager-popup"), viewState = getContextualFilterViewState()) {
+    if (!popup) return;
+    const actionContainer = popup.querySelector("#qig-filter-manager-actions");
+    const poolsContainer = popup.querySelector("#qig-filter-manager-pools");
+    const filtersContainer = popup.querySelector("#qig-filter-manager-filters");
+    if (!actionContainer || !poolsContainer || !filtersContainer) return;
+
+    const renderScopeBadge = (scope, title) => `<span class="qig-scope-badge ${scope === "global" ? "qig-scope-badge--global" : "qig-scope-badge--char"}" title="${escapeHtml(title)}">${scope === "global" ? "G" : "C"}</span>`;
 
     const renderPoolRow = (pool) => {
-        const isActive = enabledPoolIds.has(pool.id);
+        const isActive = viewState.enabledPoolIds.has(pool.id);
         const assignedCount = contextualFilters.filter(f => normalizePoolIdList(f.poolIds).includes(pool.id)).length;
-        const scopeBadge = pool.scope === "global"
-            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;">G</span>`
-            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;">C</span>`;
         const canDelete = pool.id !== DEFAULT_FILTER_POOL_ID;
-        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;">
-            <button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;${isActive ? "border-color:var(--SmartThemeQuoteColor);" : "opacity:0.7;"}" onclick="toggleFilterPool('${escapeHtml(pool.id)}')" title="Toggle pool">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
-            ${scopeBadge}
-            <button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="renameFilterPool('${escapeHtml(pool.id)}')" title="Rename pool">✎</button>
-            <button class="menu_button" style="padding:2px 4px;font-size:10px;${canDelete ? "" : "opacity:0.4;"}" onclick="deleteFilterPool('${escapeHtml(pool.id)}')" ${canDelete ? "" : "disabled"} title="Delete pool">🗑️</button>
+        return `<div class="qig-manager-row">
+            <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""}" onclick="toggleFilterPool('${escapeHtml(pool.id)}')" title="Toggle pool">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
+            ${renderScopeBadge(pool.scope, pool.scope === "global" ? "Global pool" : "Character pool")}
+            <button class="menu_button qig-manager-icon-button" onclick="renameFilterPool('${escapeHtml(pool.id)}')" title="Rename pool">✎</button>
+            <button class="menu_button qig-manager-icon-button" onclick="deleteFilterPool('${escapeHtml(pool.id)}')" ${canDelete ? "" : "disabled"} title="Delete pool">🗑️</button>
         </div>`;
     };
 
@@ -5650,58 +5874,77 @@ function renderContextualFilters() {
         const poolInfo = poolNames.length ? `Pools: ${poolNames.join(", ")}` : `Pools: ${DEFAULT_FILTER_POOL_NAME}`;
         const ePoolInfo = escapeHtml(poolInfo);
         const isGlobal = !f.charId;
-        const enabledByPool = normalizePoolIdList(f.poolIds).some(id => enabledPoolIds.has(id));
+        const enabledByPool = normalizePoolIdList(f.poolIds).some(id => viewState.enabledPoolIds.has(id));
         const effectiveEnabled = !!f.enabled && enabledByPool;
-        const badge = isGlobal
-            ? `<span style="background:#4a90d9;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Global filter">G</span>`
-            : `<span style="background:#5cb85c;color:#fff;font-size:8px;font-weight:bold;padding:1px 3px;border-radius:2px;margin-right:2px;" title="Character filter">C</span>`;
-        return `<div style="display:flex;align-items:center;gap:4px;margin:2px 0;font-size:10px;${effectiveEnabled ? "" : "opacity:0.72;"}">` +
+        const seedOverride = normalizeSeedOverride(f.seedOverride);
+        const statusParts = [
+            f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode,
+            `p${f.priority || 0}`,
+            seedOverride != null ? `seed ${seedOverride}` : "",
+            effectiveEnabled ? "" : "off",
+        ].filter(Boolean).join(" ");
+        return `<div class="qig-manager-row ${effectiveEnabled ? "" : "qig-manager-row--dimmed"}">` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
-        badge +
-        `<button class="menu_button" style="padding:2px 6px;font-size:10px;flex:1;text-align:left;" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}\n${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
-        `<span style="opacity:0.6;font-size:9px;">${f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode} p${f.priority}${effectiveEnabled ? "" : " off"}</span>` +
-        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
-        `<button class="menu_button" style="padding:2px 4px;font-size:10px;" onclick="deleteContextualFilter('${eId}')">×</button>` +
+        renderScopeBadge(isGlobal ? "global" : "char", isGlobal ? "Global filter" : "Character filter") +
+        `<button class="menu_button qig-manager-main-button" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}\n${seedOverride != null ? `Seed Override: ${seedOverride}\n` : ""}${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
+        `<span class="qig-filter-status">${escapeHtml(statusParts)}</span>` +
+        `<button class="menu_button qig-manager-icon-button" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
+        `<button class="menu_button qig-manager-icon-button" onclick="deleteContextualFilter('${eId}')" title="Delete filter">×</button>` +
         `</div>`;
     };
 
     let poolHtml = "";
-    if (globalPools.length) {
-        poolHtml += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Pools (${globalPools.length})</div>`;
-        poolHtml += globalPools.map(renderPoolRow).join("");
+    if (viewState.globalPools.length) {
+        poolHtml += `<div class="qig-manager-section-title">Global Pools (${viewState.globalPools.length})</div>`;
+        poolHtml += viewState.globalPools.map(renderPoolRow).join("");
     }
-    if (charPools.length) {
-        poolHtml += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Pools (${charPools.length})</div>`;
-        poolHtml += charPools.map(renderPoolRow).join("");
+    if (viewState.charPools.length) {
+        poolHtml += `<div class="qig-manager-section-title">${escapeHtml(viewState.charName || "Character")} Pools (${viewState.charPools.length})</div>`;
+        poolHtml += viewState.charPools.map(renderPoolRow).join("");
     }
+    if (!poolHtml) poolHtml = `<div class="qig-help">No pools available yet. Create one from the toolbar above.</div>`;
 
     let html = "";
-    if (globalFilters.length) {
-        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">Global Filters (${globalFilters.length})</div>`;
-        html += globalFilters.map(renderRow).join("");
+    if (viewState.globalFilters.length) {
+        html += `<div class="qig-manager-section-title">Global Filters (${viewState.globalFilters.length})</div>`;
+        html += viewState.globalFilters.map(renderRow).join("");
     }
-    if (charFilters.length) {
-        html += `<div style="font-size:9px;font-weight:bold;opacity:0.7;margin:4px 0 2px;text-transform:uppercase;">${escapeHtml(charName || "Character")} Filters (${charFilters.length})</div>`;
-        html += charFilters.map(renderRow).join("");
+    if (viewState.charFilters.length) {
+        html += `<div class="qig-manager-section-title">${escapeHtml(viewState.charName || "Character")} Filters (${viewState.charFilters.length})</div>`;
+        html += viewState.charFilters.map(renderRow).join("");
     }
-    if (otherCount > 0) {
-        html += `<div style="font-size:9px;opacity:0.5;margin:4px 0 2px;font-style:italic;">${otherCount} filter(s) for other characters (hidden)</div>`;
+    if (viewState.otherCount > 0) {
+        html += `<div class="qig-manager-muted">${viewState.otherCount} filter(s) for other characters are hidden here.</div>`;
     }
 
     if (!html) {
-        html = `<div style="font-size:10px;opacity:0.65;margin:4px 0;">No filters yet. Add one to get started.</div>`;
+        html = `<div class="qig-help">No filters yet. Add one to get started.</div>`;
     }
-    container.innerHTML = `<div style="padding:4px 0 2px;border-bottom:1px solid rgba(255,255,255,0.1);margin-bottom:6px;">
-            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:4px;">
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolGlobal()">+ Global Pool</button>
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(true)">Enable Shown Pools</button>
-                <button class="menu_button" style="padding:2px 6px;font-size:10px;" onclick="setVisiblePoolsEnabled(false)">Disable Shown Pools</button>
-            </div>
-            <div style="max-height:120px;overflow-y:auto;margin-bottom:4px;">${poolHtml}</div>
+
+    actionContainer.innerHTML = `
+        <div class="qig-filter-manager-actions">
+            <button class="menu_button" onclick="addFilterPoolGlobal()">+ Global Pool</button>
+            <button class="menu_button" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
+            <button class="menu_button" onclick="setVisiblePoolsEnabled(true)">Enable Shown Pools</button>
+            <button class="menu_button" onclick="setVisiblePoolsEnabled(false)">Disable Shown Pools</button>
+            <button class="menu_button" onclick="addContextualFilter()">+ Add Filter</button>
+            <button class="menu_button" onclick="clearContextualFilters()">Clear All</button>
         </div>
-        <div style="max-height:200px;overflow-y:auto;margin-bottom:4px;">${html}</div>
-        <button class="menu_button" style="padding:2px 6px;font-size:10px;margin:2px;" onclick="clearContextualFilters()">Clear All</button>`;
+        <div class="qig-filter-manager-summary">
+            ${viewState.visibleFilters.length} visible filter(s), ${viewState.activeVisibleCount} active in the current context, ${viewState.seededFilterCount} with seed overrides.
+        </div>`;
+    poolsContainer.innerHTML = poolHtml;
+    filtersContainer.innerHTML = html;
+}
+
+function renderContextualFilters() {
+    const viewState = getContextualFilterViewState();
+    const container = document.getElementById("qig-contextual-filters");
+    if (container) renderContextualFiltersSummary(container, viewState);
+    const popup = document.getElementById("qig-filter-manager-popup");
+    if (popup && popup.style.display !== "none") {
+        renderContextualFilterManager(popup, viewState);
+    }
 }
 
 function showPromptReplacementDialog(rule) {
@@ -5750,11 +5993,10 @@ function showPromptReplacementDialog(rule) {
             const close = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
-                setTimeout(() => {
-                    popup.style.display = "none";
-                    resolve(null);
-                }, 0);
+                popup.style.display = "none";
+                resolve(null);
             };
+            bindPopupDismiss(popup, close);
             document.getElementById("qig-rd-name").focus();
             document.getElementById("qig-rd-cancel").onclick = close;
             document.getElementById("qig-rd-save").onclick = (e) => {
@@ -5779,12 +6021,9 @@ function showPromptReplacementDialog(rule) {
                     }
                 }
                 const priority = parseInt(document.getElementById("qig-rd-priority").value, 10) || 0;
-                setTimeout(() => { popup.style.display = "none"; }, 0);
+                popup.style.display = "none";
                 resolve({ name, scope, charId, target, trigger, replacement, priority });
             };
-            popup.onclick = (e) => { if (e.target === popup) close(e); };
-            const popupCloseBtn = popup.querySelector(".qig-close-btn");
-            if (popupCloseBtn) popupCloseBtn.onclick = close;
         });
     });
 }
@@ -5938,6 +6177,7 @@ window.deleteContextualFilter = deleteContextualFilter;
 window.toggleContextualFilter = toggleContextualFilter;
 window.clearContextualFilters = clearContextualFilters;
 window.duplicateContextualFilter = duplicateContextualFilter;
+window.showContextualFilterManager = showContextualFilterManager;
 window.addFilterPoolGlobal = () => addFilterPool("global");
 window.addFilterPoolForCurrentChar = () => addFilterPool("char");
 window.renameFilterPool = renameFilterPool;
@@ -7514,9 +7754,9 @@ function createUI() {
                         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
                     </div>
                     <div class="inline-drawer-content">
-                        <small style="opacity:0.7;">Lorebook-style triggers with pool controls — inject prompts when keywords/concepts match scene text</small>
+                        <small style="opacity:0.7;">Open a larger manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
                         <div id="qig-contextual-filters" style="margin:4px 0;"></div>
-                        <button id="qig-add-filter-btn" class="menu_button" style="padding:4px 8px;">+ Add Filter</button>
+                        <button id="qig-manage-filters-btn" class="menu_button" style="padding:4px 8px;">Manage Filters</button>
                     </div>
                 </div>
                 <div class="inline-drawer" style="margin:4px 0;">
@@ -7719,7 +7959,7 @@ function createUI() {
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
-    document.getElementById("qig-add-filter-btn").onclick = addContextualFilter;
+    document.getElementById("qig-manage-filters-btn").onclick = showContextualFilterManager;
     document.getElementById("qig-add-replacement-btn").onclick = addPromptReplacement;
     renderTemplates();
     renderPresets();
@@ -8619,39 +8859,31 @@ async function generateImageInjectPalette() {
                 if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
             }
 
-            // Apply contextual filters
-            const filtered = applyContextualFilters(prompt, negative, sceneTextForFilters || prompt);
-            prompt = filtered.prompt;
-            negative = filtered.negative;
-
-            // Apply LLM-matched concept filters
-            const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt, currentAbortController?.signal);
+            const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+                matchText: sceneTextForFilters || prompt,
+                llmSceneText: sceneTextForFilters || extractedPrompt,
+                signal: currentAbortController?.signal,
+            });
             checkAborted(cancelCheckpoint);
-    if (llmMatched.length) {
-        const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
-        prompt = llmApplied.prompt;
-        negative = llmApplied.negative;
-        log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
-    }
+            prompt = contextualApplied.prompt;
+            negative = contextualApplied.negative;
 
-    const replacementApplied = applyPromptReplacementMaps(prompt, negative);
-    prompt = replacementApplied.prompt;
-    negative = replacementApplied.negative;
+            const replacementApplied = applyPromptReplacementMaps(prompt, negative);
+            prompt = replacementApplied.prompt;
+            negative = replacementApplied.negative;
 
-    lastPrompt = prompt;
-    lastNegative = negative;
-    lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+            lastPrompt = prompt;
+            lastNegative = negative;
+            lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
 
             const batchCount = s.batchCount || 1;
             const results = [];
             const originalSeed = getGenerationSeedValue(s);
-            let baseSeed = originalSeed;
-            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
-                baseSeed = Math.floor(Math.random() * 2147483647);
-            }
+            const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
+            const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
             for (let i = 0; i < batchCount; i++) {
                 checkAborted(cancelCheckpoint);
-                if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
+                setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
                 showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
@@ -8764,22 +8996,15 @@ async function generateImage() {
         if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
     }
 
-    // Apply contextual filters — match keywords against the built prompt
-    // (includes character identity from LLM generation and ST Style)
-    const filtered = applyContextualFilters(prompt, negative, prompt);
-    prompt = filtered.prompt;
-    negative = filtered.negative;
-
-    // Apply LLM-matched concept filters — use raw scene text for natural language analysis
     const llmSceneText = scenePrompt || basePrompt;
-    const llmMatched = await matchLLMFilters(llmSceneText, currentAbortController?.signal);
+    const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+        matchText: prompt,
+        llmSceneText,
+        signal: currentAbortController?.signal,
+    });
     checkAborted(cancelCheckpoint);
-    if (llmMatched.length) {
-        const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
-        prompt = llmApplied.prompt;
-        negative = llmApplied.negative;
-        log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
-    }
+    prompt = contextualApplied.prompt;
+    negative = contextualApplied.negative;
 
     const replacementApplied = applyPromptReplacementMaps(prompt, negative);
     prompt = replacementApplied.prompt;
@@ -8796,13 +9021,11 @@ async function generateImage() {
 
             const results = [];
             log(`Using provider: ${s.provider}, batch: ${batchCount}`);
-            let baseSeed = originalSeed;
-            if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
-                baseSeed = Math.floor(Math.random() * 2147483647);
-        }
+            const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
+            const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
         for (let i = 0; i < batchCount; i++) {
             checkAborted(cancelCheckpoint);
-            if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
+            setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
                 showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
@@ -9109,20 +9332,14 @@ async function processInjectMessage(messageText, messageIndex) {
                     if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
                 }
 
-                // Apply contextual filters
-                const filtered = applyContextualFilters(prompt, negative, sceneTextForFilters || prompt);
-                prompt = filtered.prompt;
-                negative = filtered.negative;
-
-                // Apply LLM-matched concept filters
-                const llmMatched = await matchLLMFilters(sceneTextForFilters || extractedPrompt, currentAbortController?.signal);
+                const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+                    matchText: sceneTextForFilters || prompt,
+                    llmSceneText: sceneTextForFilters || extractedPrompt,
+                    signal: currentAbortController?.signal,
+                });
                 checkAborted(cancelCheckpoint);
-                if (llmMatched.length) {
-                    const llmApplied = applyMatchedFiltersWithDebug(prompt, negative, llmMatched, "LLM contextual filter");
-                    prompt = llmApplied.prompt;
-                    negative = llmApplied.negative;
-                    log(`LLM contextual filters: ${llmMatched.length} applied (${llmApplied.removedCount} token(s) removed)`);
-                }
+                prompt = contextualApplied.prompt;
+                negative = contextualApplied.negative;
 
                 const replacementApplied = applyPromptReplacementMaps(prompt, negative);
                 prompt = replacementApplied.prompt;
@@ -9134,13 +9351,11 @@ async function processInjectMessage(messageText, messageIndex) {
 
                 const batchCount = s.batchCount || 1;
                 const results = [];
-                let baseSeed = originalSeed;
-                if (s.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
-                    baseSeed = Math.floor(Math.random() * 2147483647);
-                }
+                const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
+                const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
                 for (let i = 0; i < batchCount; i++) {
                     checkAborted(cancelCheckpoint);
-                    if (s.sequentialSeeds && batchCount > 1) setGenerationSeedValue(s, baseSeed + i);
+                    setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
                     showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
                     const expandedPrompt = expandWildcards(prompt);
                     const expandedNegative = expandWildcards(negative);

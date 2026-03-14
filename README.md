@@ -1,9 +1,15 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping), ST Style panel integration, inject mode (AI-driven custom-tag / `<image>` / legacy `<pic>` extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping, a dedicated manager popup, and per-filter seed overrides), ST Style panel integration, inject mode (AI-driven custom-tag / `<image>` / legacy `<pic>` extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
+
+## What's New in v1.5.5
+- Added a dedicated **Contextual Filters** manager popup so larger filter libraries are easier to organize without fighting the settings drawer layout.
+- Fixed nested popup closing behavior so backdrop clicks close only the active popup instead of collapsing the whole settings view.
+- Added optional **per-filter seed overrides** for contextual filters, with highest-priority match winning and sequential batches incrementing from that seed.
+- Expanded the filter editor layout and refreshed the filter summary/manager UI for pools, scopes, and override visibility.
 
 ## What's New in v1.5
 - Fixed welcome-page / HTML prompt leakage when `Use chat message` is enabled, so QIG now falls back to clean text instead of ingesting UI markup.
@@ -68,7 +74,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping** and **pool-based bulk enable/disable** (global + per-character pools)
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping**, **pool-based bulk enable/disable** (global + per-character pools), a **dedicated manager popup**, and optional **per-filter seed overrides**
 - 🔁 **Prompt Replacement Maps** - Native exact-token replacements for prompt tags/text with priority, target field control (positive/negative/both), and global or character scope
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
@@ -472,6 +478,7 @@ Each filter has:
 - **Positive/Negative Prompt** — appended to the generation prompts when triggered
 - **Remove From Positive/Negative** — optional comma-separated tokens to remove before appending (for conflict cleanup)
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
+- **Seed Override** — optional fixed seed to use when this filter matches
 - **Scope** — `Global` (applies in all chats) or `Character` (applies only when chatting with a specific character)
 - **Pools** — one filter can belong to multiple pools for bulk on/off control
 
@@ -480,6 +487,10 @@ Filter execution order is:
 2. Append `Positive/Negative Prompt`
 
 For LoRA tags, removal is **name-based** (weight-insensitive). Example: removing `<lora:foo>` removes `<lora:foo:0.6>` and `<lora:foo:1.0>`.
+
+Filter management now lives in a larger **Manage Filters** popup so pools, global filters, character filters, and seed overrides can be organized without collapsing the parent settings view. Clicking the backdrop closes only the active popup.
+
+If multiple matched filters define a seed override, the **highest-priority matched filter wins**. When **Sequential Seeds** is enabled, the batch increments from that winning seed (`seed`, `seed+1`, `seed+2`, ...).
 
 ### Character-Specific Filters
 
@@ -585,7 +596,7 @@ Inspired by [wickedcode01's st-image-auto-generation](https://github.com/wickedc
 
 1. **Injection**: A system prompt is injected into the chat completion telling the AI to use a paired image tag such as `<image>description</image>` (or your custom tag name). Legacy `<pic prompt="description">` extraction is still supported for older configs.
 2. **Extraction**: When the AI responds, QIG scans the visible reply plus available reasoning fields for image tags using a configurable regex
-3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append] → prompt replacement maps → provider)
+3. **Generation**: Each extracted prompt is run through the full pipeline (style → quality → ST Style → contextual filters [remove + append + optional seed override] → prompt replacement maps → provider)
 4. **Cleanup**: Tags are optionally removed from the displayed message
 
 ### Settings
