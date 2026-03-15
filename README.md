@@ -1,12 +1,13 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping, a dedicated manager popup, and per-filter seed overrides), ST Style panel integration, inject mode (AI-driven custom-tag / `<image>` / legacy `<pic>` extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
+One-click image generation for SillyTavern. 13 providers (Pollinations free, NovelAI, ArliAI, NanoGPT, Chutes, CivitAI, Nanobanana/Gemini, Stability AI, Replicate, Fal.ai, Together AI, Local, Proxy), 40+ styles, LLM prompt generation with editing, LLM Override (use a separate cheap/fast AI for image prompts), reference images, connection profiles, Comfy workflow presets, batch generation with browsing. Resizable popup with insert-to-chat support, auto-insert option, per-character reference images, persistent gallery & history, generation presets (with contextual filters), prompt wildcards, contextual filters (lorebook-style keyword triggers + LLM concept matching, with character-specific scoping, drag reordering, cross-character browse/copy in the manager, and per-filter seed overrides), ST Style panel integration, inject mode (AI-driven custom-tag / `<image>` / legacy `<pic>` extraction à la wickedcode01), PNG metadata embedding, and settings export/import.
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v1.5.5
-- Added a dedicated **Contextual Filters** manager popup so larger filter libraries are easier to organize without fighting the settings drawer layout.
+## What's New in v1.5.6
+- Moved the **Contextual Filters** summary into **Prompt & Templates** so it collapses with the rest of the prompt-authoring controls.
+- Expanded the **Contextual Filters** manager with drag reordering, an optional `Hide inactive` view, and cross-character scope browsing with copy-to-current/global actions.
 - Fixed nested popup closing behavior so backdrop clicks close only the active popup instead of collapsing the whole settings view.
 - Added optional **per-filter seed overrides** for contextual filters, with highest-priority match winning and sequential batches incrementing from that seed.
 - Expanded the filter editor layout and refreshed the filter summary/manager UI for pools, scopes, and override visibility.
@@ -74,7 +75,7 @@ One-click image generation for SillyTavern. Images appear in a resizable popup w
 - 💾 **Batch Save All** - Download all batch images with sequential filenames and embedded metadata
 - 📐 **Aspect Ratios** - 1:1, 3:2, 2:3, 16:9, 9:16 presets
 - 🎨 **Skin Tone Reinforcement** - Auto-detects and reinforces skin tones from character descriptions
-- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping**, **pool-based bulk enable/disable** (global + per-character pools), a **dedicated manager popup**, and optional **per-filter seed overrides**
+- 🔖 **Contextual Filters** - Lorebook-style keyword triggers that can **remove conflicting tokens first** and then inject positive/negative prompts (AND/OR logic, priority-based suppression for multi-character LoRAs) + LLM concept matching for abstract triggers. Supports **character-specific scoping**, **pool-based bulk enable/disable** (global + per-character pools), drag reordering, cross-character scope browsing/copying in a dedicated manager popup, and optional **per-filter seed overrides**
 - 🔁 **Prompt Replacement Maps** - Native exact-token replacements for prompt tags/text with priority, target field control (positive/negative/both), and global or character scope
 - 🧠 **LLM Override** - Use a separate, cheaper AI model (Gemini Flash, Haiku, Ollama, etc.) for image prompt generation instead of the chat AI — any OpenAI-compatible endpoint
 - 🎭 **ST Style Integration** - Reads SillyTavern's built-in Style panel (common prefix, negative, character-specific prompts) and applies them to generation
@@ -478,6 +479,7 @@ Each filter has:
 - **Positive/Negative Prompt** — appended to the generation prompts when triggered
 - **Remove From Positive/Negative** — optional comma-separated tokens to remove before appending (for conflict cleanup)
 - **Priority** — higher-priority AND filters suppress lower-priority OR filters whose keywords are a subset
+- **Drag Order** — when priorities tie, filters run in the same order shown in **Manage Filters**
 - **Seed Override** — optional fixed seed to use when this filter matches
 - **Scope** — `Global` (applies in all chats) or `Character` (applies only when chatting with a specific character)
 - **Pools** — one filter can belong to multiple pools for bulk on/off control
@@ -488,7 +490,7 @@ Filter execution order is:
 
 For LoRA tags, removal is **name-based** (weight-insensitive). Example: removing `<lora:foo>` removes `<lora:foo:0.6>` and `<lora:foo:1.0>`.
 
-Filter management now lives in a larger **Manage Filters** popup so pools, global filters, character filters, and seed overrides can be organized without collapsing the parent settings view. Clicking the backdrop closes only the active popup.
+The quick summary for contextual filters now lives inside **Prompt & Templates**, and the larger **Manage Filters** popup handles pools, global filters, character filters, drag reordering, and seed overrides. Clicking the backdrop closes only the active popup.
 
 If multiple matched filters define a seed override, the **highest-priority matched filter wins**. When **Sequential Seeds** is enabled, the batch increments from that winning seed (`seed`, `seed+1`, `seed+2`, ...).
 
@@ -498,7 +500,7 @@ Filters can be scoped to a specific character. When creating or editing a filter
 - **Global (all characters)** — the filter applies everywhere (default, backward-compatible)
 - **This Character** — the filter only activates when chatting with the current character
 
-The filter list groups filters by scope with colored badges: blue **G** for global, green **C** for character-specific. A **⧉** duplicate button lets you quickly copy a filter between scopes (e.g., promote a character filter to global or create a character-specific copy of a global filter). Filters for other characters are hidden but counted.
+The filter list groups filters by scope with colored badges: blue **G** for global, green **C** for character-specific. A **⧉** duplicate button lets you quickly copy a filter between scopes (e.g., promote a character filter to global or create a character-specific copy of a global filter). The manager can also browse one other character scope at a time and copy those filters into the current character or global scope without switching chats.
 
 When clearing filters with a character active, you can choose to clear all filters, only global filters, or only the current character's filters.
 
@@ -512,6 +514,7 @@ Pools let you organize large filter libraries (for example: goblin pack, sci-fi 
 - A filter is active only when both conditions are true:
   - the filter checkbox is enabled
   - at least one of its pools is enabled in the current context
+- The manager can browse other characters' pool sets and copy them into the current character scope when needed
 
 Migration note: existing filters are automatically assigned to a global **Default** pool so behavior stays unchanged after updating.
 

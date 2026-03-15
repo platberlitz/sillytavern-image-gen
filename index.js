@@ -389,6 +389,15 @@ const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
 const DEFAULT_FILTER_POOL_NAME = "Default";
+const FILTER_MANAGER_SCOPE_CURRENT = "__qig_scope_current__";
+const FILTER_MANAGER_SCOPE_GLOBAL_ONLY = "__qig_scope_global_only__";
+let filterManagerUiState = {
+    selectedScopeCharId: FILTER_MANAGER_SCOPE_CURRENT,
+    hideInactive: false,
+    draggedFilterId: null,
+    dropTargetFilterId: null,
+    dropPosition: "after",
+};
 
 function getCancelCheckpoint() {
     return cancelRequestSerial;
@@ -1291,7 +1300,11 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         const nextSeedOverride = normalizeSeedOverride(filter.seedOverride);
         if (filter.seedOverride !== nextSeedOverride) changed = true;
         filter.seedOverride = nextSeedOverride;
+        const nextPriority = getContextualFilterPriorityValue(filter);
+        if (filter.priority !== nextPriority) changed = true;
+        filter.priority = nextPriority;
     }
+    if (normalizeContextualFilterOrder(contextualFilters)) changed = true;
 
     if (persist) {
         persistFilterPoolState();
@@ -1431,6 +1444,71 @@ function comparePromptReplacements(a, b) {
     const byCreated = String(a.createdAt || "").localeCompare(String(b.createdAt || ""));
     if (byCreated !== 0) return byCreated;
     return String(a.id || "").localeCompare(String(b.id || ""));
+}
+
+function getContextualFilterPriorityValue(filter) {
+    const priority = Number(filter?.priority);
+    return Number.isFinite(priority) ? Math.trunc(priority) : 0;
+}
+
+function normalizeContextualFilterSortOrder(value, fallback = null) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(0, Math.trunc(numeric));
+}
+
+function getContextualFilterScopeKey(filterOrCharId) {
+    const charId = filterOrCharId && typeof filterOrCharId === "object"
+        ? filterOrCharId.charId
+        : filterOrCharId;
+    return charId != null && charId !== "" ? `char:${String(charId)}` : "global";
+}
+
+function compareContextualFilters(a, b) {
+    const byPriority = getContextualFilterPriorityValue(b) - getContextualFilterPriorityValue(a);
+    if (byPriority !== 0) return byPriority;
+
+    const aSort = normalizeContextualFilterSortOrder(a?.sortOrder, Number.MAX_SAFE_INTEGER);
+    const bSort = normalizeContextualFilterSortOrder(b?.sortOrder, Number.MAX_SAFE_INTEGER);
+    if (aSort !== bSort) return aSort - bSort;
+
+    return String(a?.id || "").localeCompare(String(b?.id || ""));
+}
+
+function normalizeContextualFilterOrder(filterList = contextualFilters) {
+    if (!Array.isArray(filterList)) return false;
+    const byScope = new Map();
+
+    filterList.forEach((filter, index) => {
+        if (!filter || typeof filter !== "object") return;
+        const scopeKey = getContextualFilterScopeKey(filter);
+        if (!byScope.has(scopeKey)) byScope.set(scopeKey, []);
+        byScope.get(scopeKey).push({
+            filter,
+            index,
+            existingSortOrder: normalizeContextualFilterSortOrder(filter.sortOrder, null),
+        });
+    });
+
+    let changed = false;
+    for (const entries of byScope.values()) {
+        entries.sort((a, b) => {
+            const aHasSort = a.existingSortOrder != null;
+            const bHasSort = b.existingSortOrder != null;
+            if (aHasSort && bHasSort && a.existingSortOrder !== b.existingSortOrder) {
+                return a.existingSortOrder - b.existingSortOrder;
+            }
+            if (aHasSort !== bHasSort) return aHasSort ? -1 : 1;
+            return a.index - b.index;
+        });
+
+        entries.forEach((entry, nextIndex) => {
+            if (entry.filter.sortOrder !== nextIndex) changed = true;
+            entry.filter.sortOrder = nextIndex;
+        });
+    }
+
+    return changed;
 }
 
 function normalizeContextLookupValue(value) {
@@ -1905,7 +1983,7 @@ function getActiveFilters() {
         const poolIds = normalizePoolIdList(f.poolIds);
         if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
         return poolIds.some(id => enabledPoolIds.has(id));
-    });
+    }).sort(compareContextualFilters);
 }
 
 function splitPromptTokens(text) {
@@ -2053,7 +2131,7 @@ function applyContextualFilters(prompt, negative, sceneText) {
         if (hit) matched.push({ ...f, _keywords: new Set(keywords) });
     }
     if (!matched.length) return { prompt, negative, matchedFilters: [] };
-    matched.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    matched.sort(compareContextualFilters);
     // Suppress OR filters whose keywords are a subset of a higher-priority AND filter
     const andFilters = matched.filter(f => f.matchMode === "AND");
     const surviving = matched.filter(f => {
@@ -2228,7 +2306,7 @@ ${conceptList}`;
     }
 
     const nums = (response || "").match(/\d+/g)?.map(Number) || [];
-    const matched = llmFilters.filter((_, i) => nums.includes(i + 1));
+    const matched = llmFilters.filter((_, i) => nums.includes(i + 1)).sort(compareContextualFilters);
     log(`LLM filter matching: ${matched.length}/${llmFilters.length} concepts matched`);
     return matched;
 }
@@ -5330,22 +5408,136 @@ function saveContextualFilters() {
     backupToSettings("qig_contextual_filters", contextualFilters);
 }
 
-function getVisibleFilterPools() {
-    const currentCharId = getCurrentCharId();
+function getVisibleFilterPools(scopeCharId = getCurrentCharId()) {
+    const selectedCharId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
     const globalPools = filterPools
         .filter(p => p.scope === "global")
         .sort((a, b) => a.name.localeCompare(b.name));
-    const charPools = currentCharId != null
+    const charPools = selectedCharId != null
         ? filterPools
-            .filter(p => p.scope === "char" && String(p.charId) === String(currentCharId))
+            .filter(p => p.scope === "char" && String(p.charId) === selectedCharId)
             .sort((a, b) => a.name.localeCompare(b.name))
         : [];
-    return { globalPools, charPools, currentCharId };
+    return { globalPools, charPools, selectedCharId };
+}
+
+function getEnabledPoolIdsForScope(scopeCharId = null) {
+    const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+    const selectedCharId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
+    if (!selectedCharId) return enabled;
+    for (const id of normalizePoolIdList(activeFilterPoolIdsByChar?.[selectedCharId])) {
+        enabled.add(id);
+    }
+    return enabled;
+}
+
+function isContextualFilterEnabledByPools(filter, enabledPoolIds = getEnabledPoolIdsForCurrentContext()) {
+    const poolIds = normalizePoolIdList(filter?.poolIds);
+    if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
+    return poolIds.some(id => enabledPoolIds.has(id));
+}
+
+function isContextualFilterEffective(filter, enabledPoolIds = getEnabledPoolIdsForCurrentContext()) {
+    return !!filter?.enabled && isContextualFilterEnabledByPools(filter, enabledPoolIds);
 }
 
 function getPoolNameById(poolId) {
     const id = String(poolId || "");
     return filterPools.find(p => p.id === id)?.name || "Unknown Pool";
+}
+
+function findFilterPoolByName(name, { scope = "global", charId = null } = {}) {
+    const normalizedName = String(name || "").trim().toLowerCase();
+    const scopeKey = scope === "char" ? "char" : "global";
+    const targetCharId = scopeKey === "char" && charId != null ? String(charId) : null;
+    if (!normalizedName) return null;
+    return filterPools.find(pool =>
+        pool.scope === scopeKey &&
+        String(pool.charId || "") === String(targetCharId || "") &&
+        String(pool.name || "").trim().toLowerCase() === normalizedName
+    ) || null;
+}
+
+function createFilterPoolRecord(name, { scope = "global", charId = null, enable = true } = {}) {
+    const trimmedName = String(name || "").trim();
+    const scopeKey = scope === "char" ? "char" : "global";
+    const targetCharId = scopeKey === "char" && charId != null ? String(charId) : null;
+    if (!trimmedName) return null;
+    if (scopeKey === "char" && !targetCharId) return null;
+
+    const now = new Date().toISOString();
+    const pool = {
+        id: `qig_pool_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        name: trimmedName,
+        scope: scopeKey,
+        charId: targetCharId,
+        createdAt: now,
+        updatedAt: now,
+    };
+    filterPools.push(pool);
+
+    if (enable) {
+        if (scopeKey === "char" && targetCharId) {
+            const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[targetCharId]));
+            ids.add(pool.id);
+            activeFilterPoolIdsByChar[targetCharId] = [...ids];
+        } else {
+            const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+            ids.add(pool.id);
+            activeFilterPoolIdsGlobal = [...ids];
+        }
+    }
+
+    return pool;
+}
+
+function enableFilterPool(pool) {
+    if (!pool?.id) return;
+    if (pool.scope === "char" && pool.charId != null) {
+        const key = String(pool.charId);
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
+        ids.add(pool.id);
+        activeFilterPoolIdsByChar[key] = [...ids];
+        return;
+    }
+
+    const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+    ids.add(pool.id);
+    activeFilterPoolIdsGlobal = [...ids];
+}
+
+function ensureFilterPoolByName(name, options = {}) {
+    const existing = findFilterPoolByName(name, options);
+    if (existing) {
+        if (options.enable) enableFilterPool(existing);
+        return existing;
+    }
+    return createFilterPoolRecord(name, options);
+}
+
+function getNextContextualFilterSortOrder(scopeCharId, excludeFilterId = null) {
+    const scopeKey = getContextualFilterScopeKey(scopeCharId);
+    return contextualFilters.filter(filter =>
+        filter?.id !== excludeFilterId &&
+        getContextualFilterScopeKey(filter) === scopeKey
+    ).length;
+}
+
+function getMappedPoolIdsForCopiedFilter(sourcePoolIds, { scope = "global", charId = null } = {}) {
+    const mappedPoolIds = [];
+    for (const poolId of normalizePoolIdList(sourcePoolIds)) {
+        const sourcePool = filterPools.find(pool => pool.id === poolId);
+        const sourcePoolName = String(sourcePool?.name || "").trim();
+        if (poolId === DEFAULT_FILTER_POOL_ID || sourcePoolName.toLowerCase() === DEFAULT_FILTER_POOL_NAME.toLowerCase()) {
+            mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
+            continue;
+        }
+        if (!sourcePoolName) continue;
+        const mappedPool = ensureFilterPoolByName(sourcePoolName, { scope, charId, enable: true });
+        if (mappedPool?.id) mappedPoolIds.push(mappedPool.id);
+    }
+    if (!mappedPoolIds.length) mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
+    return normalizePoolIdList(mappedPoolIds);
 }
 
 function addFilterPool(scope = "global") {
@@ -5363,34 +5555,11 @@ function addFilterPool(scope = "global") {
         toastr.warning("Pool name cannot be empty.");
         return;
     }
-    const exists = filterPools.some(pool =>
-        pool.scope === (isCharScope ? "char" : "global") &&
-        String(pool.charId || "") === String(targetCharId || "") &&
-        String(pool.name || "").toLowerCase() === name.toLowerCase()
-    );
-    if (exists) {
+    if (findFilterPoolByName(name, { scope: isCharScope ? "char" : "global", charId: targetCharId })) {
         toastr.warning(`Pool "${name}" already exists in this scope.`);
         return;
     }
-    const now = new Date().toISOString();
-    const id = `qig_pool_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    filterPools.push({
-        id,
-        name,
-        scope: isCharScope ? "char" : "global",
-        charId: targetCharId,
-        createdAt: now,
-        updatedAt: now,
-    });
-    if (isCharScope && targetCharId) {
-        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[targetCharId]));
-        ids.add(id);
-        activeFilterPoolIdsByChar[targetCharId] = [...ids];
-    } else {
-        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
-        ids.add(id);
-        activeFilterPoolIdsGlobal = [...ids];
-    }
+    createFilterPoolRecord(name, { scope: isCharScope ? "char" : "global", charId: targetCharId, enable: true });
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5456,13 +5625,14 @@ function toggleFilterPool(poolId) {
 }
 
 function setVisiblePoolsEnabled(enabled) {
-    const { globalPools, charPools, currentCharId } = getVisibleFilterPools();
+    const selectedCharId = getSelectedFilterManagerCharId();
+    const { globalPools, charPools } = getVisibleFilterPools(selectedCharId);
     if (enabled) {
         const globalIds = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
         for (const p of globalPools) globalIds.add(p.id);
         activeFilterPoolIdsGlobal = [...globalIds];
-        if (currentCharId != null) {
-            const key = String(currentCharId);
+        if (selectedCharId != null) {
+            const key = String(selectedCharId);
             const charIds = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
             for (const p of charPools) charIds.add(p.id);
             if (charIds.size > 0) activeFilterPoolIdsByChar[key] = [...charIds];
@@ -5470,8 +5640,8 @@ function setVisiblePoolsEnabled(enabled) {
     } else {
         const hideGlobal = new Set(globalPools.map(p => p.id));
         activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => !hideGlobal.has(id));
-        if (currentCharId != null) {
-            const key = String(currentCharId);
+        if (selectedCharId != null) {
+            const key = String(selectedCharId);
             const hideChar = new Set(charPools.map(p => p.id));
             const next = normalizePoolIdList(activeFilterPoolIdsByChar[key]).filter(id => !hideChar.has(id));
             if (next.length > 0) activeFilterPoolIdsByChar[key] = next;
@@ -5681,6 +5851,7 @@ async function addContextualFilter() {
     result.enabled = true;
     result.poolIds = normalizePoolIdList(result.poolIds);
     result.seedOverride = normalizeSeedOverride(result.seedOverride);
+    result.sortOrder = getNextContextualFilterSortOrder(result.charId);
     contextualFilters.push(result);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
@@ -5691,9 +5862,13 @@ async function editContextualFilter(id) {
     if (!f) return;
     const result = await showFilterDialog(f);
     if (!result) return;
+    const previousScopeKey = getContextualFilterScopeKey(f);
     Object.assign(f, result);
     f.poolIds = normalizePoolIdList(f.poolIds);
     f.seedOverride = normalizeSeedOverride(f.seedOverride);
+    f.sortOrder = previousScopeKey === getContextualFilterScopeKey(f)
+        ? normalizeContextualFilterSortOrder(f.sortOrder, getNextContextualFilterSortOrder(f.charId, id))
+        : getNextContextualFilterSortOrder(f.charId, id);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5702,7 +5877,7 @@ function deleteContextualFilter(id) {
     const idx = contextualFilters.findIndex(x => x.id === id);
     if (idx === -1) return;
     contextualFilters.splice(idx, 1);
-    saveContextualFilters();
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
@@ -5710,7 +5885,7 @@ function toggleContextualFilter(id) {
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
     f.enabled = !f.enabled;
-    saveContextualFilters();
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
@@ -5736,63 +5911,169 @@ function clearContextualFilters() {
         if (!confirm("Clear all contextual filters?")) return;
         contextualFilters = [];
     }
-    saveContextualFilters();
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
+}
+
+function buildCopiedContextualFilter(filter, { scope = "global", charId = null } = {}) {
+    const targetScope = scope === "char" ? "char" : "global";
+    const targetCharId = targetScope === "char" && charId != null ? String(charId) : null;
+    return {
+        ...JSON.parse(JSON.stringify(filter)),
+        id: generateUUID(),
+        charId: targetCharId,
+        poolIds: getMappedPoolIdsForCopiedFilter(filter.poolIds, { scope: targetScope, charId: targetCharId }),
+        seedOverride: normalizeSeedOverride(filter.seedOverride),
+        sortOrder: getNextContextualFilterSortOrder(targetCharId),
+    };
 }
 
 function duplicateContextualFilter(id) {
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
-    const charId = getCurrentCharId();
-    const newCharId = f.charId ? null : (charId != null ? String(charId) : null);
-    if (!f.charId && newCharId == null) return;
-    contextualFilters.push({
-        ...JSON.parse(JSON.stringify(f)),
-        id: generateUUID(),
-        charId: newCharId
-    });
-    saveContextualFilters();
+    const currentCharId = getCurrentCharId();
+    if (!f.charId && currentCharId == null) {
+        toastr.warning("Open a character chat to duplicate this filter into character scope.");
+        return;
+    }
+    const targetScope = f.charId ? "global" : "char";
+    const targetCharId = targetScope === "char" ? String(currentCharId) : null;
+    contextualFilters.push(buildCopiedContextualFilter(f, { scope: targetScope, charId: targetCharId }));
+    ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
-function getContextualFilterViewState() {
+function copyContextualFilterToScope(id, target = "global") {
+    const filter = contextualFilters.find(entry => entry.id === id);
+    if (!filter) return;
+    if (target === "current") {
+        const currentCharId = getCurrentCharId();
+        if (currentCharId == null) {
+            toastr.warning("Open a character chat to copy this filter into character scope.");
+            return;
+        }
+        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: "char", charId: String(currentCharId) }));
+    } else {
+        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: "global", charId: null }));
+    }
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function copyFilterPoolToCurrentScope(poolId) {
+    const pool = filterPools.find(entry => entry.id === poolId);
+    if (!pool) return;
+    const currentCharId = getCurrentCharId();
+    if (currentCharId == null) {
+        toastr.warning("Open a character chat to copy this pool into character scope.");
+        return;
+    }
+    const existing = findFilterPoolByName(pool.name, { scope: "char", charId: String(currentCharId) });
+    ensureFilterPoolByName(pool.name, { scope: "char", charId: String(currentCharId), enable: true });
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+    if (existing) {
+        toastr.info(`Pool "${pool.name}" already exists for the current character.`);
+    }
+}
+
+function setContextualFilterManagerScope(value) {
+    filterManagerUiState.selectedScopeCharId = value || FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+    filterManagerUiState.draggedFilterId = null;
+    filterManagerUiState.dropTargetFilterId = null;
+    filterManagerUiState.dropPosition = "after";
+    renderContextualFilters();
+}
+
+function setContextualFilterManagerHideInactive(enabled) {
+    filterManagerUiState.hideInactive = !!enabled;
+    renderContextualFilters();
+}
+
+function clearContextualFilterManagerDragState() {
+    filterManagerUiState.draggedFilterId = null;
+    filterManagerUiState.dropTargetFilterId = null;
+    filterManagerUiState.dropPosition = "after";
+}
+
+function moveContextualFilter(draggedId, targetId, position = "after") {
+    if (!draggedId || !targetId || draggedId === targetId) return;
+
+    const dragged = contextualFilters.find(filter => filter.id === draggedId);
+    const target = contextualFilters.find(filter => filter.id === targetId);
+    if (!dragged || !target) return;
+
+    if (getContextualFilterScopeKey(dragged) !== getContextualFilterScopeKey(target)) {
+        clearContextualFilterManagerDragState();
+        return;
+    }
+    if (getContextualFilterPriorityValue(dragged) !== getContextualFilterPriorityValue(target)) {
+        clearContextualFilterManagerDragState();
+        toastr.info("Drag reordering keeps filters grouped by priority. Drag within the same priority block.");
+        renderContextualFilters();
+        return;
+    }
+
+    const scopeKey = getContextualFilterScopeKey(dragged);
+    const scopedFilters = contextualFilters
+        .filter(filter => getContextualFilterScopeKey(filter) === scopeKey)
+        .sort(compareContextualFilters);
+    const draggedIndex = scopedFilters.findIndex(filter => filter.id === draggedId);
+    if (draggedIndex === -1) return;
+
+    const [draggedFilter] = scopedFilters.splice(draggedIndex, 1);
+    const targetIndex = scopedFilters.findIndex(filter => filter.id === targetId);
+    if (targetIndex === -1) return;
+    const insertIndex = position === "before" ? targetIndex : targetIndex + 1;
+    scopedFilters.splice(insertIndex, 0, draggedFilter);
+    scopedFilters.forEach((filter, index) => {
+        filter.sortOrder = index;
+    });
+
+    clearContextualFilterManagerDragState();
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+}
+
+function getContextualFiltersSummaryViewState() {
     ensureFilterPoolsState();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
-    const globalFilters = contextualFilters.filter(f => !f.charId);
-    const charFilters = currentCharId != null ? contextualFilters.filter(f => f.charId && String(f.charId) === String(currentCharId)) : [];
-    const otherCount = contextualFilters.filter(f => f.charId && (!currentCharId || String(f.charId) !== String(currentCharId))).length;
+    const globalFilters = contextualFilters.filter(f => !f.charId).sort(compareContextualFilters);
+    const charFilters = currentCharId != null
+        ? contextualFilters.filter(f => f.charId && String(f.charId) === String(currentCharId)).sort(compareContextualFilters)
+        : [];
     const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
-    const { globalPools, charPools } = getVisibleFilterPools();
+    const { globalPools, charPools } = getVisibleFilterPools(currentCharId);
     const visibleFilters = [...globalFilters, ...charFilters];
-    const activeVisibleCount = visibleFilters.filter(f => {
-        if (!f?.enabled) return false;
-        const poolIds = normalizePoolIdList(f.poolIds);
-        return !poolIds.length ? enabledPoolIds.has(DEFAULT_FILTER_POOL_ID) : poolIds.some(id => enabledPoolIds.has(id));
-    }).length;
-    const seededFilterCount = contextualFilters.filter(f => normalizeSeedOverride(f?.seedOverride) != null).length;
+    const activeVisibleCount = visibleFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds)).length;
+    const seededFilterCount = visibleFilters.filter(filter => normalizeSeedOverride(filter?.seedOverride) != null).length;
+    const otherScopeCount = getContextualFilterScopeOptions().filter(option =>
+        option.value !== FILTER_MANAGER_SCOPE_CURRENT &&
+        option.value !== FILTER_MANAGER_SCOPE_GLOBAL_ONLY
+    ).length;
     return {
         currentCharId,
         charName,
-        globalFilters,
-        charFilters,
-        otherCount,
         enabledPoolIds,
         globalPools,
         charPools,
         visibleFilters,
         activeVisibleCount,
         seededFilterCount,
+        otherScopeCount,
     };
 }
 
-function renderContextualFiltersSummary(container, viewState = getContextualFilterViewState()) {
+function renderContextualFiltersSummary(container, viewState = getContextualFiltersSummaryViewState()) {
     if (!container) return;
     const totalPools = viewState.globalPools.length + viewState.charPools.length;
     const scopeLabel = viewState.currentCharId != null ? (viewState.charName || "Current character") : "Global-only context";
-    const hiddenNote = viewState.otherCount > 0
-        ? `${viewState.otherCount} other character filter(s) are hidden from this summary.`
-        : "All filters shown here belong to the current scope.";
+    const hiddenNote = viewState.otherScopeCount > 0
+        ? `Manage Filters can browse ${viewState.otherScopeCount} ${viewState.currentCharId != null ? "other " : ""}character scope(s) without switching chats.`
+        : (viewState.currentCharId != null
+            ? "All filters shown here belong to the current scope."
+            : "This summary is showing global filters only.");
     container.innerHTML = `
         <div class="qig-filter-summary">
             <div class="qig-filter-summary-grid">
@@ -5817,7 +6098,65 @@ function renderContextualFiltersSummary(container, viewState = getContextualFilt
         </div>`;
 }
 
+function getContextualFilterManagerViewState() {
+    ensureFilterPoolsState();
+    const scopeOptions = getContextualFilterScopeOptions();
+    const selectedScopeValue = ensureContextualFilterManagerScopeSelection(scopeOptions);
+    const currentCharId = getCurrentCharId();
+    const currentCharKey = currentCharId != null ? String(currentCharId) : null;
+    const viewedCharId = getSelectedFilterManagerCharId(selectedScopeValue);
+    const knownNames = getKnownFilterScopeCharacterMap();
+    const viewedCharName = viewedCharId != null ? getCharacterNameForFilters(viewedCharId, knownNames) : null;
+    const isViewingCurrentCharScope = viewedCharId != null && currentCharKey != null && viewedCharId === currentCharKey;
+    const enabledPoolIds = getEnabledPoolIdsForScope(viewedCharId);
+    const { globalPools, charPools } = getVisibleFilterPools(viewedCharId);
+    const globalFilters = contextualFilters.filter(filter => !filter.charId).sort(compareContextualFilters);
+    const charFilters = viewedCharId != null
+        ? contextualFilters.filter(filter => filter.charId && String(filter.charId) === viewedCharId).sort(compareContextualFilters)
+        : [];
+
+    const displayGlobalPools = filterManagerUiState.hideInactive
+        ? globalPools.filter(pool => enabledPoolIds.has(pool.id))
+        : globalPools;
+    const displayCharPools = filterManagerUiState.hideInactive
+        ? charPools.filter(pool => enabledPoolIds.has(pool.id))
+        : charPools;
+    const displayGlobalFilters = filterManagerUiState.hideInactive
+        ? globalFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds))
+        : globalFilters;
+    const displayCharFilters = filterManagerUiState.hideInactive
+        ? charFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds))
+        : charFilters;
+
+    return {
+        scopeOptions,
+        selectedScopeValue,
+        currentCharId: currentCharKey,
+        viewedCharId,
+        viewedCharName,
+        isViewingCurrentCharScope,
+        isBrowsingOtherChar: viewedCharId != null && !isViewingCurrentCharScope,
+        enabledPoolIds,
+        hideInactive: !!filterManagerUiState.hideInactive,
+        globalPools,
+        charPools,
+        displayGlobalPools,
+        displayCharPools,
+        globalFilters,
+        charFilters,
+        displayGlobalFilters,
+        displayCharFilters,
+        visibleFilters: [...globalFilters, ...charFilters],
+        displayFilters: [...displayGlobalFilters, ...displayCharFilters],
+        visiblePools: [...globalPools, ...charPools],
+        displayPools: [...displayGlobalPools, ...displayCharPools],
+        activeVisibleCount: [...globalFilters, ...charFilters].filter(filter => isContextualFilterEffective(filter, enabledPoolIds)).length,
+        seededFilterCount: [...globalFilters, ...charFilters].filter(filter => normalizeSeedOverride(filter?.seedOverride) != null).length,
+    };
+}
+
 function showContextualFilterManager() {
+    resetContextualFilterManagerState();
     return createPopup("qig-filter-manager-popup", "Contextual Filters", `
         <div class="qig-filter-manager-shell">
             <div id="qig-filter-manager-actions" class="qig-filter-manager-topbar"></div>
@@ -5836,7 +6175,68 @@ function showContextualFilterManager() {
     }, { popupClass: "manager", contentClass: "qig-popup-content--wide", resizable: false });
 }
 
-function renderContextualFilterManager(popup = document.getElementById("qig-filter-manager-popup"), viewState = getContextualFilterViewState()) {
+function bindContextualFilterManagerDragHandlers(popup) {
+    if (!popup) return;
+    const clearDropClasses = () => {
+        popup.querySelectorAll(".qig-manager-row--drop-before, .qig-manager-row--drop-after").forEach(row => {
+            row.classList.remove("qig-manager-row--drop-before", "qig-manager-row--drop-after");
+        });
+    };
+
+    popup.querySelectorAll(".qig-filter-drag-handle").forEach(handle => {
+        handle.addEventListener("dragstart", (event) => {
+            const draggedId = String(handle.dataset.filterId || "");
+            if (!draggedId) return;
+            filterManagerUiState.draggedFilterId = draggedId;
+            filterManagerUiState.dropTargetFilterId = null;
+            filterManagerUiState.dropPosition = "after";
+            popup.classList.add("qig-filter-manager--dragging");
+            event.dataTransfer.effectAllowed = "move";
+            event.dataTransfer.setData("text/plain", draggedId);
+        });
+
+        handle.addEventListener("dragend", () => {
+            clearDropClasses();
+            popup.classList.remove("qig-filter-manager--dragging");
+            clearContextualFilterManagerDragState();
+        });
+    });
+
+    popup.querySelectorAll(".qig-manager-row[data-filter-id]").forEach(row => {
+        row.addEventListener("dragover", (event) => {
+            const draggedId = filterManagerUiState.draggedFilterId;
+            const targetId = String(row.dataset.filterId || "");
+            if (!draggedId || !targetId || draggedId === targetId) return;
+
+            const dragged = contextualFilters.find(filter => filter.id === draggedId);
+            const target = contextualFilters.find(filter => filter.id === targetId);
+            if (!dragged || !target) return;
+            if (getContextualFilterScopeKey(dragged) !== getContextualFilterScopeKey(target)) return;
+            if (getContextualFilterPriorityValue(dragged) !== getContextualFilterPriorityValue(target)) return;
+
+            event.preventDefault();
+            const bounds = row.getBoundingClientRect();
+            const position = event.clientY < bounds.top + bounds.height / 2 ? "before" : "after";
+            filterManagerUiState.dropTargetFilterId = targetId;
+            filterManagerUiState.dropPosition = position;
+            clearDropClasses();
+            row.classList.add(position === "before" ? "qig-manager-row--drop-before" : "qig-manager-row--drop-after");
+        });
+
+        row.addEventListener("drop", (event) => {
+            event.preventDefault();
+            const draggedId = filterManagerUiState.draggedFilterId;
+            const targetId = String(row.dataset.filterId || "");
+            if (!draggedId || !targetId) return;
+            const position = filterManagerUiState.dropPosition || "after";
+            clearDropClasses();
+            popup.classList.remove("qig-filter-manager--dragging");
+            moveContextualFilter(draggedId, targetId, position);
+        });
+    });
+}
+
+function renderContextualFilterManager(popup = document.getElementById("qig-filter-manager-popup"), viewState = getContextualFilterManagerViewState()) {
     if (!popup) return;
     const actionContainer = popup.querySelector("#qig-filter-manager-actions");
     const poolsContainer = popup.querySelector("#qig-filter-manager-pools");
@@ -5844,12 +6244,21 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
     if (!actionContainer || !poolsContainer || !filtersContainer) return;
 
     const renderScopeBadge = (scope, title) => `<span class="qig-scope-badge ${scope === "global" ? "qig-scope-badge--global" : "qig-scope-badge--char"}" title="${escapeHtml(title)}">${scope === "global" ? "G" : "C"}</span>`;
+    const formatSectionTitle = (label, shown, total) => `${label} (${shown}${shown !== total ? `/${total}` : ""})`;
 
     const renderPoolRow = (pool) => {
         const isActive = viewState.enabledPoolIds.has(pool.id);
         const assignedCount = contextualFilters.filter(f => normalizePoolIdList(f.poolIds).includes(pool.id)).length;
         const canDelete = pool.id !== DEFAULT_FILTER_POOL_ID;
-        return `<div class="qig-manager-row">
+        const isEditable = pool.scope === "global" || viewState.isViewingCurrentCharScope;
+        if (!isEditable) {
+            return `<div class="qig-manager-row qig-manager-row--readonly ${isActive ? "" : "qig-manager-row--dimmed"}">
+                <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""} qig-manager-main-button--readonly" title="Browse mode: copy this pool into the current character scope">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
+                ${renderScopeBadge(pool.scope, pool.scope === "global" ? "Global pool" : "Character pool")}
+                ${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyFilterPoolToCurrentScope('${escapeHtml(pool.id)}')" title="Copy pool to the current character">Copy to Current</button>` : `<span class="qig-manager-muted-inline">Read-only</span>`}
+            </div>`;
+        }
+        return `<div class="qig-manager-row ${isActive ? "" : "qig-manager-row--dimmed"}">
             <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""}" onclick="toggleFilterPool('${escapeHtml(pool.id)}')" title="Toggle pool">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
             ${renderScopeBadge(pool.scope, pool.scope === "global" ? "Global pool" : "Character pool")}
             <button class="menu_button qig-manager-icon-button" onclick="renameFilterPool('${escapeHtml(pool.id)}')" title="Rename pool">✎</button>
@@ -5859,10 +6268,10 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
 
     const renderRow = (f) => {
         const eName = escapeHtml(f.name);
-        const eDesc = escapeHtml(f.description || '');
-        const eKeywords = escapeHtml(f.keywords || '');
-        const eRemovePos = escapeHtml(f.removePositive || '');
-        const eRemoveNeg = escapeHtml(f.removeNegative || '');
+        const eDesc = escapeHtml(f.description || "");
+        const eKeywords = escapeHtml(f.keywords || "");
+        const eRemovePos = escapeHtml(f.removePositive || "");
+        const eRemoveNeg = escapeHtml(f.removeNegative || "");
         const eId = escapeHtml(f.id);
         const eMode = escapeHtml(f.matchMode);
         const eDetail = f.matchMode === "LLM" ? eDesc : eKeywords;
@@ -5874,8 +6283,7 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         const poolInfo = poolNames.length ? `Pools: ${poolNames.join(", ")}` : `Pools: ${DEFAULT_FILTER_POOL_NAME}`;
         const ePoolInfo = escapeHtml(poolInfo);
         const isGlobal = !f.charId;
-        const enabledByPool = normalizePoolIdList(f.poolIds).some(id => viewState.enabledPoolIds.has(id));
-        const effectiveEnabled = !!f.enabled && enabledByPool;
+        const effectiveEnabled = isContextualFilterEffective(f, viewState.enabledPoolIds);
         const seedOverride = normalizeSeedOverride(f.seedOverride);
         const statusParts = [
             f.matchMode === "LLM" ? "\u{1F916} LLM" : eMode,
@@ -5883,45 +6291,94 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             seedOverride != null ? `seed ${seedOverride}` : "",
             effectiveEnabled ? "" : "off",
         ].filter(Boolean).join(" ");
-        return `<div class="qig-manager-row ${effectiveEnabled ? "" : "qig-manager-row--dimmed"}">` +
+        const isEditable = isGlobal || viewState.isViewingCurrentCharScope;
+        const tooltip = `${eMode}: ${eDetail}\nPriority: ${f.priority}\n${seedOverride != null ? `Seed Override: ${seedOverride}\n` : ""}${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}`;
+        const rowClasses = [
+            "qig-manager-row",
+            effectiveEnabled ? "" : "qig-manager-row--dimmed",
+            isEditable ? "" : "qig-manager-row--readonly",
+            filterManagerUiState.dropTargetFilterId === f.id
+                ? (filterManagerUiState.dropPosition === "before" ? "qig-manager-row--drop-before" : "qig-manager-row--drop-after")
+                : "",
+        ].filter(Boolean).join(" ");
+
+        if (!isEditable) {
+            return `<div class="${rowClasses}">` +
+            `<span class="qig-manager-drag-placeholder" title="Browse mode">⋮⋮</span>` +
+            renderScopeBadge("char", "Character filter") +
+            `<button class="menu_button qig-manager-main-button qig-manager-main-button--readonly" title="${tooltip}">${eName}</button>` +
+            `<span class="qig-filter-status">${escapeHtml(statusParts)}</span>` +
+            `${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'current')" title="Copy filter to the current character">Copy to Current</button>` : ""}` +
+            `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'global')" title="Copy filter to global scope">Copy to Global</button>` +
+            `</div>`;
+        }
+
+        return `<div class="${rowClasses}" data-filter-id="${eId}">` +
+        `<button class="menu_button qig-manager-icon-button qig-filter-drag-handle" type="button" draggable="true" data-filter-id="${eId}" title="Drag to reorder filters with the same priority">⋮⋮</button>` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
         renderScopeBadge(isGlobal ? "global" : "char", isGlobal ? "Global filter" : "Character filter") +
-        `<button class="menu_button qig-manager-main-button" onclick="editContextualFilter('${eId}')" title="${eMode}: ${eDetail}\nPriority: ${f.priority}\n${seedOverride != null ? `Seed Override: ${seedOverride}\n` : ""}${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}">${eName}</button>` +
+        `<button class="menu_button qig-manager-main-button" onclick="editContextualFilter('${eId}')" title="${tooltip}">${eName}</button>` +
         `<span class="qig-filter-status">${escapeHtml(statusParts)}</span>` +
-        `<button class="menu_button qig-manager-icon-button" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? 'character' : 'global'} scope">\u29C9</button>` +
+        `<button class="menu_button qig-manager-icon-button" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? "character" : "global"} scope">\u29C9</button>` +
         `<button class="menu_button qig-manager-icon-button" onclick="deleteContextualFilter('${eId}')" title="Delete filter">×</button>` +
         `</div>`;
     };
 
     let poolHtml = "";
     if (viewState.globalPools.length) {
-        poolHtml += `<div class="qig-manager-section-title">Global Pools (${viewState.globalPools.length})</div>`;
-        poolHtml += viewState.globalPools.map(renderPoolRow).join("");
+        poolHtml += `<div class="qig-manager-section-title">${formatSectionTitle("Global Pools", viewState.displayGlobalPools.length, viewState.globalPools.length)}</div>`;
+        poolHtml += viewState.displayGlobalPools.map(renderPoolRow).join("");
     }
     if (viewState.charPools.length) {
-        poolHtml += `<div class="qig-manager-section-title">${escapeHtml(viewState.charName || "Character")} Pools (${viewState.charPools.length})</div>`;
-        poolHtml += viewState.charPools.map(renderPoolRow).join("");
+        poolHtml += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(`${viewState.viewedCharName || "Character"} Pools`, viewState.displayCharPools.length, viewState.charPools.length))}</div>`;
+        poolHtml += viewState.displayCharPools.map(renderPoolRow).join("");
     }
     if (!poolHtml) poolHtml = `<div class="qig-help">No pools available yet. Create one from the toolbar above.</div>`;
 
     let html = "";
     if (viewState.globalFilters.length) {
-        html += `<div class="qig-manager-section-title">Global Filters (${viewState.globalFilters.length})</div>`;
-        html += viewState.globalFilters.map(renderRow).join("");
+        html += `<div class="qig-manager-section-title">${formatSectionTitle("Global Filters", viewState.displayGlobalFilters.length, viewState.globalFilters.length)}</div>`;
+        html += viewState.displayGlobalFilters.map(renderRow).join("");
     }
     if (viewState.charFilters.length) {
-        html += `<div class="qig-manager-section-title">${escapeHtml(viewState.charName || "Character")} Filters (${viewState.charFilters.length})</div>`;
-        html += viewState.charFilters.map(renderRow).join("");
+        html += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(`${viewState.viewedCharName || "Character"} Filters`, viewState.displayCharFilters.length, viewState.charFilters.length))}</div>`;
+        html += viewState.displayCharFilters.map(renderRow).join("");
     }
-    if (viewState.otherCount > 0) {
-        html += `<div class="qig-manager-muted">${viewState.otherCount} filter(s) for other characters are hidden here.</div>`;
+    if (!viewState.displayFilters.length && viewState.visibleFilters.length && viewState.hideInactive) {
+        html += `<div class="qig-manager-muted">All filters in this view are currently inactive.</div>`;
     }
-
     if (!html) {
         html = `<div class="qig-help">No filters yet. Add one to get started.</div>`;
     }
 
+    const scopeOptionsHtml = viewState.scopeOptions.map(option => `
+        <option value="${escapeHtml(String(option.value))}" ${String(option.value) === String(viewState.selectedScopeValue) ? "selected" : ""}>
+            ${escapeHtml(option.label)}
+        </option>
+    `).join("");
+    const scopeSummary = viewState.viewedCharId != null
+        ? `${escapeHtml(viewState.viewedCharName || "Character")} + global`
+        : "Global only";
+    const browseSummary = viewState.isBrowsingOtherChar
+        ? ` Browsing another character is read-only; use copy buttons to bring items into the current/global scope.`
+        : "";
+    const hiddenSummary = viewState.hideInactive && viewState.displayFilters.length !== viewState.visibleFilters.length
+        ? ` Showing ${viewState.displayFilters.length} after hiding inactive rows.`
+        : "";
+
     actionContainer.innerHTML = `
+        <div class="qig-filter-manager-controls">
+            <label class="qig-filter-manager-scope">
+                <span>Scope</span>
+                <select id="qig-filter-manager-scope" onchange="setContextualFilterManagerScope(this.value)">
+                    ${scopeOptionsHtml}
+                </select>
+            </label>
+            <label class="checkbox_label qig-filter-manager-hide-inactive">
+                <input type="checkbox" ${viewState.hideInactive ? "checked" : ""} onchange="setContextualFilterManagerHideInactive(this.checked)">
+                <span>Hide inactive</span>
+            </label>
+        </div>
         <div class="qig-filter-manager-actions">
             <button class="menu_button" onclick="addFilterPoolGlobal()">+ Global Pool</button>
             <button class="menu_button" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
@@ -5931,19 +6388,19 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             <button class="menu_button" onclick="clearContextualFilters()">Clear All</button>
         </div>
         <div class="qig-filter-manager-summary">
-            ${viewState.visibleFilters.length} visible filter(s), ${viewState.activeVisibleCount} active in the current context, ${viewState.seededFilterCount} with seed overrides.
+            Viewing ${scopeSummary}. ${viewState.visibleFilters.length} filter(s), ${viewState.activeVisibleCount} active, ${viewState.seededFilterCount} with seed overrides.${hiddenSummary}${browseSummary}
         </div>`;
     poolsContainer.innerHTML = poolHtml;
     filtersContainer.innerHTML = html;
+    bindContextualFilterManagerDragHandlers(popup);
 }
 
 function renderContextualFilters() {
-    const viewState = getContextualFilterViewState();
     const container = document.getElementById("qig-contextual-filters");
-    if (container) renderContextualFiltersSummary(container, viewState);
+    if (container) renderContextualFiltersSummary(container, getContextualFiltersSummaryViewState());
     const popup = document.getElementById("qig-filter-manager-popup");
     if (popup && popup.style.display !== "none") {
-        renderContextualFilterManager(popup, viewState);
+        renderContextualFilterManager(popup, getContextualFilterManagerViewState());
     }
 }
 
@@ -6177,7 +6634,11 @@ window.deleteContextualFilter = deleteContextualFilter;
 window.toggleContextualFilter = toggleContextualFilter;
 window.clearContextualFilters = clearContextualFilters;
 window.duplicateContextualFilter = duplicateContextualFilter;
+window.copyContextualFilterToScope = copyContextualFilterToScope;
+window.copyFilterPoolToCurrentScope = copyFilterPoolToCurrentScope;
 window.showContextualFilterManager = showContextualFilterManager;
+window.setContextualFilterManagerScope = setContextualFilterManagerScope;
+window.setContextualFilterManagerHideInactive = setContextualFilterManagerHideInactive;
 window.addFilterPoolGlobal = () => addFilterPool("global");
 window.addFilterPoolForCurrentChar = () => addFilterPool("char");
 window.renameFilterPool = renameFilterPool;
@@ -6257,6 +6718,126 @@ function getCurrentCharName() {
     if (ctx?.characterId == null) return null;
     const char = ctx.characters?.[ctx.characterId];
     return char?.name || char?.avatar || null;
+}
+
+function getKnownFilterScopeCharacterMap(ctx = getContext()) {
+    const known = new Map();
+    for (const entry of getContextCharactersList(ctx)) {
+        if (!entry?.id) continue;
+        const key = String(entry.id);
+        const name = String(entry.name || entry.avatar || `Character ${key}`).trim();
+        if (!known.has(key) && name) known.set(key, name);
+    }
+
+    const profile = resolveChatProfileContext(ctx);
+    profile.charIds.forEach((charId, index) => {
+        const key = String(charId);
+        if (known.has(key)) return;
+        const name = String(profile.charNames[index] || `Character ${key}`).trim();
+        if (name) known.set(key, name);
+    });
+
+    if (ctx?.characterId != null) {
+        const key = String(ctx.characterId);
+        if (!known.has(key)) {
+            known.set(key, String(getCurrentCharName() || `Character ${key}`));
+        }
+    }
+
+    return known;
+}
+
+function getCharacterNameForFilters(charId, knownMap = getKnownFilterScopeCharacterMap()) {
+    const key = String(charId ?? "").trim();
+    if (!key) return "Character";
+    return knownMap.get(key) || `Character ${key}`;
+}
+
+function getDefaultFilterManagerScopeValue() {
+    return getCurrentCharId() != null ? FILTER_MANAGER_SCOPE_CURRENT : FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+}
+
+function getSelectedFilterManagerCharId(selectedScopeValue = filterManagerUiState.selectedScopeCharId) {
+    if (selectedScopeValue === FILTER_MANAGER_SCOPE_CURRENT) {
+        const currentCharId = getCurrentCharId();
+        return currentCharId != null ? String(currentCharId) : null;
+    }
+    if (selectedScopeValue == null || selectedScopeValue === FILTER_MANAGER_SCOPE_GLOBAL_ONLY || selectedScopeValue === "") {
+        return null;
+    }
+    return String(selectedScopeValue);
+}
+
+function resetContextualFilterManagerState() {
+    filterManagerUiState = {
+        selectedScopeCharId: getDefaultFilterManagerScopeValue(),
+        hideInactive: false,
+        draggedFilterId: null,
+        dropTargetFilterId: null,
+        dropPosition: "after",
+    };
+}
+
+function getContextualFilterScopeOptions() {
+    const currentCharId = getCurrentCharId();
+    const currentKey = currentCharId != null ? String(currentCharId) : null;
+    const nameMap = getKnownFilterScopeCharacterMap();
+    const otherCharIds = new Set();
+
+    for (const filter of contextualFilters) {
+        if (filter?.charId != null && filter.charId !== "") {
+            otherCharIds.add(String(filter.charId));
+        }
+    }
+    for (const pool of filterPools) {
+        if (pool?.scope === "char" && pool.charId != null && pool.charId !== "") {
+            otherCharIds.add(String(pool.charId));
+        }
+    }
+
+    const options = [];
+    if (currentKey != null) {
+        options.push({
+            value: FILTER_MANAGER_SCOPE_CURRENT,
+            charId: currentKey,
+            label: `Current: ${getCharacterNameForFilters(currentKey, nameMap)}`,
+            isCurrent: true,
+        });
+    }
+
+    options.push({
+        value: FILTER_MANAGER_SCOPE_GLOBAL_ONLY,
+        charId: null,
+        label: "Global only",
+        isCurrent: false,
+    });
+
+    const otherOptions = [...otherCharIds]
+        .filter(charId => charId !== currentKey)
+        .map(charId => ({
+            value: charId,
+            charId,
+            label: getCharacterNameForFilters(charId, nameMap),
+            isCurrent: false,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+
+    return [...options, ...otherOptions];
+}
+
+function ensureContextualFilterManagerScopeSelection(scopeOptions = getContextualFilterScopeOptions()) {
+    const validValues = new Set(scopeOptions.map(option => String(option.value)));
+    const currentSelection = String(filterManagerUiState.selectedScopeCharId ?? "");
+    if (validValues.has(currentSelection)) return filterManagerUiState.selectedScopeCharId;
+
+    const defaultValue = getDefaultFilterManagerScopeValue();
+    if (validValues.has(String(defaultValue))) {
+        filterManagerUiState.selectedScopeCharId = defaultValue;
+        return filterManagerUiState.selectedScopeCharId;
+    }
+
+    filterManagerUiState.selectedScopeCharId = scopeOptions[0]?.value || FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+    return filterManagerUiState.selectedScopeCharId;
 }
 
 function saveCharSettings() {
@@ -7673,6 +8254,10 @@ function createUI() {
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
                         <small style="opacity:0.6;font-size:10px;">Profiles save provider config · Templates save prompt text · Presets save all settings</small>
+                        <hr style="margin:8px 0;opacity:0.12;">
+                        <small style="opacity:0.7;">Contextual filters live with prompt authoring now. Use the manager to reorder filters, browse other character scopes, and copy filters or pools without switching chats.</small>
+                        <div id="qig-contextual-filters" style="margin:6px 0 4px;"></div>
+                        <button id="qig-manage-filters-btn" class="menu_button" style="padding:4px 8px;">Manage Filters</button>
                     </div>
                 </div>
                 <label>Negative Prompt</label>
@@ -7744,19 +8329,6 @@ function createUI() {
                     <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                         <label>Custom LLM Instruction</label>
                         <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
-                    </div>
-                </div>
-
-                <hr style="margin:8px 0;opacity:0.2;">
-                <div class="inline-drawer" style="margin:4px 0;">
-                    <div class="inline-drawer-toggle inline-drawer-header">
-                        <b style="font-size:12px;">Contextual Filters</b>
-                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-                    </div>
-                    <div class="inline-drawer-content">
-                        <small style="opacity:0.7;">Open a larger manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
-                        <div id="qig-contextual-filters" style="margin:4px 0;"></div>
-                        <button id="qig-manage-filters-btn" class="menu_button" style="padding:4px 8px;">Manage Filters</button>
                     </div>
                 </div>
                 <div class="inline-drawer" style="margin:4px 0;">

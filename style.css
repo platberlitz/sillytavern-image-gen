@@ -356,6 +356,34 @@
     gap: 8px;
 }
 
+.qig-filter-manager-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 10px;
+}
+
+.qig-filter-manager-scope {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: min(280px, 100%);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    opacity: 0.78;
+    text-transform: uppercase;
+}
+
+.qig-filter-manager-scope select {
+    min-width: 220px;
+}
+
+.qig-filter-manager-hide-inactive {
+    margin-left: auto;
+    white-space: nowrap;
+}
+
 .qig-filter-manager-actions .menu_button {
     padding: 4px 10px;
     font-size: 11px;
@@ -414,10 +442,25 @@
     gap: 6px;
     margin-bottom: 6px;
     font-size: 11px;
+    padding: 2px 0;
+    border-top: 2px solid transparent;
+    border-bottom: 2px solid transparent;
 }
 
 .qig-manager-row--dimmed {
     opacity: 0.72;
+}
+
+.qig-manager-row--readonly {
+    opacity: 0.88;
+}
+
+.qig-manager-row--drop-before {
+    border-top-color: var(--SmartThemeQuoteColor);
+}
+
+.qig-manager-row--drop-after {
+    border-bottom-color: var(--SmartThemeQuoteColor);
 }
 
 .qig-manager-main-button {
@@ -431,9 +474,38 @@
     border-color: var(--SmartThemeQuoteColor);
 }
 
+.qig-manager-main-button--readonly {
+    cursor: default;
+}
+
 .qig-manager-icon-button {
     padding: 4px 6px;
     font-size: 11px;
+}
+
+.qig-filter-drag-handle {
+    cursor: grab;
+    user-select: none;
+}
+
+.qig-filter-manager--dragging .qig-filter-drag-handle {
+    cursor: grabbing;
+}
+
+.qig-manager-drag-placeholder {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+    padding: 4px 0;
+    font-size: 12px;
+    opacity: 0.42;
+}
+
+.qig-manager-copy-button {
+    padding: 4px 8px;
+    font-size: 10px;
+    white-space: nowrap;
 }
 
 .qig-filter-status {
@@ -448,6 +520,12 @@
     font-size: 10px;
     font-style: italic;
     opacity: 0.58;
+}
+
+.qig-manager-muted-inline {
+    font-size: 10px;
+    opacity: 0.6;
+    white-space: nowrap;
 }
 
 /* Resize handle */
@@ -551,6 +629,21 @@
 
     .qig-manager-row {
         flex-wrap: wrap;
+    }
+
+    .qig-filter-manager-controls {
+        align-items: stretch;
+    }
+
+    .qig-filter-manager-scope,
+    .qig-filter-manager-hide-inactive {
+        width: 100%;
+        min-width: 0;
+        margin-left: 0;
+    }
+
+    .qig-manager-copy-button {
+        flex: 1 1 auto;
     }
 
     .qig-filter-status {
