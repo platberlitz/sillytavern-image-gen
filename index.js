@@ -426,6 +426,7 @@ function resolveRandomSeed(seedValue = -1, target = null) {
 }
 
 function normalizeSeedOverride(seedValue) {
+    if (seedValue == null || seedValue === "") return null;
     const numericSeed = Number(seedValue);
     if (!Number.isFinite(numericSeed) || numericSeed < 0) return null;
     return Math.floor(numericSeed);
@@ -8254,9 +8255,17 @@ function createUI() {
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
                         <small style="opacity:0.6;font-size:10px;">Profiles save provider config · Templates save prompt text · Presets save all settings</small>
-                        <hr style="margin:8px 0;opacity:0.12;">
-                        <small style="opacity:0.7;">Contextual filters live with prompt authoring now. Use the manager to reorder filters, browse other character scopes, and copy filters or pools without switching chats.</small>
-                        <div id="qig-contextual-filters" style="margin:6px 0 4px;"></div>
+                    </div>
+                </div>
+                <hr style="margin:8px 0;opacity:0.2;">
+                <div class="inline-drawer" style="margin:4px 0;">
+                    <div class="inline-drawer-toggle inline-drawer-header">
+                        <b style="font-size:12px;">Contextual Filters</b>
+                        <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                    </div>
+                    <div class="inline-drawer-content">
+                        <small style="opacity:0.7;">Open a larger manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
+                        <div id="qig-contextual-filters" style="margin:4px 0;"></div>
                         <button id="qig-manage-filters-btn" class="menu_button" style="padding:4px 8px;">Manage Filters</button>
                     </div>
                 </div>
