@@ -428,7 +428,7 @@ function resolveRandomSeed(seedValue = -1, target = null) {
 function normalizeSeedOverride(seedValue) {
     if (seedValue == null || seedValue === "") return null;
     const numericSeed = Number(seedValue);
-    if (!Number.isFinite(numericSeed) || numericSeed < 0) return null;
+    if (!Number.isFinite(numericSeed) || numericSeed <= 0) return null;
     return Math.floor(numericSeed);
 }
 
@@ -8266,7 +8266,6 @@ function createUI() {
                     <div class="inline-drawer-content">
                         <small style="opacity:0.7;">Open a larger manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
                         <div id="qig-contextual-filters" style="margin:4px 0;"></div>
-                        <button id="qig-manage-filters-btn" class="menu_button" style="padding:4px 8px;">Manage Filters</button>
                     </div>
                 </div>
                 <label>Negative Prompt</label>
@@ -8540,7 +8539,6 @@ function createUI() {
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
-    document.getElementById("qig-manage-filters-btn").onclick = showContextualFilterManager;
     document.getElementById("qig-add-replacement-btn").onclick = addPromptReplacement;
     renderTemplates();
     renderPresets();
@@ -9507,7 +9505,7 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
-        _paletteInjectActive = false;
+        setTimeout(() => { _paletteInjectActive = false; }, 500);
         endGeneration();
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
@@ -9824,23 +9822,32 @@ async function processInjectMessage(messageText, messageIndex) {
         if (!message) return;
 
         let detection;
+        let matches;
         try {
-            detection = extractInjectPromptsFromMessage(message, s);
+            // Try extracting from the raw text captured at event time (before ST regex processing)
+            const rawMatches = extractInjectMatchesFromText(messageText, getInjectRegexPattern(s));
+            if (rawMatches.length > 0) {
+                // Use raw text matches — ST regex may have already cleaned the message object
+                matches = [...new Set(rawMatches)];
+            } else {
+                // Fall back to multi-source extraction from the message object
+                detection = extractInjectPromptsFromMessage(message, s);
+                matches = detection.matches.map(match => match.prompt);
+            }
         } catch (e) {
             log(`Inject: Invalid regex: ${e.message}`);
             return;
         }
 
-        const matches = detection.matches.map(match => match.prompt);
         if (matches.length === 0) return;
 
-        const sourceSummary = detection.scannedSources.join(", ") || "message";
+        const sourceSummary = detection ? (detection.scannedSources.join(", ") || "message") : "raw message text";
         log(`Inject: Found ${matches.length} image tag(s) in ${sourceSummary}`);
 
         // Clean tags from displayed message if enabled
         if (s.injectAutoClean !== false && idx >= 0 && chat?.[idx]) {
             try {
-                if (cleanInjectTagsFromMessage(chat[idx], detection.regexPattern)) {
+                if (cleanInjectTagsFromMessage(chat[idx], detection?.regexPattern || getInjectRegexPattern(s))) {
                     await ctx.saveChat();
                     if (typeof ctx.reloadCurrentChat === 'function') {
                         await ctx.reloadCurrentChat();
@@ -9989,7 +9996,7 @@ async function processInjectMessage(messageText, messageIndex) {
         // Expire this index after a delay so future messages at the same index can be processed,
         // even when returning early (invalid regex, no matches, disabled mode, etc).
         if (shouldReleaseIndex) {
-            setTimeout(() => _processedInjectIndices.delete(messageIndex), 15000);
+            setTimeout(() => _processedInjectIndices.delete(messageIndex), 120000);
         }
     }
 }
@@ -10059,7 +10066,7 @@ jQuery(function () {
                         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
                         if (idx < 0 || _processedInjectIndices.has(idx)) return;
                         const msg = chat?.[idx];
-                        if (msg && !msg.is_user) {
+                        if (msg && !msg.is_user && !msg.extra?.inline_image) {
                             _processedInjectIndices.add(idx);
                             setTimeout(() => processInjectMessage(msg.mes || "", idx), 300);
                         }
