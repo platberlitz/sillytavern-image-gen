@@ -106,6 +106,7 @@ const defaultSettings = {
     seed: -1,
     autoGenerate: false,
     autoInsert: false,
+    insertAsHiddenReply: false,
     saveToServer: false,
     saveToServerEmbedMetadata: true,
     disablePaletteButton: false,
@@ -4469,8 +4470,41 @@ async function insertImageAsNewMessage(imageUrl) {
     await ctx.saveChat();
 }
 
+async function insertImageAsHiddenReply(imageUrl) {
+    const ctx = getContext();
+    const chat = ctx.chat;
+    if (!chat) throw new Error("No active chat");
+
+    let url = imageUrl;
+    if (imageUrl.startsWith('blob:')) {
+        url = await blobUrlToDataUrl(imageUrl);
+    }
+
+    const title = lastPrompt || 'Generated Image';
+    const message = {
+        name: ctx.name2 || "Assistant",
+        is_user: false,
+        is_system: true,
+        send_date: new Date().toISOString(),
+        mes: "",
+        extra: {
+            media: [{ url, type: 'image', title, source: 'generated' }],
+            media_display: 'gallery',
+            media_index: 0,
+            inline_image: true,
+        },
+    };
+
+    chat.push(message);
+    if (typeof ctx.addOneMessage === 'function') {
+        ctx.addOneMessage(message);
+    }
+    await ctx.saveChat();
+}
+
 async function autoInsertInjectImage(imageUrl, { messageIndex, insertMode } = {}) {
     const mode = insertMode || "replace";
+    if (mode === "hidden") return await insertImageAsHiddenReply(imageUrl);
     if (mode === "new") {
         return await insertImageAsNewMessage(imageUrl);
     }
@@ -4718,8 +4752,13 @@ function displayImage(entryOrUrl, skipGallery) {
         };
         document.getElementById("qig-insert-btn").onclick = async (e) => {
             e.stopPropagation();
+            const s = getSettings();
             try {
-                await insertImageIntoMessage(entry.url);
+                if (s.insertAsHiddenReply) {
+                    await insertImageAsHiddenReply(entry.url);
+                } else {
+                    await insertImageIntoMessage(entry.url);
+                }
                 toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -8462,6 +8501,10 @@ function createUI() {
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
                 </label>
+                <label class="checkbox_label" style="margin-left:16px;opacity:${s.autoInsert ? "1" : "0.6"};">
+                    <input id="qig-insert-hidden-reply" type="checkbox" ${s.insertAsHiddenReply ? "checked" : ""} ${s.autoInsert ? "" : "disabled"}>
+                    <span>Send as hidden reply (prevents payload errors)</span>
+                </label>
                 <label class="checkbox_label" style="margin-top:4px;">
                     <input id="qig-save-to-server" type="checkbox" ${s.saveToServer ? "checked" : ""}>
                     <span>Save images to ST server (persistent)</span>
@@ -9068,6 +9111,15 @@ function createUI() {
     };
     bindCheckbox("qig-auto-generate", "autoGenerate");
     bindCheckbox("qig-auto-insert", "autoInsert");
+    const hiddenReplyEl = document.getElementById("qig-insert-hidden-reply");
+    bindCheckbox("qig-insert-hidden-reply", "insertAsHiddenReply");
+    document.getElementById("qig-auto-insert").addEventListener("change", e => {
+        if (hiddenReplyEl) {
+            hiddenReplyEl.disabled = !e.target.checked;
+            const label = hiddenReplyEl.closest("label");
+            if (label) label.style.opacity = e.target.checked ? "1" : "0.6";
+        }
+    });
     const saveToServerEl = document.getElementById("qig-save-to-server");
     const saveToServerMetaEl = document.getElementById("qig-save-to-server-meta");
     const updateSaveToServerMetaState = () => {
@@ -9480,7 +9532,7 @@ async function generateImageInjectPalette() {
                             addToGallery(results[0]);
                             try {
                                 await autoInsertInjectImage(results[0].url, {
-                                    insertMode: s.injectInsertMode,
+                                    insertMode: s.insertAsHiddenReply ? "hidden" : s.injectInsertMode,
                                 });
                             } catch (err) {
                                 log(`Palette inject: Auto-insert failed: ${err.message}`);
@@ -9618,7 +9670,13 @@ async function generateImage() {
             if (s.autoInsert) {
                 for (const r of results) {
                     addToGallery(r);
-                    try { await insertImageIntoMessage(r.url); } catch (err) {
+                    try {
+                        if (s.insertAsHiddenReply) {
+                            await insertImageAsHiddenReply(r.url);
+                        } else {
+                            await insertImageIntoMessage(r.url);
+                        }
+                    } catch (err) {
                         console.error("[Quick Image Gen] Auto-insert failed:", err);
                     }
                 }
