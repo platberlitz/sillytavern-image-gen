@@ -386,6 +386,7 @@ let cancelRequestSerial = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
 let _paletteInjectActive = false;
+let _paletteInjectSerial = 0;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
@@ -9109,7 +9110,12 @@ function createUI() {
         saveSettingsDebounced();
         document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
     };
-    bindCheckbox("qig-auto-generate", "autoGenerate");
+    bind("qig-auto-generate", "autoGenerate", false, true, (checked) => {
+        if (!checked && _autoGenTimeout) {
+            clearTimeout(_autoGenTimeout);
+            _autoGenTimeout = null;
+        }
+    });
     bindCheckbox("qig-auto-insert", "autoInsert");
     const hiddenReplyEl = document.getElementById("qig-insert-hidden-reply");
     bindCheckbox("qig-insert-hidden-reply", "insertAsHiddenReply");
@@ -9361,6 +9367,7 @@ function addInputButton() {
 
 async function generateImageInjectPalette() {
     if (isGenerating) return;
+    const mySerial = ++_paletteInjectSerial;
     beginGeneration({ clearPendingAuto: true });
     _paletteInjectActive = true;
     const s = getSettings();
@@ -9532,6 +9539,7 @@ async function generateImageInjectPalette() {
                             addToGallery(results[0]);
                             try {
                                 await autoInsertInjectImage(results[0].url, {
+                                    messageIndex: lastAiMessage?.index,
                                     insertMode: s.insertAsHiddenReply ? "hidden" : s.injectInsertMode,
                                 });
                             } catch (err) {
@@ -9557,8 +9565,10 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
-        setTimeout(() => { _paletteInjectActive = false; }, 500);
         endGeneration();
+        setTimeout(() => {
+            if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
+        }, 2000);
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
     }
@@ -9667,6 +9677,16 @@ async function generateImage() {
                 }
             }
             log(`Generated ${results.length} image(s) successfully`);
+            // Find last non-user message for insertion target
+            const ctx2 = getContext();
+            const lastCharIdx = (() => {
+                const chat = ctx2.chat;
+                if (!chat) return undefined;
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    if (!chat[i]?.is_user) return i;
+                }
+                return undefined;
+            })();
             if (s.autoInsert) {
                 for (const r of results) {
                     addToGallery(r);
@@ -9674,7 +9694,7 @@ async function generateImage() {
                         if (s.insertAsHiddenReply) {
                             await insertImageAsHiddenReply(r.url);
                         } else {
-                            await insertImageIntoMessage(r.url);
+                            await insertImageIntoMessage(r.url, lastCharIdx);
                         }
                     } catch (err) {
                         console.error("[Quick Image Gen] Auto-insert failed:", err);
@@ -10114,8 +10134,9 @@ jQuery(function () {
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
-                    if (_paletteInjectActive) return;
+                    if (_paletteInjectActive || _injectProcessingCount > 0) return;
                     const s = getSettings();
+                    if (!s.autoGenerate) return;
                     // Inject mode: extract image tags from AI response/reasoning
                     // Checked first — if active, skip autoGenerate to prevent double generation
                     if (s.injectEnabled) {
