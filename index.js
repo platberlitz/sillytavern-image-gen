@@ -242,6 +242,7 @@ const defaultSettings = {
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
     comfyScheduler: "normal",
+    comfyTimeout: 300,
     comfyUpscale: false,
     comfyUpscaleModel: "RealESRGAN_x4plus.pth",
     comfyLoras: "",
@@ -513,7 +514,7 @@ const PROVIDER_KEYS = {
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
 
@@ -3364,6 +3365,33 @@ async function genLocal(prompt, negative, s, signal) {
         const seed = resolveRandomSeed(s.seed, s);
         const denoise = parseFloatOr(s.comfyDenoise, 1.0);
         const clipSkip = parseIntOr(s.comfyClipSkip, 1);
+        const comfyTimeoutSeconds = Math.max(10, parseIntOr(s.comfyTimeout, 300));
+
+        async function waitForComfyImage(promptId) {
+            for (let i = 0; i < comfyTimeoutSeconds; i++) {
+                if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
+                await new Promise(r => setTimeout(r, 1000));
+                showStatus(`Generating... (waiting ${i + 1}s)`);
+                let hist;
+                try {
+                    const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
+                    if (!histRes.ok) continue;
+                    hist = await histRes.json();
+                } catch { continue; }
+                const result = hist[promptId];
+                checkComfyResult(result);
+                if (result?.outputs) {
+                    for (const nodeId in result.outputs) {
+                        const output = result.outputs[nodeId];
+                        if (output.images?.[0]) {
+                            const img = output.images[0];
+                            return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
+                        }
+                    }
+                }
+            }
+            throw new Error(`ComfyUI timed out after ${comfyTimeoutSeconds}s`);
+        }
 
         // Check for custom workflow JSON
         if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
@@ -3442,29 +3470,7 @@ async function genLocal(prompt, negative, s, signal) {
                 const data = await res.json();
 
                 const promptId = data.prompt_id;
-                for (let i = 0; i < 120; i++) {
-                    if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-                    await new Promise(r => setTimeout(r, 1000));
-                    showStatus(`Generating... (waiting ${i + 1}s)`);
-                    let hist;
-                    try {
-                        const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
-                        if (!histRes.ok) continue;
-                        hist = await histRes.json();
-                    } catch { continue; }
-                    const result = hist[promptId];
-                    checkComfyResult(result);
-                    if (result?.outputs) {
-                        for (const nodeId in result.outputs) {
-                            const output = result.outputs[nodeId];
-                            if (output.images?.[0]) {
-                                const img = output.images[0];
-                                return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
-                            }
-                        }
-                    }
-                }
-                throw new Error("ComfyUI timeout");
+                return await waitForComfyImage(promptId);
             } catch (e) {
                 if (e instanceof SyntaxError) {
                     log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
@@ -3676,29 +3682,7 @@ async function genLocal(prompt, negative, s, signal) {
         const data = await res.json();
         // Poll for result - find any SaveImage output
         const promptId = data.prompt_id;
-        for (let i = 0; i < 120; i++) {
-            if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-            await new Promise(r => setTimeout(r, 1000));
-            showStatus(`Generating... (waiting ${i + 1}s)`);
-            let hist;
-            try {
-                const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
-                if (!histRes.ok) continue;
-                hist = await histRes.json();
-            } catch { continue; }
-            const result = hist[promptId];
-            checkComfyResult(result);
-            if (result?.outputs) {
-                for (const nodeId in result.outputs) {
-                    const output = result.outputs[nodeId];
-                    if (output.images?.[0]) {
-                        const img = output.images[0];
-                        return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || '')}&type=${img.type || 'output'}`;
-                    }
-                }
-            }
-        }
-        throw new Error("ComfyUI timeout");
+        return await waitForComfyImage(promptId);
     }
 
     // A1111 API
@@ -7534,6 +7518,7 @@ function refreshProviderInputs(provider) {
             ["qig-comfy-denoise", "comfyDenoise"],
             ["qig-comfy-clip", "comfyClipSkip"],
             ["qig-comfy-scheduler", "comfyScheduler"],
+            ["qig-comfy-timeout", "comfyTimeout"],
             ["qig-comfy-upscale", "comfyUpscale"],
             ["qig-comfy-upscale-model", "comfyUpscaleModel"],
             ["qig-comfy-workflow", "comfyWorkflow"],
@@ -7918,6 +7903,9 @@ function createUI() {
                          <label>Scheduler</label>
                          <select id="qig-comfy-scheduler">${COMFY_SCHEDULERS.map(x => `<option value="${x}" ${s.comfyScheduler === x ? "selected" : ""}>${x}</option>`).join("")}</select>
                          <small style="opacity:0.6;font-size:10px;">Noise schedule for the sampler — karras is popular for DPM++, normal for others</small>
+                         <label>Timeout (seconds)</label>
+                         <input id="qig-comfy-timeout" type="number" value="${esc(s.comfyTimeout || 300)}" min="10" max="1800">
+                         <small style="opacity:0.6;font-size:10px;">How long SillyTavern waits for ComfyUI to finish before giving up.</small>
                          <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
                             <input id="qig-comfy-upscale" type="checkbox" ${s.comfyUpscale ? "checked" : ""}>
                             <span>Upscale Output</span>
@@ -8691,6 +8679,7 @@ function createUI() {
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-scheduler", "comfyScheduler");
+    bind("qig-comfy-timeout", "comfyTimeout", true);
     bindCheckbox("qig-comfy-upscale", "comfyUpscale");
     bind("qig-comfy-upscale-model", "comfyUpscaleModel");
     document.getElementById("qig-comfy-upscale").onchange = (e) => {
