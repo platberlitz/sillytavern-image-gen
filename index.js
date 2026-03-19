@@ -9876,6 +9876,7 @@ function onChatCompletionPromptReady(eventData) {
 async function processInjectMessage(messageText, messageIndex) {
     const cancelCheckpoint = getCancelCheckpoint();
     const shouldReleaseIndex = messageIndex !== undefined;
+    let startedGeneration = false;
 
     try {
         _injectProcessingCount++;
@@ -9926,31 +9927,32 @@ async function processInjectMessage(messageText, messageIndex) {
             }
         }
 
+        // Begin generation once for all tags
+        checkAborted(cancelCheckpoint);
+        if (isGenerating) {
+            log("Inject: Waiting for current generation to finish...");
+            await new Promise((resolve, reject) => {
+                let elapsed = 0;
+                const check = setInterval(() => {
+                    elapsed += 500;
+                    if (!isGenerating) { clearInterval(check); resolve(); }
+                    else if (wasCancelRequestedSince(cancelCheckpoint)) {
+                        clearInterval(check);
+                        reject(new DOMException("Generation cancelled by user", "AbortError"));
+                    }
+                    else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
+                }, 500);
+            });
+        }
+        checkAborted(cancelCheckpoint);
+        beginGeneration();
+        startedGeneration = true;
+
         // Generate images for each extracted prompt
         const sceneTextForFilters = getMessages() || "";
         for (const extractedPrompt of matches) {
             const originalSeed = getGenerationSeedValue(s);
-            let startedGeneration = false;
             try {
-                checkAborted(cancelCheckpoint);
-                if (isGenerating) {
-                    log("Inject: Waiting for current generation to finish...");
-                    await new Promise((resolve, reject) => {
-                        let elapsed = 0;
-                        const check = setInterval(() => {
-                            elapsed += 500;
-                            if (!isGenerating) { clearInterval(check); resolve(); }
-                            else if (wasCancelRequestedSince(cancelCheckpoint)) {
-                                clearInterval(check);
-                                reject(new DOMException("Generation cancelled by user", "AbortError"));
-                            }
-                            else if (elapsed >= 60000) { clearInterval(check); reject(new Error("Timed out waiting for generation")); }
-                        }, 500);
-                    });
-                }
-                checkAborted(cancelCheckpoint);
-                beginGeneration();
-                startedGeneration = true;
                 checkAborted(cancelCheckpoint);
                 log(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
                 showStatus("🖼️ Generating inject-mode image...");
@@ -10055,11 +10057,12 @@ async function processInjectMessage(messageText, messageIndex) {
                 }
             } finally {
                 setGenerationSeedValue(s, originalSeed);
-                if (startedGeneration || cancelRequested) endGeneration();
             }
         }
     } finally {
         _injectProcessingCount--;
+        // End generation once after all tags
+        if (startedGeneration || cancelRequested) endGeneration();
         // Expire this index after a delay so future messages at the same index can be processed,
         // even when returning early (invalid regex, no matches, disabled mode, etc).
         if (shouldReleaseIndex) {
