@@ -378,7 +378,7 @@ let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const blobUrls = new Set();
 let batchKeyHandler = null;
-const _processedInjectIndices = new Set();
+const _processedInjectFingerprints = new Map();
 let _injectProcessingCount = 0;
 let currentAbortController = null;
 let _autoGenTimeout = null;
@@ -390,6 +390,7 @@ let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
+const INJECT_FINGERPRINT_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
 const DEFAULT_FILTER_POOL_NAME = "Default";
 const FILTER_MANAGER_SCOPE_CURRENT = "__qig_scope_current__";
@@ -9197,25 +9198,18 @@ function createUI() {
         }
 
         // Find last AI message
-        const lastAiMessage = findLastInjectCandidateMessage(chat);
+        const lastAiMessage = findLastInjectCandidateMessage(chat, s);
         if (!lastAiMessage) {
-            toastr.info("No AI messages found");
+            toastr.info("No AI messages with inject tags found");
             return;
         }
 
-        let detection;
-        try {
-            detection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
-        } catch (e) {
-            toastr.error("Invalid regex: " + e.message);
-            return;
-        }
-
-        const sourceSummary = detection.scannedSources.length > 0 ? detection.scannedSources.join(", ") : "none";
-        const visiblePreview = detection.sources[0]?.text?.substring(0, 200) || "";
-        const result = detection.matches.length > 0
+        const detection = lastAiMessage.runInfo?.detection;
+        const sourceSummary = lastAiMessage.runInfo?.sourceSummary || "none";
+        const visiblePreview = detection?.sources?.[0]?.text?.substring(0, 200) || "";
+        const result = detection && detection.matches.length > 0
             ? `Found ${detection.matches.length} tag(s):\n${detection.matches.map(match => `[${match.sources.join(", ")}] ${match.prompt}`).join("\n")}`
-            : `No tags found in last AI message or reasoning.\n\nScanned sources: ${sourceSummary}\n\nMessage preview:\n${visiblePreview}...\n\nRegex used:\n${detection.regexPattern}`;
+            : `No tags found in last AI message or reasoning.\n\nScanned sources: ${sourceSummary}\n\nMessage preview:\n${visiblePreview}...\n\nRegex used:\n${lastAiMessage.runInfo?.regexPattern || ""}`;
 
         alert(result);
     };
@@ -9361,24 +9355,42 @@ async function generateImageInjectPalette() {
     _paletteInjectActive = true;
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
+    let candidateRunInfo = null;
+    let candidateRunCompleted = false;
+    let ownsCandidateFingerprint = false;
+    let lastAiMessage = null;
 
     try {
         checkAborted(cancelCheckpoint);
         const ctx = getContext();
         const chat = ctx.chat;
         let regexPattern;
-        let lastAiMessage = null;
         let initialDetection = null;
         let matches = [];
 
         try {
             regexPattern = getInjectRegexPattern(s);
-            lastAiMessage = findLastInjectCandidateMessage(chat);
+            lastAiMessage = findLastInjectCandidateMessage(chat, s);
             if (lastAiMessage) {
-                initialDetection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
-                matches = initialDetection.matches.map(match => match.prompt);
+                const nextRunInfo = lastAiMessage.runInfo;
+                const existingRun = getInjectFingerprintEntry(nextRunInfo.fingerprint);
+                if (existingRun) {
+                    logInjectFingerprintSkip("Palette inject", nextRunInfo, existingRun);
+                    toastr.info("Latest inject tags were already processed. Send a new reply or change the tag text to generate again.");
+                    return;
+                }
+                candidateRunInfo = nextRunInfo;
+                setInjectFingerprintState(candidateRunInfo.fingerprint, "processing", {
+                    index: lastAiMessage.index,
+                    source: "palette",
+                });
+                ownsCandidateFingerprint = true;
+                initialDetection = candidateRunInfo.detection;
+                matches = candidateRunInfo.matches;
+                log(`Palette inject: Using message ${lastAiMessage.index} from ${candidateRunInfo.sourceSummary} [${candidateRunInfo.fingerprint}]`);
             }
         } catch (e) {
+            if (ownsCandidateFingerprint) releaseInjectFingerprint(candidateRunInfo?.fingerprint);
             log(`Palette inject: Invalid regex: ${e.message}`);
             toastr.error("Invalid inject regex: " + e.message);
             return;
@@ -9545,6 +9557,9 @@ async function generateImageInjectPalette() {
                 toastr.success(`Palette inject: ${results.length} image(s) generated`);
             }
         }
+        if (ownsCandidateFingerprint) {
+            candidateRunCompleted = true;
+        }
     } catch (e) {
         if (e.name === "AbortError") {
             log("Palette inject: Generation cancelled by user");
@@ -9554,6 +9569,17 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
+        if (candidateRunCompleted && ownsCandidateFingerprint) {
+            setInjectFingerprintState(candidateRunInfo.fingerprint, "completed", {
+                index: lastAiMessage?.index,
+                matchCount: candidateRunInfo.matches.length,
+                source: "palette",
+            });
+            log(`Palette inject: Completed run ${candidateRunInfo.fingerprint}`);
+        }
+        if (!candidateRunCompleted && ownsCandidateFingerprint) {
+            releaseInjectFingerprint(candidateRunInfo?.fingerprint);
+        }
         endGeneration();
         setTimeout(() => {
             if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
@@ -9782,13 +9808,142 @@ function extractInjectPromptsFromMessage(message, settings = getSettings()) {
     };
 }
 
-function findLastInjectCandidateMessage(chat) {
+function normalizeInjectFingerprintText(text) {
+    return typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+}
+
+function hashInjectFingerprintText(text) {
+    const source = String(text || "");
+    let hash = 2166136261;
+    for (let i = 0; i < source.length; i++) {
+        hash ^= source.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function pruneInjectFingerprintRegistry(now = Date.now()) {
+    for (const [fingerprint, entry] of _processedInjectFingerprints.entries()) {
+        if (!entry || entry.expiresAt <= now) {
+            _processedInjectFingerprints.delete(fingerprint);
+        }
+    }
+}
+
+function getInjectFingerprintEntry(fingerprint) {
+    if (!fingerprint) return null;
+    pruneInjectFingerprintRegistry();
+    return _processedInjectFingerprints.get(fingerprint) || null;
+}
+
+function setInjectFingerprintState(fingerprint, status, meta = {}) {
+    if (!fingerprint) return null;
+    const now = Date.now();
+    pruneInjectFingerprintRegistry(now);
+    const entry = {
+        status,
+        updatedAt: now,
+        expiresAt: now + INJECT_FINGERPRINT_TTL_MS,
+        ...meta,
+    };
+    _processedInjectFingerprints.set(fingerprint, entry);
+    return entry;
+}
+
+function releaseInjectFingerprint(fingerprint) {
+    if (fingerprint) _processedInjectFingerprints.delete(fingerprint);
+}
+
+function getInjectChatScopeKey(ctx = (typeof getContext === "function" ? getContext() : null)) {
+    try {
+        if (!ctx) return "chat:unknown";
+        if (ctx.groupId != null) return `group:${ctx.groupId}`;
+        if (ctx.characterId != null) return `char:${ctx.characterId}`;
+        const fallbackName = String(ctx.name2 || "").trim();
+        if (fallbackName) return `name:${fallbackName}`;
+    } catch (e) {
+        log(`Inject: Failed to resolve chat scope: ${e.message}`);
+    }
+    return "chat:unknown";
+}
+
+function buildInjectFingerprint({ message, messageIndex, regexPattern, matches, sourceTexts, mode = "message" }) {
+    const normalizedMatches = [...new Set((matches || []).map(normalizeInjectFingerprintText).filter(Boolean))].sort();
+    const normalizedSourceHashes = [...new Set((sourceTexts || [])
+        .map(normalizeInjectFingerprintText)
+        .filter(Boolean)
+        .map(hashInjectFingerprintText))].sort();
+    const parts = [
+        mode,
+        getInjectChatScopeKey(),
+        Number.isInteger(messageIndex) ? `idx:${messageIndex}` : "idx:none",
+    ];
+    const sendDate = typeof message?.send_date === "string" ? message.send_date.trim() : "";
+    if (sendDate) parts.push(`send:${sendDate}`);
+    if (Number.isInteger(message?.swipe_id)) parts.push(`swipe:${message.swipe_id}`);
+    if (regexPattern) parts.push(`regex:${hashInjectFingerprintText(regexPattern)}`);
+    if (normalizedMatches.length) parts.push(`matches:${normalizedMatches.map(hashInjectFingerprintText).join(",")}`);
+    if (normalizedSourceHashes.length) parts.push(`sources:${normalizedSourceHashes.join(",")}`);
+    return `inject:${hashInjectFingerprintText(parts.join("|"))}`;
+}
+
+function buildInjectRunInfo({ message, messageText = "", messageIndex, settings = getSettings(), mode = "message" } = {}) {
+    const regexPattern = getInjectRegexPattern(settings);
+    const rawMatches = extractInjectMatchesFromText(messageText, regexPattern);
+
+    let detection = null;
+    let matches = [];
+    let sourceTexts = [];
+    let sourceSummary = "message";
+
+    if (rawMatches.length > 0) {
+        matches = [...new Set(rawMatches)];
+        sourceTexts = [messageText];
+        sourceSummary = "raw message text";
+    } else if (message) {
+        detection = extractInjectPromptsFromMessage(message, settings);
+        matches = detection.matches.map(match => match.prompt);
+        sourceTexts = detection.sources.map(source => source.text);
+        sourceSummary = detection.scannedSources.join(", ") || "message";
+    }
+
+    return {
+        detection,
+        fingerprint: matches.length > 0 ? buildInjectFingerprint({
+            message,
+            messageIndex,
+            regexPattern,
+            matches,
+            sourceTexts,
+            mode,
+        }) : null,
+        matches,
+        messageIndex,
+        mode,
+        regexPattern,
+        sourceSummary,
+        sourceTexts,
+    };
+}
+
+function logInjectFingerprintSkip(prefix, runInfo, entry) {
+    if (!runInfo?.fingerprint) return;
+    const indexLabel = Number.isInteger(runInfo.messageIndex) ? `message ${runInfo.messageIndex}` : "message";
+    log(`${prefix}: Skipping ${indexLabel}; fingerprint ${runInfo.fingerprint} is already ${entry?.status || "tracked"}`);
+}
+
+function findLastInjectCandidateMessage(chat, settings = getSettings()) {
     if (!Array.isArray(chat)) return null;
     for (let i = chat.length - 1; i >= 0; i--) {
         const message = chat[i];
-        if (message?.is_user) continue;
-        if (getInjectMessageSources(message).length > 0) {
-            return { message, index: i };
+        if (message?.is_user || message?.extra?.inline_image) continue;
+        const runInfo = buildInjectRunInfo({
+            message,
+            messageIndex: i,
+            settings,
+        });
+        if (runInfo.matches.length > 0) {
+            return { message, index: i, runInfo };
         }
     }
     return null;
@@ -9873,48 +10028,70 @@ function onChatCompletionPromptReady(eventData) {
     }
 }
 
-async function processInjectMessage(messageText, messageIndex) {
+async function processInjectMessage(messageText, messageIndex, initialRunInfo = null) {
     const cancelCheckpoint = getCancelCheckpoint();
-    const shouldReleaseIndex = messageIndex !== undefined;
+    let activeRunInfo = initialRunInfo;
+    let keepFingerprint = false;
+    let ownsFingerprint = !!initialRunInfo?.fingerprint;
+    let runAborted = false;
 
     try {
         _injectProcessingCount++;
         const s = getSettings();
-        if (!s.injectEnabled) return;
+        if (!s.injectEnabled) {
+            if (ownsFingerprint) releaseInjectFingerprint(activeRunInfo?.fingerprint);
+            return;
+        }
 
         const ctx = getContext();
         const chat = ctx?.chat;
         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
         const message = idx >= 0 ? chat?.[idx] : (typeof messageText === "string" ? { mes: messageText } : null);
-        if (!message) return;
+        if (!message) {
+            if (ownsFingerprint) releaseInjectFingerprint(activeRunInfo?.fingerprint);
+            return;
+        }
 
-        let detection;
-        let matches;
         try {
-            // Try extracting from the raw text captured at event time (before ST regex processing)
-            const rawMatches = extractInjectMatchesFromText(messageText, getInjectRegexPattern(s));
-            if (rawMatches.length > 0) {
-                // Use raw text matches — ST regex may have already cleaned the message object
-                matches = [...new Set(rawMatches)];
-            } else {
-                // Fall back to multi-source extraction from the message object
-                detection = extractInjectPromptsFromMessage(message, s);
-                matches = detection.matches.map(match => match.prompt);
+            if (!activeRunInfo) {
+                activeRunInfo = buildInjectRunInfo({
+                    message,
+                    messageIndex: idx,
+                    messageText,
+                    mode: "message",
+                    settings: s,
+                });
+                const existingRun = getInjectFingerprintEntry(activeRunInfo.fingerprint);
+                if (existingRun) {
+                    logInjectFingerprintSkip("Inject", activeRunInfo, existingRun);
+                    return;
+                }
             }
+            setInjectFingerprintState(activeRunInfo.fingerprint, "processing", {
+                index: idx,
+                source: "message",
+            });
+            ownsFingerprint = true;
         } catch (e) {
+            if (ownsFingerprint) releaseInjectFingerprint(activeRunInfo?.fingerprint);
             log(`Inject: Invalid regex: ${e.message}`);
             return;
         }
 
-        if (matches.length === 0) return;
+        const detection = activeRunInfo?.detection || null;
+        const matches = activeRunInfo?.matches || [];
+        if (matches.length === 0) {
+            if (ownsFingerprint) releaseInjectFingerprint(activeRunInfo?.fingerprint);
+            log(`Inject: No tags found for message ${idx}; skipping queue`);
+            return;
+        }
 
-        const sourceSummary = detection ? (detection.scannedSources.join(", ") || "message") : "raw message text";
-        log(`Inject: Found ${matches.length} image tag(s) in ${sourceSummary}`);
+        log(`Inject: Processing ${matches.length} image tag(s) from ${activeRunInfo.sourceSummary} [${activeRunInfo.fingerprint}]`);
 
         // Clean tags from displayed message if enabled
         if (s.injectAutoClean !== false && idx >= 0 && chat?.[idx]) {
             try {
-                if (cleanInjectTagsFromMessage(chat[idx], detection?.regexPattern || getInjectRegexPattern(s))) {
+                if (cleanInjectTagsFromMessage(chat[idx], activeRunInfo.regexPattern)) {
                     await ctx.saveChat();
                     if (typeof ctx.reloadCurrentChat === 'function') {
                         await ctx.reloadCurrentChat();
@@ -10046,6 +10223,7 @@ async function processInjectMessage(messageText, messageIndex) {
                 }
             } catch (e) {
                 if (e.name === "AbortError") {
+                    runAborted = true;
                     log("Inject: Generation cancelled by user");
                     toastr.info("Generation cancelled");
                     break; // Exit the entire match loop on cancel
@@ -10058,12 +10236,19 @@ async function processInjectMessage(messageText, messageIndex) {
                 if (startedGeneration || cancelRequested) endGeneration();
             }
         }
+        if (!runAborted) {
+            keepFingerprint = true;
+            setInjectFingerprintState(activeRunInfo.fingerprint, "completed", {
+                index: idx,
+                matchCount: matches.length,
+                source: "message",
+            });
+            log(`Inject: Completed run ${activeRunInfo.fingerprint}`);
+        }
     } finally {
         _injectProcessingCount--;
-        // Expire this index after a delay so future messages at the same index can be processed,
-        // even when returning early (invalid regex, no matches, disabled mode, etc).
-        if (shouldReleaseIndex) {
-            setTimeout(() => _processedInjectIndices.delete(messageIndex), 120000);
+        if (!keepFingerprint && ownsFingerprint) {
+            releaseInjectFingerprint(activeRunInfo?.fingerprint);
         }
     }
 }
@@ -10132,11 +10317,35 @@ jQuery(function () {
                         const ctx = getContext();
                         const chat = ctx?.chat;
                         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
-                        if (idx < 0 || _processedInjectIndices.has(idx)) return;
                         const msg = chat?.[idx];
                         if (msg && !msg.is_user && !msg.extra?.inline_image) {
-                            _processedInjectIndices.add(idx);
-                            setTimeout(() => processInjectMessage(msg.mes || "", idx), 300);
+                            let runInfo;
+                            try {
+                                runInfo = buildInjectRunInfo({
+                                    message: msg,
+                                    messageIndex: idx,
+                                    messageText: msg.mes || "",
+                                    settings: s,
+                                });
+                            } catch (e) {
+                                log(`Inject: Invalid regex while scanning message ${idx}: ${e.message}`);
+                                return;
+                            }
+                            if (runInfo.matches.length === 0) {
+                                log(`Inject: Hook skipped message ${idx}; no tags found`);
+                                return;
+                            }
+                            const existingRun = getInjectFingerprintEntry(runInfo.fingerprint);
+                            if (existingRun) {
+                                logInjectFingerprintSkip("Inject hook", runInfo, existingRun);
+                                return;
+                            }
+                            setInjectFingerprintState(runInfo.fingerprint, "queued", {
+                                index: idx,
+                                source: "message-hook",
+                            });
+                            log(`Inject: Queueing message ${idx} with ${runInfo.matches.length} tag(s) [${runInfo.fingerprint}]`);
+                            setTimeout(() => processInjectMessage(msg.mes || "", idx, runInfo), 300);
                         }
                         return;
                     }
@@ -10158,9 +10367,7 @@ jQuery(function () {
                         clearTimeout(_autoGenTimeout);
                         _autoGenTimeout = null;
                     }
-                    if (_injectProcessingCount <= 0) {
-                        _processedInjectIndices.clear();
-                    }
+                    pruneInjectFingerprintRegistry();
                     loadCharSettings();
                     renderContextualFilters();
                     renderPromptReplacements();
