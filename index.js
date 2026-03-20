@@ -8283,9 +8283,83 @@ function createUI() {
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
                         <small style="opacity:0.6;font-size:10px;">Profiles save provider config · Templates save prompt text · Presets save all settings</small>
+
+                        <hr style="margin:8px 0;opacity:0.2;">
+                        <label>Negative Prompt</label>
+                        <small style="opacity:0.6;font-size:10px;">Things to avoid in the image (e.g., "bad hands, blurry, watermark")</small>
+                        <textarea id="qig-negative" rows="2">${esc(s.negativePrompt)}</textarea>
+
+                        <label>Quality Tags</label>
+                        <small style="opacity:0.6;font-size:10px;">Tags prepended to every prompt to improve output quality</small>
+                        <textarea id="qig-quality" rows="1">${esc(s.qualityTags)}</textarea>
+                        <label class="checkbox_label">
+                            <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
+                            <span>Prepend quality tags to prompt</span>
+                        </label>
+
+                        <label class="checkbox_label">
+                            <input id="qig-use-last" type="checkbox" ${s.useLastMessage ? "checked" : ""}>
+                            <span>Use chat message as prompt</span>
+                        </label>
+                        <small style="opacity:0.6;font-size:10px;">Feeds the selected chat message to the image generator as scene context</small>
+                        <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
+                            <label>Message selection</label>
+                            <input id="qig-msg-range" type="text" value="${esc(s.messageRange)}" placeholder="-1"
+                                   title="-1 (last), 5 (single), 3-7 (range), 3,5,7 (specific), last5 (last N)">
+                            <small style="color:var(--SmartThemeBodyColor);opacity:0.6;font-size:10px;margin-top:2px;display:block;">
+                                -1 = last | 3-7 = range | 3,5,7 = pick | last5 = last N
+                            </small>
+                            <label class="checkbox_label" style="margin-top:6px;">
+                                <input id="qig-paragraph-picker" type="checkbox" ${s.enableParagraphPicker ? "checked" : ""}>
+                                <span>Show paragraph picker before generation</span>
+                            </label>
+                        </div>
+
+                        <label class="checkbox_label">
+                            <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
+                            <span>Use LLM to create image prompt</span>
+                        </label>
+                        <small style="opacity:0.6;font-size:10px;">Sends the scene to your AI to write an optimized image prompt</small>
+                        <div id="qig-llm-options" style="display:${s.useLLMPrompt ? "block" : "none"};margin-left:16px;">
+                            <label>Prompt Style</label>
+                            <select id="qig-llm-style">
+                                <option value="tags" ${s.llmPromptStyle === "tags" ? "selected" : ""}>Danbooru Tags (anime)</option>
+                                <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
+                                <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
+                            </select>
+                            <small style="opacity:0.6;font-size:10px;">How the AI formats the image prompt</small>
+                            <label class="checkbox_label">
+                                <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
+                                <span>Edit LLM prompt before generation</span>
+                            </label>
+                            <label class="checkbox_label">
+                                <input id="qig-llm-quality" type="checkbox" ${s.llmAddQuality ? "checked" : ""}>
+                                <span>Add enhanced quality tags</span>
+                            </label>
+                            <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends detail/quality boosters to the AI-generated prompt</small>
+                            <label class="checkbox_label">
+                                <input id="qig-llm-lighting" type="checkbox" ${s.llmAddLighting ? "checked" : ""}>
+                                <span>Add lighting tags</span>
+                            </label>
+                            <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends cinematic lighting descriptors</small>
+                            <label class="checkbox_label">
+                                <input id="qig-llm-artist" type="checkbox" ${s.llmAddArtist ? "checked" : ""}>
+                                <span>Add random artist tags</span>
+                            </label>
+                            <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends a random artist name for stylistic influence</small>
+                            <div style="margin-top:8px;">
+                                <label>Prefill (start LLM response with):</label>
+                                <small style="opacity:0.6;font-size:10px;">Pre-fills the start of the AI's response to guide its output format</small>
+                                <input id="qig-llm-prefill" type="text" value="${esc(s.llmPrefill || '')}"
+                                       placeholder="e.g., Image prompt:" style="width:100%;">
+                            </div>
+                            <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
+                                <label>Custom LLM Instruction</label>
+                                <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
+                            </div>
+                        </div>
                     </div>
                 </div>
-                <hr style="margin:8px 0;opacity:0.2;">
                 <div class="inline-drawer" style="margin:4px 0;">
                     <div class="inline-drawer-toggle inline-drawer-header">
                         <b style="font-size:12px;">Contextual Filters</b>
@@ -8296,77 +8370,7 @@ function createUI() {
                         <div id="qig-contextual-filters" style="margin:4px 0;"></div>
                     </div>
                 </div>
-                <label>Negative Prompt</label>
-                <small style="opacity:0.6;font-size:10px;">Things to avoid in the image (e.g., "bad hands, blurry, watermark")</small>
-                <textarea id="qig-negative" rows="2">${esc(s.negativePrompt)}</textarea>
-                
-                <label>Quality Tags</label>
-                <small style="opacity:0.6;font-size:10px;">Tags prepended to every prompt to improve output quality</small>
-                <textarea id="qig-quality" rows="1">${esc(s.qualityTags)}</textarea>
-                <label class="checkbox_label">
-                    <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
-                    <span>Prepend quality tags to prompt</span>
-                </label>
-                <label class="checkbox_label">
-                    <input id="qig-use-last" type="checkbox" ${s.useLastMessage ? "checked" : ""}>
-                    <span>Use chat message as prompt</span>
-                </label>
-                <small style="opacity:0.6;font-size:10px;">Feeds the selected chat message to the image generator as scene context</small>
-                <div id="qig-msg-index-wrap" style="display:${s.useLastMessage ? "block" : "none"}">
-                    <label>Message selection</label>
-                    <input id="qig-msg-range" type="text" value="${esc(s.messageRange)}" placeholder="-1"
-                           title="-1 (last), 5 (single), 3-7 (range), 3,5,7 (specific), last5 (last N)">
-                    <small style="color:var(--SmartThemeBodyColor);opacity:0.6;font-size:10px;margin-top:2px;display:block;">
-                        -1 = last | 3-7 = range | 3,5,7 = pick | last5 = last N
-                    </small>
-                    <label class="checkbox_label" style="margin-top:6px;">
-                        <input id="qig-paragraph-picker" type="checkbox" ${s.enableParagraphPicker ? "checked" : ""}>
-                        <span>Show paragraph picker before generation</span>
-                    </label>
-                </div>
-                <label class="checkbox_label">
-                    <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
-                    <span>Use LLM to create image prompt</span>
-                </label>
-                <small style="opacity:0.6;font-size:10px;">Sends the scene to your AI to write an optimized image prompt</small>
-                <div id="qig-llm-options" style="display:${s.useLLMPrompt ? "block" : "none"};margin-left:16px;">
-                    <label>Prompt Style</label>
-                    <select id="qig-llm-style">
-                        <option value="tags" ${s.llmPromptStyle === "tags" ? "selected" : ""}>Danbooru Tags (anime)</option>
-                        <option value="natural" ${s.llmPromptStyle === "natural" ? "selected" : ""}>Natural Description (realistic)</option>
-                        <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
-                    </select>
-                    <small style="opacity:0.6;font-size:10px;">How the AI formats the image prompt</small>
-                    <label class="checkbox_label">
-                        <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
-                        <span>Edit LLM prompt before generation</span>
-                    </label>
-                    <label class="checkbox_label">
-                        <input id="qig-llm-quality" type="checkbox" ${s.llmAddQuality ? "checked" : ""}>
-                        <span>Add enhanced quality tags</span>
-                    </label>
-                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends detail/quality boosters to the AI-generated prompt</small>
-                    <label class="checkbox_label">
-                        <input id="qig-llm-lighting" type="checkbox" ${s.llmAddLighting ? "checked" : ""}>
-                        <span>Add lighting tags</span>
-                    </label>
-                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends cinematic lighting descriptors</small>
-                    <label class="checkbox_label">
-                        <input id="qig-llm-artist" type="checkbox" ${s.llmAddArtist ? "checked" : ""}>
-                        <span>Add random artist tags</span>
-                    </label>
-                    <small style="opacity:0.6;font-size:10px;margin-left:24px;">Appends a random artist name for stylistic influence</small>
-                    <div style="margin-top:8px;">
-                        <label>Prefill (start LLM response with):</label>
-                        <small style="opacity:0.6;font-size:10px;">Pre-fills the start of the AI's response to guide its output format</small>
-                        <input id="qig-llm-prefill" type="text" value="${esc(s.llmPrefill || '')}"
-                               placeholder="e.g., Image prompt:" style="width:100%;">
-                    </div>
-                    <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
-                        <label>Custom LLM Instruction</label>
-                        <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
-                    </div>
-                </div>
+
                 <div class="inline-drawer" style="margin:4px 0;">
                     <div class="inline-drawer-toggle inline-drawer-header">
                         <b style="font-size:12px;">Prompt Replacement Maps</b>
