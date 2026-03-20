@@ -32,7 +32,7 @@ function normalizeInjectTagName(value) {
 
 function buildDefaultInjectPrompt(tagName = DEFAULT_INJECT_TAG_NAME) {
     const safeTagName = normalizeInjectTagName(tagName);
-    return `When describing a scene visually, include an image tag in the final visible reply using this exact format:\n<${safeTagName}>detailed visual description</${safeTagName}>\nUse this for important visual moments. Do not put the image tag inside <think> blocks, hidden reasoning, analysis sections, or code fences. The description should detail character appearances, poses, expressions, clothing, and setting.`;
+    return `When describing a scene visually, include an image tag using one of these formats:\n- Simple: <${safeTagName}>detailed visual description</${safeTagName}>\n- Alternative: <pic prompt="detailed visual description">\nUse this for important visual moments. The description should detail character appearances, poses, expressions, clothing, and setting.`;
 }
 
 function buildDefaultInjectRegex(tagName = DEFAULT_INJECT_TAG_NAME) {
@@ -9555,9 +9555,7 @@ async function generateImageInjectPalette() {
         }
     } finally {
         endGeneration();
-        setTimeout(() => {
-            if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
-        }, 2000);
+        if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
         clearStyleCache();
         log("Palette inject: Cleared caches after generation");
     }
