@@ -2554,8 +2554,10 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             }
         } else if (wantsCustom) {
             log("Custom instruction selected but empty, falling back to tags style");
-            // Don't set instruction here - let it fall through to default tags style
-        } else if (isNatural) {
+            // Fall through to default tags style below
+        }
+
+        if (!instruction && isNatural) {
             let enhancements = "";
             let restrictions = "";
             if (s.llmAddQuality) enhancements += "\n- Enhanced quality descriptors (masterpiece, highly detailed, sharp focus, etc.)";
@@ -2591,7 +2593,9 @@ Write a detailed image prompt describing:
 YOU MUST ALSO INCLUDE:${enhancements}` : ""}${restrictions}
 
 Prompt:`;
-        } else {
+        }
+
+        if (!instruction) {
             // Only generate default instruction if no custom instruction was set
             let enhancements = "";
             let restrictions = "";
@@ -9629,7 +9633,7 @@ async function generateImage() {
     lastPromptWasLLM = (s.useLLMPrompt && prompt !== (scenePrompt || basePrompt));
 
     // Show prompt editing dialog if enabled
-    if (s.useLLMPrompt && s.llmEditPrompt && prompt !== basePrompt) {
+    if (s.useLLMPrompt && s.llmEditPrompt) {
         const editedPrompt = await showPromptEditDialog(prompt);
         if (editedPrompt !== null) {
             prompt = editedPrompt;
