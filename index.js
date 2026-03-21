@@ -390,6 +390,7 @@ let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
+const INJECT_CONSUMED_EXTRA_KEY = "qig_inject_consumed";
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
 const DEFAULT_FILTER_POOL_NAME = "Default";
 const FILTER_MANAGER_SCOPE_CURRENT = "__qig_scope_current__";
@@ -9365,6 +9366,8 @@ async function generateImageInjectPalette() {
     _paletteInjectActive = true;
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
+    let sourceInjectMessage = null;
+    const consumedMessagePrompts = new Set();
 
     try {
         checkAborted(cancelCheckpoint);
@@ -9380,7 +9383,15 @@ async function generateImageInjectPalette() {
             lastAiMessage = findLastInjectCandidateMessage(chat);
             if (lastAiMessage) {
                 initialDetection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
-                matches = initialDetection.matches.map(match => match.prompt);
+                const detectedPrompts = initialDetection.matches.map(match => match.prompt);
+                matches = filterConsumedInjectPrompts(detectedPrompts, lastAiMessage.message, s);
+                const skippedConsumed = detectedPrompts.length - matches.length;
+                if (skippedConsumed > 0) {
+                    log(`Palette inject: Skipping ${skippedConsumed} previously consumed tag(s) from last AI message`);
+                }
+                if (matches.length > 0) {
+                    sourceInjectMessage = lastAiMessage.message;
+                }
             }
         } catch (e) {
             log(`Palette inject: Invalid regex: ${e.message}`);
@@ -9470,6 +9481,9 @@ async function generateImageInjectPalette() {
                     continue;
                 }
             }
+            if (sourceInjectMessage) {
+                consumedMessagePrompts.add(extractedPrompt);
+            }
 
             let negative = resolvePrompt(s.negativePrompt);
 
@@ -9558,6 +9572,18 @@ async function generateImageInjectPalette() {
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
         }
     } finally {
+        if (sourceInjectMessage && consumedMessagePrompts.size > 0) {
+            try {
+                const persisted = await persistConsumedInjectPrompts(sourceInjectMessage, [...consumedMessagePrompts], s);
+                if (persisted.cleaned) {
+                    log(`Palette inject: Consumed ${consumedMessagePrompts.size} tag(s) and cleaned them from the source message`);
+                } else if (persisted.remembered) {
+                    log(`Palette inject: Marked ${consumedMessagePrompts.size} source tag(s) as consumed`);
+                }
+            } catch (e) {
+                log(`Palette inject: Failed to persist consumed tags: ${e.message}`);
+            }
+        }
         endGeneration();
         if (_paletteInjectSerial === mySerial) _paletteInjectActive = false;
         clearStyleCache();
@@ -9717,13 +9743,41 @@ async function generateImage() {
 
 // === Inject Mode (AI-driven image generation via image tags) ===
 
+function normalizeInjectPromptValue(prompt) {
+    return typeof prompt === "string" ? prompt.trim() : "";
+}
+
+function getCapturedInjectPrompt(groups) {
+    if (!Array.isArray(groups)) return "";
+    const captured = groups.find(group => typeof group === "string" && group.trim() !== "");
+    return captured ? captured.trim() : "";
+}
+
+function ensureMessageExtra(message) {
+    if (!message || typeof message !== "object") return null;
+    if (!message.extra || typeof message.extra !== "object") {
+        message.extra = {};
+    }
+    return message.extra;
+}
+
+function hashString(input) {
+    const text = String(input ?? "");
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
 function extractInjectMatchesFromText(text, regexPattern) {
     if (typeof text !== "string" || !text.trim()) return [];
     const regex = new RegExp(regexPattern, "gi");
     const matches = [];
     let match;
     while ((match = regex.exec(text)) !== null) {
-        const captured = match.slice(1).find(group => typeof group === "string" && group.trim() !== "");
+        const captured = getCapturedInjectPrompt(match.slice(1));
         if (captured) matches.push(captured.trim());
         if (match[0] === "") regex.lastIndex++;
     }
@@ -9756,6 +9810,110 @@ function getInjectMessageSources(message) {
     pushSource("extra.reasoning", "reasoning", message?.extra?.reasoning);
 
     return sources;
+}
+
+function getInjectConsumptionSignature(message, settings = getSettings()) {
+    const sources = getInjectMessageSources(message);
+    const signaturePayload = JSON.stringify({
+        regexPattern: getInjectRegexPattern(settings),
+        swipeId: Number.isInteger(message?.swipe_id) ? message.swipe_id : 0,
+        sources: sources.map(source => [source.key, source.text]),
+    });
+    return hashString(signaturePayload);
+}
+
+function getConsumedInjectPromptSet(message, settings = getSettings()) {
+    if (!message || typeof message !== "object") return new Set();
+    const signature = getInjectConsumptionSignature(message, settings);
+    const stored = message?.extra?.[INJECT_CONSUMED_EXTRA_KEY];
+    if (stored?.signature !== signature || !Array.isArray(stored?.prompts)) {
+        return new Set();
+    }
+    return new Set(stored.prompts.map(normalizeInjectPromptValue).filter(Boolean));
+}
+
+function filterConsumedInjectPrompts(prompts, message, settings = getSettings()) {
+    if (!Array.isArray(prompts)) return [];
+    const consumed = getConsumedInjectPromptSet(message, settings);
+    return prompts
+        .map(normalizeInjectPromptValue)
+        .filter(prompt => prompt && !consumed.has(prompt));
+}
+
+function rememberConsumedInjectPrompts(message, prompts, settings = getSettings()) {
+    if (!message || typeof message !== "object") return false;
+    const normalizedPrompts = [...new Set((prompts || []).map(normalizeInjectPromptValue).filter(Boolean))];
+    if (normalizedPrompts.length === 0) return false;
+
+    const extra = ensureMessageExtra(message);
+    if (!extra) return false;
+
+    const signature = getInjectConsumptionSignature(message, settings);
+    const existingPrompts = extra[INJECT_CONSUMED_EXTRA_KEY]?.signature === signature && Array.isArray(extra[INJECT_CONSUMED_EXTRA_KEY]?.prompts)
+        ? extra[INJECT_CONSUMED_EXTRA_KEY].prompts.map(normalizeInjectPromptValue).filter(Boolean)
+        : [];
+    const promptSet = new Set(existingPrompts);
+    let changed = false;
+
+    for (const prompt of normalizedPrompts) {
+        if (!promptSet.has(prompt)) {
+            promptSet.add(prompt);
+            changed = true;
+        }
+    }
+
+    if (!changed) return false;
+    extra[INJECT_CONSUMED_EXTRA_KEY] = {
+        signature,
+        prompts: [...promptSet],
+    };
+    return true;
+}
+
+function stripInjectTagsFromText(text, regexPattern, promptsToRemove = null) {
+    if (typeof text !== "string" || !text.trim()) return text;
+
+    const targetPrompts = Array.isArray(promptsToRemove)
+        ? new Set(promptsToRemove.map(normalizeInjectPromptValue).filter(Boolean))
+        : null;
+    if (targetPrompts && targetPrompts.size === 0) return text;
+
+    return text.replace(new RegExp(regexPattern, "gi"), (...args) => {
+        if (!targetPrompts) return "";
+        const tailSize = typeof args[args.length - 1] === "object" && args[args.length - 1] !== null ? 3 : 2;
+        const captured = getCapturedInjectPrompt(args.slice(1, args.length - tailSize));
+        return captured && targetPrompts.has(captured) ? "" : args[0];
+    }).trim();
+}
+
+async function persistConsumedInjectPrompts(message, prompts, settings = getSettings()) {
+    if (!message || typeof message !== "object") {
+        return { remembered: false, cleaned: false };
+    }
+
+    const normalizedPrompts = [...new Set((prompts || []).map(normalizeInjectPromptValue).filter(Boolean))];
+    if (normalizedPrompts.length === 0) {
+        return { remembered: false, cleaned: false };
+    }
+
+    const remembered = rememberConsumedInjectPrompts(message, normalizedPrompts, settings);
+    const cleaned = settings.injectAutoClean !== false
+        ? cleanInjectTagsFromMessage(message, getInjectRegexPattern(settings), normalizedPrompts)
+        : false;
+
+    if (!remembered && !cleaned) {
+        return { remembered, cleaned };
+    }
+
+    const ctx = getContext();
+    if (typeof ctx?.saveChat === "function") {
+        await ctx.saveChat();
+    }
+    if (cleaned && typeof ctx?.reloadCurrentChat === "function") {
+        await ctx.reloadCurrentChat();
+    }
+
+    return { remembered, cleaned };
 }
 
 function extractInjectPromptsFromMessage(message, settings = getSettings()) {
@@ -9796,13 +9954,13 @@ function findLastInjectCandidateMessage(chat) {
     return null;
 }
 
-function cleanInjectTagsFromMessage(message, regexPattern) {
+function cleanInjectTagsFromMessage(message, regexPattern, promptsToRemove = null) {
     if (!message || typeof message !== "object") return false;
 
     let changed = false;
     const replaceInField = (holder, key) => {
         if (!holder || typeof holder[key] !== "string" || !holder[key].trim()) return;
-        const nextValue = holder[key].replace(new RegExp(regexPattern, "gi"), "").trim();
+        const nextValue = stripInjectTagsFromText(holder[key], regexPattern, promptsToRemove);
         if (nextValue !== holder[key]) {
             holder[key] = nextValue;
             changed = true;
@@ -9817,7 +9975,7 @@ function cleanInjectTagsFromMessage(message, regexPattern) {
     if (Array.isArray(message.swipes)) {
         const swipeId = Number.isInteger(message?.swipe_id) ? message.swipe_id : 0;
         if (typeof message.swipes[swipeId] === "string") {
-            const nextValue = message.swipes[swipeId].replace(new RegExp(regexPattern, "gi"), "").trim();
+            const nextValue = stripInjectTagsFromText(message.swipes[swipeId], regexPattern, promptsToRemove);
             if (nextValue !== message.swipes[swipeId]) {
                 message.swipes[swipeId] = nextValue;
                 changed = true;
@@ -9879,10 +10037,13 @@ async function processInjectMessage(messageText, messageIndex) {
     const cancelCheckpoint = getCancelCheckpoint();
     const shouldReleaseIndex = messageIndex !== undefined;
     let startedGeneration = false;
+    let s;
+    let sourceMessage = null;
+    const consumedMessagePrompts = new Set();
 
     try {
         _injectProcessingCount++;
-        const s = getSettings();
+        s = getSettings();
         if (!s.injectEnabled) return;
 
         const ctx = getContext();
@@ -9890,6 +10051,9 @@ async function processInjectMessage(messageText, messageIndex) {
         const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
         const message = idx >= 0 ? chat?.[idx] : (typeof messageText === "string" ? { mes: messageText } : null);
         if (!message) return;
+        if (idx >= 0 && chat?.[idx]) {
+            sourceMessage = chat[idx];
+        }
 
         let detection;
         let matches;
@@ -9904,6 +10068,12 @@ async function processInjectMessage(messageText, messageIndex) {
                 detection = extractInjectPromptsFromMessage(message, s);
                 matches = detection.matches.map(match => match.prompt);
             }
+            const unconsumedMatches = filterConsumedInjectPrompts(matches, sourceMessage || message, s);
+            const skippedConsumed = matches.length - unconsumedMatches.length;
+            matches = unconsumedMatches;
+            if (skippedConsumed > 0) {
+                log(`Inject: Skipping ${skippedConsumed} previously consumed tag(s) from source message`);
+            }
         } catch (e) {
             log(`Inject: Invalid regex: ${e.message}`);
             return;
@@ -9913,21 +10083,6 @@ async function processInjectMessage(messageText, messageIndex) {
 
         const sourceSummary = detection ? (detection.scannedSources.join(", ") || "message") : "raw message text";
         log(`Inject: Found ${matches.length} image tag(s) in ${sourceSummary}`);
-
-        // Clean tags from displayed message if enabled
-        if (s.injectAutoClean !== false && idx >= 0 && chat?.[idx]) {
-            try {
-                if (cleanInjectTagsFromMessage(chat[idx], detection?.regexPattern || getInjectRegexPattern(s))) {
-                    await ctx.saveChat();
-                    if (typeof ctx.reloadCurrentChat === 'function') {
-                        await ctx.reloadCurrentChat();
-                    }
-                    log("Inject: Cleaned image tags from message");
-                }
-            } catch (e) {
-                log(`Inject: Error cleaning tags: ${e.message}`);
-            }
-        }
 
         // Begin generation once for all tags
         checkAborted(cancelCheckpoint);
@@ -9970,6 +10125,9 @@ async function processInjectMessage(messageText, messageIndex) {
                     } else {
                         continue;
                     }
+                }
+                if (sourceMessage) {
+                    consumedMessagePrompts.add(extractedPrompt);
                 }
 
                 let negative = resolvePrompt(s.negativePrompt);
@@ -10062,6 +10220,18 @@ async function processInjectMessage(messageText, messageIndex) {
             }
         }
     } finally {
+        if (s && sourceMessage && consumedMessagePrompts.size > 0) {
+            try {
+                const persisted = await persistConsumedInjectPrompts(sourceMessage, [...consumedMessagePrompts], s);
+                if (persisted.cleaned) {
+                    log(`Inject: Consumed ${consumedMessagePrompts.size} tag(s) and cleaned them from the source message`);
+                } else if (persisted.remembered) {
+                    log(`Inject: Marked ${consumedMessagePrompts.size} source tag(s) as consumed`);
+                }
+            } catch (e) {
+                log(`Inject: Failed to persist consumed tags: ${e.message}`);
+            }
+        }
         _injectProcessingCount--;
         // End generation once after all tags
         if (startedGeneration || cancelRequested) endGeneration();

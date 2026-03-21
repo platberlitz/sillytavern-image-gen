@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.6.5
+- Fixed a palette `Inject` mode bug where a bad image tag/prompt from the last AI reply could get reused over and over, reopening **Edit LLM Generated Prompt** with stale content.
+- Palette `Inject` now treats extracted tags as one-time inputs by default, so repeated clicks fall back to fresh tag generation instead of looping old prompts.
+- Auto inject processing now follows the same consume-on-commit behavior for better consistency with manual palette inject.
+
 ## What's New in v1.5.6
 - Moved the **Contextual Filters** summary into **Prompt & Templates** so it collapses with the rest of the prompt-authoring controls.
 - Expanded the **Contextual Filters** manager with drag reordering, an optional `Hide inactive` view, and cross-character scope browsing with copy-to-current/global actions.
