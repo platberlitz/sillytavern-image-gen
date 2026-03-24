@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.6.8
+- Added **Card Only** contextual filter scope so loose per-card filters no longer bleed across other cards for the same character.
+- Kept legacy broader **Character** scope for existing setups, with manager copy actions to recover/move older filters back into the current card.
+- Added card-scoped filter pools, scoped default pools for new non-global filters, and export/import support for card pool activation state.
+
 ## What's New in v1.6.7
 - Added an **Auto-generate after AI response** mirror toggle inside **Inject Mode** so you can enable and verify automatic inject processing without switching tabs.
 - Clarified Inject Mode copy/tooltips to make it explicit that automatic inject processing requires both **Enable inject mode** and **Auto-generate**.
@@ -513,24 +518,29 @@ If multiple matched filters define a seed override, the **highest-priority match
 ### Character-Specific Filters
 
 Filters can be scoped to a specific character. When creating or editing a filter, the **Scope** dropdown lets you choose:
-- **Global (all characters)** — the filter applies everywhere (default, backward-compatible)
-- **This Character** — the filter only activates when chatting with the current character
+- **Global (all characters)** — the filter applies everywhere
+- **Card Only** — the filter sticks to the current card/avatar identity and will not spill onto other cards
+- **Character** — the broader legacy behavior keyed to SillyTavern `characterId`, useful when you intentionally want one filter set shared across cards/chats for the same character
 
-The filter list groups filters by scope with colored badges: blue **G** for global, green **C** for character-specific. A **⧉** duplicate button lets you quickly copy a filter between scopes (e.g., promote a character filter to global or create a character-specific copy of a global filter). The manager can also browse one other character scope at a time and copy those filters into the current character or global scope without switching chats.
+New non-global filters default to **Card Only**. Existing saved filters are left unchanged, so older broader character filters still work until you move/copy them.
 
-When clearing filters with a character active, you can choose to clear all filters, only global filters, or only the current character's filters.
+The filter list groups filters by scope with colored badges: blue **G** for global, orange **Card** for card-only, and green **Char** for broader character scope. A **⧉** duplicate button lets you quickly copy a filter between scopes, and the manager can browse other saved card/character scopes and copy filters back into the current card without devtools.
+
+When clearing filters with a card active, you can choose to clear all filters, only global filters, only the current card's filters, or only the broader current-character filters.
 
 ### Filter Pools (Bulk Toggle)
 
 Pools let you organize large filter libraries (for example: goblin pack, sci-fi pack, superhero pack) and enable/disable them in one click.
 
 - **Global pools** apply across all chats
-- **Character pools** apply only to the active character
+- **Card pools** apply only to the current card/avatar identity
+- **Character pools** apply to the broader current character scope
 - Filters can belong to multiple pools
 - A filter is active only when both conditions are true:
   - the filter checkbox is enabled
   - at least one of its pools is enabled in the current context
-- The manager can browse other characters' pool sets and copy them into the current character scope when needed
+- When you create a new scoped filter, QIG now creates/uses a scoped **Default** pool for that scope automatically instead of leaving the filter in the global default pool
+- The manager can browse other saved card/character pool sets and copy them into the current scope when needed
 
 Migration note: existing filters are automatically assigned to a global **Default** pool so behavior stays unchanged after updating.
 

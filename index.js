@@ -316,6 +316,7 @@ const BACKUP_KEYS = {
     qig_contextual_filters: "_backupContextualFilters",
     qig_filter_pools: "_backupFilterPools",
     qig_active_pool_ids_global: "_backupActiveFilterPoolIdsGlobal",
+    qig_active_pool_ids_by_card: "_backupActiveFilterPoolIdsByCard",
     qig_active_pool_ids_by_char: "_backupActiveFilterPoolIdsByChar",
     qig_prompt_replacements: "_backupPromptReplacements",
     qig_active_prompt_replacement_ids_global: "_backupActivePromptReplacementIdsGlobal",
@@ -370,6 +371,7 @@ let comfyWorkflows = safeParse("qig_comfy_workflows", []);
 let contextualFilters = safeParse("qig_contextual_filters", []);
 let filterPools = safeParse("qig_filter_pools", []);
 let activeFilterPoolIdsGlobal = safeParse("qig_active_pool_ids_global", []);
+let activeFilterPoolIdsByCard = safeParse("qig_active_pool_ids_by_card", {});
 let activeFilterPoolIdsByChar = safeParse("qig_active_pool_ids_by_char", {});
 let promptReplacements = safeParse("qig_prompt_replacements", []);
 let activePromptReplacementIdsGlobal = safeParse("qig_active_prompt_replacement_ids_global", []);
@@ -391,12 +393,16 @@ let _paletteInjectSerial = 0;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const INJECT_CONSUMED_EXTRA_KEY = "qig_inject_consumed";
+const FILTER_SCOPE_GLOBAL = "global";
+const FILTER_SCOPE_CARD = "card";
+const FILTER_SCOPE_CHAR = "char";
 const DEFAULT_FILTER_POOL_ID = "qig_pool_default_global";
 const DEFAULT_FILTER_POOL_NAME = "Default";
-const FILTER_MANAGER_SCOPE_CURRENT = "__qig_scope_current__";
+const FILTER_MANAGER_SCOPE_CURRENT_CARD = "__qig_scope_current_card__";
+const FILTER_MANAGER_SCOPE_CURRENT_CHAR = "__qig_scope_current_char__";
 const FILTER_MANAGER_SCOPE_GLOBAL_ONLY = "__qig_scope_global_only__";
 let filterManagerUiState = {
-    selectedScopeCharId: FILTER_MANAGER_SCOPE_CURRENT,
+    selectedScopeCharId: FILTER_MANAGER_SCOPE_CURRENT_CARD,
     hideInactive: false,
     draggedFilterId: null,
     dropTargetFilterId: null,
@@ -1117,6 +1123,7 @@ async function loadSettings() {
         { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", setter: v => { contextualFilters = v; } },
         { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", setter: v => { filterPools = v; } },
         { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", setter: v => { activeFilterPoolIdsGlobal = v; } },
+        { localKey: "qig_active_pool_ids_by_card", backupKey: "_backupActiveFilterPoolIdsByCard", setter: v => { activeFilterPoolIdsByCard = v; } },
         { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
         { localKey: "qig_prompt_replacements", backupKey: "_backupPromptReplacements", setter: v => { promptReplacements = v; } },
         { localKey: "qig_active_prompt_replacement_ids_global", backupKey: "_backupActivePromptReplacementIdsGlobal", setter: v => { activePromptReplacementIdsGlobal = v; } },
@@ -1177,11 +1184,17 @@ function getDefaultFilterPool() {
     return {
         id: DEFAULT_FILTER_POOL_ID,
         name: DEFAULT_FILTER_POOL_NAME,
-        scope: "global",
+        scope: FILTER_SCOPE_GLOBAL,
         charId: null,
+        cardKey: null,
+        cardLabel: "",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
     };
+}
+
+function isDefaultFilterPoolName(name) {
+    return String(name || "").trim().toLowerCase() === DEFAULT_FILTER_POOL_NAME.toLowerCase();
 }
 
 function saveFilterPools() {
@@ -1192,10 +1205,12 @@ function saveFilterPools() {
 
 function saveActiveFilterPools() {
     const okGlobal = safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal), "Failed to save active global pools. Browser storage may be full.");
+    const okByCard = safeSetStorage("qig_active_pool_ids_by_card", JSON.stringify(activeFilterPoolIdsByCard), "Failed to save active card pools. Browser storage may be full.");
     const okByChar = safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar), "Failed to save active character pools. Browser storage may be full.");
     if (okGlobal) backupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
+    if (okByCard) backupToSettings("qig_active_pool_ids_by_card", activeFilterPoolIdsByCard);
     if (okByChar) backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
-    return okGlobal && okByChar;
+    return okGlobal && okByCard && okByChar;
 }
 
 function persistFilterPoolState() {
@@ -1204,8 +1219,33 @@ function persistFilterPoolState() {
     saveActiveFilterPools();
 }
 
+function getActiveCardScopeKeys(ctx = getContext()) {
+    const cardKey = getCurrentCardScopeInfo(ctx).cardKey;
+    return cardKey ? [cardKey] : [];
+}
+
+function getEnabledPoolIdsForScope(scopeRef = getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL)) {
+    const scopeInfo = getScopedRecordFromEntity(scopeRef);
+    const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+        for (const id of normalizePoolIdList(activeFilterPoolIdsByCard?.[scopeInfo.cardKey])) {
+            enabled.add(id);
+        }
+    }
+    if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+        for (const id of normalizePoolIdList(activeFilterPoolIdsByChar?.[scopeInfo.charId])) {
+            enabled.add(id);
+        }
+    }
+    return enabled;
+}
+
 function getEnabledPoolIdsForCurrentContext() {
     const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
+    for (const cardKey of getActiveCardScopeKeys()) {
+        const cardPoolIds = normalizePoolIdList(activeFilterPoolIdsByCard?.[cardKey]);
+        for (const id of cardPoolIds) enabled.add(id);
+    }
     const activeCharIds = getActiveCharacterScopeIds();
     for (const charId of activeCharIds) {
         const charPoolIds = normalizePoolIdList(activeFilterPoolIdsByChar?.[String(charId)]);
@@ -1214,9 +1254,39 @@ function getEnabledPoolIdsForCurrentContext() {
     return enabled;
 }
 
-function getSelectablePoolsForFilterScope(scopeCharId) {
-    const charId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
-    return filterPools.filter(pool => pool.scope === "global" || (charId && pool.scope === "char" && String(pool.charId) === charId));
+function getSelectablePoolsForFilterScope(scopeRef) {
+    const scopeInfo = getScopedRecordFromEntity(scopeRef);
+    return filterPools.filter(pool => {
+        const poolScope = getScopedRecordFromEntity(pool);
+        if (poolScope.scope === FILTER_SCOPE_GLOBAL) return true;
+        if (scopeInfo.scope === FILTER_SCOPE_CARD) {
+            return poolScope.scope === FILTER_SCOPE_CARD && poolScope.cardKey === scopeInfo.cardKey;
+        }
+        if (scopeInfo.scope === FILTER_SCOPE_CHAR) {
+            return poolScope.scope === FILTER_SCOPE_CHAR && poolScope.charId === scopeInfo.charId;
+        }
+        return false;
+    });
+}
+
+function getVisibleFilterPools(scopeRef = getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL)) {
+    const scopeInfo = getScopedRecordFromEntity(scopeRef);
+    const globalPools = filterPools
+        .filter(pool => getScopedRecordFromEntity(pool).scope === FILTER_SCOPE_GLOBAL)
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const scopedPools = filterPools
+        .filter(pool => {
+            const poolScope = getScopedRecordFromEntity(pool);
+            if (scopeInfo.scope === FILTER_SCOPE_CARD) {
+                return poolScope.scope === FILTER_SCOPE_CARD && poolScope.cardKey === scopeInfo.cardKey;
+            }
+            if (scopeInfo.scope === FILTER_SCOPE_CHAR) {
+                return poolScope.scope === FILTER_SCOPE_CHAR && poolScope.charId === scopeInfo.charId;
+            }
+            return false;
+        })
+        .sort((a, b) => a.name.localeCompare(b.name));
+    return { globalPools, scopedPools, scopeInfo };
 }
 
 function ensureFilterPoolsState({ persist = false } = {}) {
@@ -1231,14 +1301,22 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         const id = String(rawPool.id || "").trim();
         if (!id || seenPoolIds.has(id)) { changed = true; continue; }
         const name = String(rawPool.name || "").trim() || (id === DEFAULT_FILTER_POOL_ID ? DEFAULT_FILTER_POOL_NAME : "Untitled Pool");
-        const scope = rawPool.scope === "char" ? "char" : "global";
-        const charId = rawPool.charId != null && rawPool.charId !== "" ? String(rawPool.charId) : null;
-        if (scope === "char" && !charId) { changed = true; continue; }
+        const scopeInfo = id === DEFAULT_FILTER_POOL_ID
+            ? getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL)
+            : getNormalizedScopedRecord(rawPool.scope, {
+                charId: rawPool.charId,
+                cardKey: rawPool.cardKey,
+                cardLabel: rawPool.cardLabel,
+            });
+        if (rawPool.scope === FILTER_SCOPE_CARD && !scopeInfo.cardKey) { changed = true; continue; }
+        if (rawPool.scope === FILTER_SCOPE_CHAR && !scopeInfo.charId) { changed = true; continue; }
         normalizedPools.push({
             id,
             name,
-            scope,
-            charId: scope === "char" ? charId : null,
+            scope: scopeInfo.scope,
+            charId: scopeInfo.scope === FILTER_SCOPE_CHAR ? scopeInfo.charId : null,
+            cardKey: scopeInfo.scope === FILTER_SCOPE_CARD ? scopeInfo.cardKey : null,
+            cardLabel: scopeInfo.scope === FILTER_SCOPE_CARD ? scopeInfo.cardLabel : "",
             createdAt: rawPool.createdAt || new Date().toISOString(),
             updatedAt: rawPool.updatedAt || new Date().toISOString(),
         });
@@ -1251,18 +1329,30 @@ function ensureFilterPoolsState({ persist = false } = {}) {
     }
     filterPools = normalizedPools;
 
-    const globalPoolIds = new Set(filterPools.filter(p => p.scope === "global").map(p => p.id));
+    const globalPoolIds = new Set(filterPools.filter(p => getScopedRecordFromEntity(p).scope === FILTER_SCOPE_GLOBAL).map(p => p.id));
+    const cardPoolsByCard = new Map();
     const charPoolsByChar = new Map();
     for (const pool of filterPools) {
-        if (pool.scope !== "char" || !pool.charId) continue;
-        const key = String(pool.charId);
-        if (!charPoolsByChar.has(key)) charPoolsByChar.set(key, new Set());
-        charPoolsByChar.get(key).add(pool.id);
+        const scopeInfo = getScopedRecordFromEntity(pool);
+        if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+            const key = scopeInfo.cardKey;
+            if (!cardPoolsByCard.has(key)) cardPoolsByCard.set(key, new Set());
+            cardPoolsByCard.get(key).add(pool.id);
+            continue;
+        }
+        if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+            const key = String(scopeInfo.charId);
+            if (!charPoolsByChar.has(key)) charPoolsByChar.set(key, new Set());
+            charPoolsByChar.get(key).add(pool.id);
+        }
     }
 
     const hadStoredGlobalPoolState =
         localStorage.getItem("qig_active_pool_ids_global") != null ||
         extension_settings?.[extensionName]?._backupActiveFilterPoolIdsGlobal != null;
+    const hadStoredCardPoolState =
+        localStorage.getItem("qig_active_pool_ids_by_card") != null ||
+        extension_settings?.[extensionName]?._backupActiveFilterPoolIdsByCard != null;
     const originalGlobalIds = normalizePoolIdList(activeFilterPoolIdsGlobal);
     let nextGlobalIds = originalGlobalIds.filter(id => globalPoolIds.has(id));
     if (!hadStoredGlobalPoolState && nextGlobalIds.length === 0 && globalPoolIds.has(DEFAULT_FILTER_POOL_ID)) {
@@ -1270,6 +1360,40 @@ function ensureFilterPoolsState({ persist = false } = {}) {
     }
     if (JSON.stringify(originalGlobalIds) !== JSON.stringify(nextGlobalIds)) changed = true;
     activeFilterPoolIdsGlobal = nextGlobalIds;
+
+    const incomingByCard = activeFilterPoolIdsByCard && typeof activeFilterPoolIdsByCard === "object" && !Array.isArray(activeFilterPoolIdsByCard)
+        ? activeFilterPoolIdsByCard
+        : {};
+    if (incomingByCard !== activeFilterPoolIdsByCard) changed = true;
+    const nextByCard = {};
+    for (const [cardKeyRaw, ids] of Object.entries(incomingByCard)) {
+        const cardKey = normalizeCardScopeKey(cardKeyRaw);
+        const allowed = cardPoolsByCard.get(cardKey);
+        if (!allowed?.size) {
+            if (Array.isArray(ids) && ids.length) changed = true;
+            continue;
+        }
+        const normalizedIds = normalizePoolIdList(ids).filter(id => allowed.has(id));
+        if (normalizedIds.length > 0) nextByCard[cardKey] = normalizedIds;
+        if (JSON.stringify(normalizePoolIdList(ids)) !== JSON.stringify(normalizedIds)) changed = true;
+    }
+    if (!hadStoredCardPoolState) {
+        for (const [cardKey, ids] of cardPoolsByCard.entries()) {
+            if (nextByCard[cardKey]?.length) continue;
+            const defaultPool = filterPools.find(pool => {
+                const poolScope = getScopedRecordFromEntity(pool);
+                return poolScope.scope === FILTER_SCOPE_CARD &&
+                    poolScope.cardKey === cardKey &&
+                    isDefaultFilterPoolName(pool.name);
+            });
+            if (defaultPool?.id) {
+                nextByCard[cardKey] = [defaultPool.id];
+                changed = true;
+            }
+        }
+    }
+    if (JSON.stringify(incomingByCard) !== JSON.stringify(nextByCard)) changed = true;
+    activeFilterPoolIdsByCard = nextByCard;
 
     const incomingByChar = activeFilterPoolIdsByChar && typeof activeFilterPoolIdsByChar === "object" && !Array.isArray(activeFilterPoolIdsByChar)
         ? activeFilterPoolIdsByChar
@@ -1294,11 +1418,56 @@ function ensureFilterPoolsState({ persist = false } = {}) {
         contextualFilters = [];
         changed = true;
     }
+    for (const filter of contextualFilters) {
+        if (!filter || typeof filter !== "object") continue;
+        const filterScope = getScopedRecordFromEntity(filter);
+        if (filterScope.scope === FILTER_SCOPE_CARD && filterScope.cardKey) {
+            const defaultPool = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+                scope: FILTER_SCOPE_CARD,
+                cardKey: filterScope.cardKey,
+                cardLabel: filterScope.cardLabel,
+                enable: true,
+            });
+            if (defaultPool?.id && !cardPoolsByCard.has(filterScope.cardKey)) {
+                if (!cardPoolsByCard.has(filterScope.cardKey)) cardPoolsByCard.set(filterScope.cardKey, new Set());
+                cardPoolsByCard.get(filterScope.cardKey).add(defaultPool.id);
+                changed = true;
+            }
+        }
+    }
     const validPoolIds = new Set(filterPools.map(p => p.id));
     for (const filter of contextualFilters) {
         if (!filter || typeof filter !== "object") { changed = true; continue; }
+        const scopeInfo = getScopedRecordFromEntity(filter);
+        if (filter.scope !== scopeInfo.scope) changed = true;
+        if ((filter.charId ?? null) !== (scopeInfo.charId ?? null)) changed = true;
+        if ((normalizeCardScopeKey(filter.cardKey) || null) !== (scopeInfo.cardKey ?? null)) changed = true;
+        if (normalizeScopeLabel(filter.cardLabel) !== normalizeScopeLabel(scopeInfo.cardLabel)) changed = true;
+        filter.scope = scopeInfo.scope;
+        filter.charId = scopeInfo.charId;
+        filter.cardKey = scopeInfo.cardKey;
+        filter.cardLabel = scopeInfo.cardLabel;
         const before = normalizePoolIdList(filter.poolIds);
-        const after = before.filter(id => validPoolIds.has(id));
+        let after = before.filter(id => validPoolIds.has(id));
+        if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+            const hasCardPool = after.some(id => {
+                const pool = filterPools.find(entry => entry.id === id);
+                const poolScope = getScopedRecordFromEntity(pool);
+                return poolScope.scope === FILTER_SCOPE_CARD && poolScope.cardKey === scopeInfo.cardKey;
+            });
+            if (!hasCardPool) {
+                const defaultCardPool = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+                    scope: FILTER_SCOPE_CARD,
+                    cardKey: scopeInfo.cardKey,
+                    cardLabel: scopeInfo.cardLabel,
+                    enable: true,
+                });
+                if (defaultCardPool?.id) {
+                    after = after.filter(id => id !== DEFAULT_FILTER_POOL_ID);
+                    after.unshift(defaultCardPool.id);
+                }
+            }
+        }
         if (!after.length) after.push(DEFAULT_FILTER_POOL_ID);
         if (JSON.stringify(before) !== JSON.stringify(after)) changed = true;
         filter.poolIds = after;
@@ -1456,22 +1625,36 @@ function getContextualFilterPriorityValue(filter) {
     return Number.isFinite(priority) ? Math.trunc(priority) : 0;
 }
 
+function getContextualFilterScopeRank(filter) {
+    const scope = getScopedRecordFromEntity(filter).scope;
+    if (scope === FILTER_SCOPE_CARD) return 2;
+    if (scope === FILTER_SCOPE_CHAR) return 1;
+    return 0;
+}
+
 function normalizeContextualFilterSortOrder(value, fallback = null) {
     const numeric = Number(value);
     if (!Number.isFinite(numeric)) return fallback;
     return Math.max(0, Math.trunc(numeric));
 }
 
-function getContextualFilterScopeKey(filterOrCharId) {
-    const charId = filterOrCharId && typeof filterOrCharId === "object"
-        ? filterOrCharId.charId
-        : filterOrCharId;
-    return charId != null && charId !== "" ? `char:${String(charId)}` : "global";
+function getContextualFilterScopeKey(filterOrScope) {
+    const scopeInfo = filterOrScope && typeof filterOrScope === "object"
+        ? getScopedRecordFromEntity(filterOrScope)
+        : (filterOrScope != null && filterOrScope !== ""
+            ? getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: filterOrScope })
+            : getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL));
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) return `card:${scopeInfo.cardKey}`;
+    if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) return `char:${scopeInfo.charId}`;
+    return FILTER_SCOPE_GLOBAL;
 }
 
 function compareContextualFilters(a, b) {
     const byPriority = getContextualFilterPriorityValue(b) - getContextualFilterPriorityValue(a);
     if (byPriority !== 0) return byPriority;
+
+    const byScope = getContextualFilterScopeRank(b) - getContextualFilterScopeRank(a);
+    if (byScope !== 0) return byScope;
 
     const aSort = normalizeContextualFilterSortOrder(a?.sortOrder, Number.MAX_SAFE_INTEGER);
     const bSort = normalizeContextualFilterSortOrder(b?.sortOrder, Number.MAX_SAFE_INTEGER);
@@ -1518,6 +1701,78 @@ function normalizeContextualFilterOrder(filterList = contextualFilters) {
 
 function normalizeContextLookupValue(value) {
     return String(value ?? "").trim().toLowerCase();
+}
+
+function normalizeCardScopeKey(value) {
+    return normalizeContextLookupValue(value);
+}
+
+function normalizeScopeLabel(value) {
+    return String(value || "").trim();
+}
+
+function formatCardScopeFallbackLabel(cardKey) {
+    const raw = String(cardKey || "").trim();
+    if (!raw) return "Card";
+    const tail = raw.split(/[\\/]/).filter(Boolean).pop();
+    return tail || raw;
+}
+
+function getNormalizedScopedRecord(scope, { charId = null, cardKey = null, cardLabel = null } = {}) {
+    if (scope === FILTER_SCOPE_CARD || (cardKey != null && cardKey !== "")) {
+        const normalizedCardKey = normalizeCardScopeKey(cardKey);
+        if (!normalizedCardKey) {
+            return {
+                scope: FILTER_SCOPE_GLOBAL,
+                charId: null,
+                cardKey: null,
+                cardLabel: "",
+            };
+        }
+        const normalizedCardLabel = normalizeScopeLabel(cardLabel) || formatCardScopeFallbackLabel(cardKey);
+        return {
+            scope: FILTER_SCOPE_CARD,
+            charId: null,
+            cardKey: normalizedCardKey,
+            cardLabel: normalizedCardLabel,
+        };
+    }
+
+    if (scope === FILTER_SCOPE_CHAR || (charId != null && charId !== "")) {
+        const normalizedCharId = charId != null && charId !== "" ? String(charId) : null;
+        if (!normalizedCharId) {
+            return {
+                scope: FILTER_SCOPE_GLOBAL,
+                charId: null,
+                cardKey: null,
+                cardLabel: "",
+            };
+        }
+        return {
+            scope: FILTER_SCOPE_CHAR,
+            charId: normalizedCharId,
+            cardKey: null,
+            cardLabel: "",
+        };
+    }
+
+    return {
+        scope: FILTER_SCOPE_GLOBAL,
+        charId: null,
+        cardKey: null,
+        cardLabel: "",
+    };
+}
+
+function getScopedRecordFromEntity(entity) {
+    if (!entity || typeof entity !== "object") {
+        return getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL);
+    }
+    return getNormalizedScopedRecord(entity.scope, {
+        charId: entity.charId,
+        cardKey: entity.cardKey,
+        cardLabel: entity.cardLabel,
+    });
 }
 
 function uniqueStringList(values) {
@@ -1580,6 +1835,38 @@ function getContextCharactersList(ctx) {
         }
     }
     return entries;
+}
+
+function getCharacterEntryById(charId, ctx = getContext()) {
+    if (charId == null) return null;
+    const key = normalizeContextLookupValue(charId);
+    if (!key) return null;
+    return getContextCharactersList(ctx).find(entry =>
+        normalizeContextLookupValue(entry.id) === key ||
+        normalizeContextLookupValue(entry.data?.id) === key
+    ) || null;
+}
+
+function getCurrentCharacterEntry(ctx = getContext()) {
+    if (ctx?.characterId != null) {
+        const match = getCharacterEntryById(ctx.characterId, ctx);
+        if (match) return match;
+    }
+    const characters = getContextCharactersList(ctx);
+    return characters.length === 1 ? characters[0] : null;
+}
+
+function getCurrentCardScopeInfo(ctx = getContext()) {
+    const entry = getCurrentCharacterEntry(ctx);
+    const rawCardKey = String(entry?.avatar || entry?.data?.avatar || "").trim();
+    const normalizedCardKey = normalizeCardScopeKey(rawCardKey);
+    return {
+        entry,
+        cardKey: normalizedCardKey || null,
+        cardLabel: normalizedCardKey
+            ? (normalizeScopeLabel(entry?.name || entry?.avatar || entry?.data?.name) || formatCardScopeFallbackLabel(rawCardKey))
+            : null,
+    };
 }
 
 function getGroupObjectFromContext(ctx) {
@@ -1978,13 +2265,25 @@ function clearStyleCache() {
     log("Style cache cleared");
 }
 
+function isContextualFilterInCurrentContext(filter, { activeCardKeys = new Set(getActiveCardScopeKeys()), activeCharIds = new Set(getActiveCharacterScopeIds()) } = {}) {
+    const scopeInfo = getScopedRecordFromEntity(filter);
+    if (scopeInfo.scope === FILTER_SCOPE_CARD) {
+        return !!scopeInfo.cardKey && activeCardKeys.has(scopeInfo.cardKey);
+    }
+    if (scopeInfo.scope === FILTER_SCOPE_CHAR) {
+        return !!scopeInfo.charId && activeCharIds.has(String(scopeInfo.charId));
+    }
+    return true;
+}
+
 function getActiveFilters() {
     ensureFilterPoolsState();
+    const activeCardKeys = new Set(getActiveCardScopeKeys());
     const activeCharIds = new Set(getActiveCharacterScopeIds());
     const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
     return contextualFilters.filter(f => {
         if (!f || typeof f !== "object") return false;
-        if (f.charId && !activeCharIds.has(String(f.charId))) return false;
+        if (!isContextualFilterInCurrentContext(f, { activeCardKeys, activeCharIds })) return false;
         const poolIds = normalizePoolIdList(f.poolIds);
         if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
         return poolIds.some(id => enabledPoolIds.has(id));
@@ -2117,8 +2416,9 @@ function selectContextualSeedOverride(filters = []) {
 function applyContextualFilters(prompt, negative, sceneText) {
     const activeFilters = getActiveFilters();
     if (!activeFilters.length || !sceneText) return { prompt, negative, matchedFilters: [] };
+    const activeCardKeys = new Set(getActiveCardScopeKeys());
     const activeCharIds = new Set(getActiveCharacterScopeIds());
-    const scopedFilterCount = contextualFilters.filter(f => !f?.charId || activeCharIds.has(String(f.charId))).length;
+    const scopedFilterCount = contextualFilters.filter(f => isContextualFilterInCurrentContext(f, { activeCardKeys, activeCharIds })).length;
     if (scopedFilterCount > activeFilters.length) {
         log(`Contextual pools: ${activeFilters.length}/${scopedFilterCount} scoped filter(s) enabled by active pools`);
     }
@@ -5438,29 +5738,6 @@ function saveContextualFilters() {
     backupToSettings("qig_contextual_filters", contextualFilters);
 }
 
-function getVisibleFilterPools(scopeCharId = getCurrentCharId()) {
-    const selectedCharId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
-    const globalPools = filterPools
-        .filter(p => p.scope === "global")
-        .sort((a, b) => a.name.localeCompare(b.name));
-    const charPools = selectedCharId != null
-        ? filterPools
-            .filter(p => p.scope === "char" && String(p.charId) === selectedCharId)
-            .sort((a, b) => a.name.localeCompare(b.name))
-        : [];
-    return { globalPools, charPools, selectedCharId };
-}
-
-function getEnabledPoolIdsForScope(scopeCharId = null) {
-    const enabled = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
-    const selectedCharId = scopeCharId != null && scopeCharId !== "" ? String(scopeCharId) : null;
-    if (!selectedCharId) return enabled;
-    for (const id of normalizePoolIdList(activeFilterPoolIdsByChar?.[selectedCharId])) {
-        enabled.add(id);
-    }
-    return enabled;
-}
-
 function isContextualFilterEnabledByPools(filter, enabledPoolIds = getEnabledPoolIdsForCurrentContext()) {
     const poolIds = normalizePoolIdList(filter?.poolIds);
     if (!poolIds.length) return enabledPoolIds.has(DEFAULT_FILTER_POOL_ID);
@@ -5476,41 +5753,48 @@ function getPoolNameById(poolId) {
     return filterPools.find(p => p.id === id)?.name || "Unknown Pool";
 }
 
-function findFilterPoolByName(name, { scope = "global", charId = null } = {}) {
+function findFilterPoolByName(name, { scope = FILTER_SCOPE_GLOBAL, charId = null, cardKey = null } = {}) {
     const normalizedName = String(name || "").trim().toLowerCase();
-    const scopeKey = scope === "char" ? "char" : "global";
-    const targetCharId = scopeKey === "char" && charId != null ? String(charId) : null;
+    const scopeInfo = getNormalizedScopedRecord(scope, { charId, cardKey });
     if (!normalizedName) return null;
-    return filterPools.find(pool =>
-        pool.scope === scopeKey &&
-        String(pool.charId || "") === String(targetCharId || "") &&
-        String(pool.name || "").trim().toLowerCase() === normalizedName
-    ) || null;
+    return filterPools.find(pool => {
+        const poolScope = getScopedRecordFromEntity(pool);
+        if (poolScope.scope !== scopeInfo.scope) return false;
+        if (poolScope.scope === FILTER_SCOPE_CARD && poolScope.cardKey !== scopeInfo.cardKey) return false;
+        if (poolScope.scope === FILTER_SCOPE_CHAR && poolScope.charId !== scopeInfo.charId) return false;
+        return String(pool.name || "").trim().toLowerCase() === normalizedName;
+    }) || null;
 }
 
-function createFilterPoolRecord(name, { scope = "global", charId = null, enable = true } = {}) {
+function createFilterPoolRecord(name, { scope = FILTER_SCOPE_GLOBAL, charId = null, cardKey = null, cardLabel = null, enable = true } = {}) {
     const trimmedName = String(name || "").trim();
-    const scopeKey = scope === "char" ? "char" : "global";
-    const targetCharId = scopeKey === "char" && charId != null ? String(charId) : null;
+    const scopeInfo = getNormalizedScopedRecord(scope, { charId, cardKey, cardLabel });
     if (!trimmedName) return null;
-    if (scopeKey === "char" && !targetCharId) return null;
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && !scopeInfo.cardKey) return null;
+    if (scopeInfo.scope === FILTER_SCOPE_CHAR && !scopeInfo.charId) return null;
 
     const now = new Date().toISOString();
     const pool = {
         id: `qig_pool_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
         name: trimmedName,
-        scope: scopeKey,
-        charId: targetCharId,
+        scope: scopeInfo.scope,
+        charId: scopeInfo.charId,
+        cardKey: scopeInfo.cardKey,
+        cardLabel: scopeInfo.cardLabel,
         createdAt: now,
         updatedAt: now,
     };
     filterPools.push(pool);
 
     if (enable) {
-        if (scopeKey === "char" && targetCharId) {
-            const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[targetCharId]));
+        if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+            const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByCard[scopeInfo.cardKey]));
             ids.add(pool.id);
-            activeFilterPoolIdsByChar[targetCharId] = [...ids];
+            activeFilterPoolIdsByCard[scopeInfo.cardKey] = [...ids];
+        } else if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+            const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[scopeInfo.charId]));
+            ids.add(pool.id);
+            activeFilterPoolIdsByChar[scopeInfo.charId] = [...ids];
         } else {
             const ids = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
             ids.add(pool.id);
@@ -5523,8 +5807,15 @@ function createFilterPoolRecord(name, { scope = "global", charId = null, enable 
 
 function enableFilterPool(pool) {
     if (!pool?.id) return;
-    if (pool.scope === "char" && pool.charId != null) {
-        const key = String(pool.charId);
+    const scopeInfo = getScopedRecordFromEntity(pool);
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByCard[scopeInfo.cardKey]));
+        ids.add(pool.id);
+        activeFilterPoolIdsByCard[scopeInfo.cardKey] = [...ids];
+        return;
+    }
+    if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+        const key = String(scopeInfo.charId);
         const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
         ids.add(pool.id);
         activeFilterPoolIdsByChar[key] = [...ids];
@@ -5545,51 +5836,130 @@ function ensureFilterPoolByName(name, options = {}) {
     return createFilterPoolRecord(name, options);
 }
 
-function getNextContextualFilterSortOrder(scopeCharId, excludeFilterId = null) {
-    const scopeKey = getContextualFilterScopeKey(scopeCharId);
+function getNextContextualFilterSortOrder(scopeRef, excludeFilterId = null) {
+    const scopeKey = getContextualFilterScopeKey(scopeRef);
     return contextualFilters.filter(filter =>
         filter?.id !== excludeFilterId &&
         getContextualFilterScopeKey(filter) === scopeKey
     ).length;
 }
 
-function getMappedPoolIdsForCopiedFilter(sourcePoolIds, { scope = "global", charId = null } = {}) {
+function finalizePoolIdsForScope(poolIds, { scope = FILTER_SCOPE_GLOBAL, charId = null, cardKey = null, cardLabel = null } = {}) {
+    const scopeInfo = getNormalizedScopedRecord(scope, { charId, cardKey, cardLabel });
+    let nextPoolIds = normalizePoolIdList(poolIds);
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+        const cardDefaultPool = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+            scope: FILTER_SCOPE_CARD,
+            cardKey: scopeInfo.cardKey,
+            cardLabel: scopeInfo.cardLabel,
+            enable: true,
+        });
+        const hasScopedPool = nextPoolIds.some(id => {
+            const pool = filterPools.find(entry => entry.id === id);
+            const poolScope = getScopedRecordFromEntity(pool);
+            return poolScope.scope === FILTER_SCOPE_CARD && poolScope.cardKey === scopeInfo.cardKey;
+        });
+        if (!hasScopedPool && cardDefaultPool?.id) {
+            nextPoolIds = nextPoolIds.filter(id => id !== DEFAULT_FILTER_POOL_ID);
+            nextPoolIds.unshift(cardDefaultPool.id);
+        }
+    } else if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+        const charDefaultPool = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+            scope: FILTER_SCOPE_CHAR,
+            charId: scopeInfo.charId,
+            enable: true,
+        });
+        const hasScopedPool = nextPoolIds.some(id => {
+            const pool = filterPools.find(entry => entry.id === id);
+            const poolScope = getScopedRecordFromEntity(pool);
+            return poolScope.scope === FILTER_SCOPE_CHAR && poolScope.charId === scopeInfo.charId;
+        });
+        if (!hasScopedPool && charDefaultPool?.id) {
+            nextPoolIds = nextPoolIds.filter(id => id !== DEFAULT_FILTER_POOL_ID);
+            nextPoolIds.unshift(charDefaultPool.id);
+        }
+    }
+    if (!nextPoolIds.length) nextPoolIds.push(DEFAULT_FILTER_POOL_ID);
+    return normalizePoolIdList(nextPoolIds);
+}
+
+function getMappedPoolIdsForCopiedFilter(sourcePoolIds, { scope = FILTER_SCOPE_GLOBAL, charId = null, cardKey = null, cardLabel = null } = {}) {
+    const scopeInfo = getNormalizedScopedRecord(scope, { charId, cardKey, cardLabel });
     const mappedPoolIds = [];
     for (const poolId of normalizePoolIdList(sourcePoolIds)) {
         const sourcePool = filterPools.find(pool => pool.id === poolId);
         const sourcePoolName = String(sourcePool?.name || "").trim();
-        if (poolId === DEFAULT_FILTER_POOL_ID || sourcePoolName.toLowerCase() === DEFAULT_FILTER_POOL_NAME.toLowerCase()) {
-            mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
+        if (poolId === DEFAULT_FILTER_POOL_ID || isDefaultFilterPoolName(sourcePoolName)) {
+            if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+                const scopedDefault = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+                    scope: FILTER_SCOPE_CARD,
+                    cardKey: scopeInfo.cardKey,
+                    cardLabel: scopeInfo.cardLabel,
+                    enable: true,
+                });
+                if (scopedDefault?.id) mappedPoolIds.push(scopedDefault.id);
+            } else if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+                const scopedDefault = ensureFilterPoolByName(DEFAULT_FILTER_POOL_NAME, {
+                    scope: FILTER_SCOPE_CHAR,
+                    charId: scopeInfo.charId,
+                    enable: true,
+                });
+                if (scopedDefault?.id) mappedPoolIds.push(scopedDefault.id);
+                else mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
+            } else {
+                mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
+            }
             continue;
         }
         if (!sourcePoolName) continue;
-        const mappedPool = ensureFilterPoolByName(sourcePoolName, { scope, charId, enable: true });
+        const mappedPool = ensureFilterPoolByName(sourcePoolName, {
+            scope: scopeInfo.scope,
+            charId: scopeInfo.charId,
+            cardKey: scopeInfo.cardKey,
+            cardLabel: scopeInfo.cardLabel,
+            enable: true,
+        });
         if (mappedPool?.id) mappedPoolIds.push(mappedPool.id);
     }
-    if (!mappedPoolIds.length) mappedPoolIds.push(DEFAULT_FILTER_POOL_ID);
-    return normalizePoolIdList(mappedPoolIds);
+    return finalizePoolIdsForScope(mappedPoolIds, scopeInfo);
 }
 
-function addFilterPool(scope = "global") {
+function addFilterPool(scope = FILTER_SCOPE_GLOBAL) {
     const currentCharId = getCurrentCharId();
-    const isCharScope = scope === "char";
-    const targetCharId = isCharScope && currentCharId != null ? String(currentCharId) : null;
-    if (isCharScope && !targetCharId) {
+    const currentCard = getCurrentCardScopeInfo();
+    const isCardScope = scope === FILTER_SCOPE_CARD;
+    const isCharScope = scope === FILTER_SCOPE_CHAR;
+    const targetScope = getNormalizedScopedRecord(scope, {
+        charId: isCharScope ? currentCharId : null,
+        cardKey: isCardScope ? currentCard.cardKey : null,
+        cardLabel: isCardScope ? currentCard.cardLabel : null,
+    });
+    if (isCardScope && !targetScope.cardKey) {
+        toastr.warning("Open a specific card chat to create a card-only pool.");
+        return;
+    }
+    if (isCharScope && !targetScope.charId) {
         toastr.warning("Open a character chat to create a character pool.");
         return;
     }
-    const rawName = prompt(`New ${isCharScope ? "character" : "global"} pool name:`);
+    const rawName = prompt(`New ${isCardScope ? "card" : isCharScope ? "character" : "global"} pool name:`);
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
         toastr.warning("Pool name cannot be empty.");
         return;
     }
-    if (findFilterPoolByName(name, { scope: isCharScope ? "char" : "global", charId: targetCharId })) {
+    if (findFilterPoolByName(name, targetScope)) {
         toastr.warning(`Pool "${name}" already exists in this scope.`);
         return;
     }
-    createFilterPoolRecord(name, { scope: isCharScope ? "char" : "global", charId: targetCharId, enable: true });
+    createFilterPoolRecord(name, {
+        scope: targetScope.scope,
+        charId: targetScope.charId,
+        cardKey: targetScope.cardKey,
+        cardLabel: targetScope.cardLabel,
+        enable: true,
+    });
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5620,15 +5990,34 @@ function deleteFilterPool(poolId) {
     if (!confirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`)) return;
     filterPools = filterPools.filter(p => p.id !== poolId);
     activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => id !== poolId);
+    const nextByCard = {};
+    for (const [cardKey, ids] of Object.entries(activeFilterPoolIdsByCard || {})) {
+        const nextIds = normalizePoolIdList(ids).filter(id => id !== poolId);
+        if (nextIds.length) nextByCard[cardKey] = nextIds;
+    }
+    activeFilterPoolIdsByCard = nextByCard;
     const nextByChar = {};
     for (const [charId, ids] of Object.entries(activeFilterPoolIdsByChar || {})) {
         const nextIds = normalizePoolIdList(ids).filter(id => id !== poolId);
         if (nextIds.length) nextByChar[charId] = nextIds;
     }
     activeFilterPoolIdsByChar = nextByChar;
+    const deletedPoolScope = getScopedRecordFromEntity(pool);
     for (const f of contextualFilters) {
         const nextPoolIds = normalizePoolIdList(f.poolIds).filter(id => id !== poolId);
-        f.poolIds = nextPoolIds.length ? nextPoolIds : [DEFAULT_FILTER_POOL_ID];
+        const filterScope = getScopedRecordFromEntity(f);
+        const shouldPreserveScopedDefault =
+            (deletedPoolScope.scope === FILTER_SCOPE_CARD &&
+                filterScope.scope === FILTER_SCOPE_CARD &&
+                !!filterScope.cardKey &&
+                filterScope.cardKey === deletedPoolScope.cardKey) ||
+            (deletedPoolScope.scope === FILTER_SCOPE_CHAR &&
+                filterScope.scope === FILTER_SCOPE_CHAR &&
+                !!filterScope.charId &&
+                filterScope.charId === deletedPoolScope.charId);
+        f.poolIds = shouldPreserveScopedDefault
+            ? finalizePoolIdsForScope(nextPoolIds, filterScope)
+            : (nextPoolIds.length ? nextPoolIds : [DEFAULT_FILTER_POOL_ID]);
     }
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
@@ -5637,8 +6026,16 @@ function deleteFilterPool(poolId) {
 function toggleFilterPool(poolId) {
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
-    if (pool.scope === "char") {
-        const key = String(pool.charId);
+    const scopeInfo = getScopedRecordFromEntity(pool);
+    if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+        const key = scopeInfo.cardKey;
+        const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByCard[key]));
+        if (ids.has(poolId)) ids.delete(poolId);
+        else ids.add(poolId);
+        if (ids.size > 0) activeFilterPoolIdsByCard[key] = [...ids];
+        else delete activeFilterPoolIdsByCard[key];
+    } else if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+        const key = String(scopeInfo.charId);
         const ids = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
         if (ids.has(poolId)) ids.delete(poolId);
         else ids.add(poolId);
@@ -5655,24 +6052,35 @@ function toggleFilterPool(poolId) {
 }
 
 function setVisiblePoolsEnabled(enabled) {
-    const selectedCharId = getSelectedFilterManagerCharId();
-    const { globalPools, charPools } = getVisibleFilterPools(selectedCharId);
+    const selectedScope = getSelectedFilterManagerScopeDescriptor();
+    const { globalPools, scopedPools } = getVisibleFilterPools(selectedScope);
     if (enabled) {
         const globalIds = new Set(normalizePoolIdList(activeFilterPoolIdsGlobal));
         for (const p of globalPools) globalIds.add(p.id);
         activeFilterPoolIdsGlobal = [...globalIds];
-        if (selectedCharId != null) {
-            const key = String(selectedCharId);
+        if (selectedScope.scope === FILTER_SCOPE_CARD && selectedScope.cardKey) {
+            const key = selectedScope.cardKey;
+            const cardIds = new Set(normalizePoolIdList(activeFilterPoolIdsByCard[key]));
+            for (const p of scopedPools) cardIds.add(p.id);
+            if (cardIds.size > 0) activeFilterPoolIdsByCard[key] = [...cardIds];
+        } else if (selectedScope.scope === FILTER_SCOPE_CHAR && selectedScope.charId) {
+            const key = String(selectedScope.charId);
             const charIds = new Set(normalizePoolIdList(activeFilterPoolIdsByChar[key]));
-            for (const p of charPools) charIds.add(p.id);
+            for (const p of scopedPools) charIds.add(p.id);
             if (charIds.size > 0) activeFilterPoolIdsByChar[key] = [...charIds];
         }
     } else {
         const hideGlobal = new Set(globalPools.map(p => p.id));
         activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => !hideGlobal.has(id));
-        if (selectedCharId != null) {
-            const key = String(selectedCharId);
-            const hideChar = new Set(charPools.map(p => p.id));
+        if (selectedScope.scope === FILTER_SCOPE_CARD && selectedScope.cardKey) {
+            const key = selectedScope.cardKey;
+            const hideCard = new Set(scopedPools.map(p => p.id));
+            const next = normalizePoolIdList(activeFilterPoolIdsByCard[key]).filter(id => !hideCard.has(id));
+            if (next.length > 0) activeFilterPoolIdsByCard[key] = next;
+            else delete activeFilterPoolIdsByCard[key];
+        } else if (selectedScope.scope === FILTER_SCOPE_CHAR && selectedScope.charId) {
+            const key = String(selectedScope.charId);
+            const hideChar = new Set(scopedPools.map(p => p.id));
             const next = normalizePoolIdList(activeFilterPoolIdsByChar[key]).filter(id => !hideChar.has(id));
             if (next.length > 0) activeFilterPoolIdsByChar[key] = next;
             else delete activeFilterPoolIdsByChar[key];
@@ -5685,11 +6093,36 @@ function setVisiblePoolsEnabled(enabled) {
 
 function showFilterDialog(filter) {
     const isNew = !filter;
-    const f = filter || { name: "", keywords: "", matchMode: "OR", positive: "", negative: "", removePositive: "", removeNegative: "", removeMode: "remove", priority: 0, description: "", charId: null, poolIds: [DEFAULT_FILTER_POOL_ID], seedOverride: null };
-    const isLLM = f.matchMode === "LLM";
+    const currentCard = getCurrentCardScopeInfo();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
-    const editingDifferentChar = f.charId && (!currentCharId || String(f.charId) !== String(currentCharId));
+    const defaultScope = currentCard.cardKey
+        ? getNormalizedScopedRecord(FILTER_SCOPE_CARD, { cardKey: currentCard.cardKey, cardLabel: currentCard.cardLabel })
+        : (currentCharId != null
+            ? getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId })
+            : getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL));
+    const f = filter || {
+        name: "",
+        keywords: "",
+        matchMode: "OR",
+        positive: "",
+        negative: "",
+        removePositive: "",
+        removeNegative: "",
+        removeMode: "remove",
+        priority: 0,
+        description: "",
+        scope: defaultScope.scope,
+        charId: defaultScope.charId,
+        cardKey: defaultScope.cardKey,
+        cardLabel: defaultScope.cardLabel,
+        poolIds: [DEFAULT_FILTER_POOL_ID],
+        seedOverride: null,
+    };
+    const isLLM = f.matchMode === "LLM";
+    const scopeInfo = getScopedRecordFromEntity(f);
+    const editingDifferentCard = scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey && scopeInfo.cardKey !== currentCard.cardKey;
+    const editingDifferentChar = scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId && (!currentCharId || String(scopeInfo.charId) !== String(currentCharId));
     const initialPoolIds = normalizePoolIdList(f.poolIds);
     const initialSeedOverride = normalizeSeedOverride(f.seedOverride);
     return new Promise((resolve) => {
@@ -5704,9 +6137,11 @@ function showFilterDialog(filter) {
                         <div class="qig-form-field">
                             <label for="qig-fd-scope">Scope</label>
                             <select id="qig-fd-scope">
-                                <option value="" ${!f.charId ? "selected" : ""}>Global (all characters)</option>
-                                ${currentCharId != null ? `<option value="${escapeHtml(String(currentCharId))}" ${f.charId && String(f.charId) === String(currentCharId) ? "selected" : ""}>This Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
-                                ${editingDifferentChar ? `<option value="${escapeHtml(String(f.charId))}" selected disabled>Other Character (${escapeHtml(String(f.charId))})</option>` : ""}
+                                <option value="global" ${scopeInfo.scope === FILTER_SCOPE_GLOBAL ? "selected" : ""}>Global (all characters)</option>
+                                ${currentCard.cardKey ? `<option value="card:${escapeHtml(String(currentCard.cardKey))}" ${scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey === currentCard.cardKey ? "selected" : ""}>Card Only: ${escapeHtml(currentCard.cardLabel || "Current Card")}</option>` : ""}
+                                ${currentCharId != null ? `<option value="char:${escapeHtml(String(currentCharId))}" ${scopeInfo.scope === FILTER_SCOPE_CHAR && String(scopeInfo.charId) === String(currentCharId) ? "selected" : ""}>Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
+                                ${editingDifferentCard ? `<option value="card:${escapeHtml(String(scopeInfo.cardKey))}" selected disabled>Other Card (${escapeHtml(scopeInfo.cardLabel || getCardNameForFilters(scopeInfo.cardKey))})</option>` : ""}
+                                ${editingDifferentChar ? `<option value="char:${escapeHtml(String(scopeInfo.charId))}" selected disabled>Other Character (${escapeHtml(getCharacterNameForFilters(scopeInfo.charId))})</option>` : ""}
                             </select>
                         </div>
                         <div class="qig-form-field qig-form-field--full">
@@ -5786,10 +6221,27 @@ function showFilterDialog(filter) {
                 checkboxes.forEach(cb => { if (cb.checked) selectedPoolIds.add(String(cb.value)); });
             };
 
+            const getSelectedScopeInfo = () => {
+                const scopeVal = document.getElementById("qig-fd-scope").value || "global";
+                if (scopeVal.startsWith("card:")) {
+                    const cardKey = scopeVal.slice(5) || null;
+                    return getNormalizedScopedRecord(FILTER_SCOPE_CARD, {
+                        cardKey,
+                        cardLabel: cardKey === currentCard.cardKey ? currentCard.cardLabel : getCardNameForFilters(cardKey),
+                    });
+                }
+                if (scopeVal.startsWith("char:")) {
+                    return getNormalizedScopedRecord(FILTER_SCOPE_CHAR, {
+                        charId: scopeVal.slice(5) || null,
+                    });
+                }
+                return getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL);
+            };
+
             const renderPoolChoices = () => {
                 syncSelectedPoolIds();
-                const scopeVal = document.getElementById("qig-fd-scope").value || null;
-                const poolChoices = getSelectablePoolsForFilterScope(scopeVal);
+                const selectedScope = getSelectedScopeInfo();
+                const poolChoices = getSelectablePoolsForFilterScope(selectedScope);
                 const available = new Set(poolChoices.map(p => p.id));
                 for (const id of [...selectedPoolIds]) {
                     if (!available.has(id)) selectedPoolIds.delete(id);
@@ -5804,9 +6256,12 @@ function showFilterDialog(filter) {
                 }
                 poolWrap.innerHTML = poolChoices.map(pool => {
                     const isChecked = selectedPoolIds.has(pool.id);
-                    const scopeBadge = pool.scope === "global"
+                    const poolScope = getScopedRecordFromEntity(pool);
+                    const scopeBadge = poolScope.scope === FILTER_SCOPE_GLOBAL
                         ? '<span class="qig-scope-badge qig-scope-badge--global">G</span>'
-                        : '<span class="qig-scope-badge qig-scope-badge--char">C</span>';
+                        : poolScope.scope === FILTER_SCOPE_CARD
+                            ? '<span class="qig-scope-badge qig-scope-badge--card">Card</span>'
+                            : '<span class="qig-scope-badge qig-scope-badge--char">Char</span>';
                     return `<label class="qig-pool-choice">
                         <input class="qig-fd-pool-cb" type="checkbox" value="${escapeHtml(pool.id)}" ${isChecked ? "checked" : ""}>
                         <span class="qig-pool-choice-name">${escapeHtml(pool.name)}</span>
@@ -5848,10 +6303,10 @@ function showFilterDialog(filter) {
                     return;
                 }
                 const selected = [...popup.querySelectorAll(".qig-fd-pool-cb:checked")].map(cb => String(cb.value));
-                const poolIds = normalizePoolIdList(selected);
+                const selectedScope = getSelectedScopeInfo();
+                const poolIds = finalizePoolIdsForScope(selected, selectedScope);
                 if (!poolIds.length) { alert("Select at least one pool."); return; }
                 popup.style.display = "none";
-                const scopeVal = document.getElementById("qig-fd-scope").value;
                 resolve({
                     name,
                     keywords: mode === "LLM" ? "" : keywords,
@@ -5863,7 +6318,10 @@ function showFilterDialog(filter) {
                     removeNegative: document.getElementById("qig-fd-remove-negative").value.trim(),
                     removeMode: "remove",
                     priority: parseInt(document.getElementById("qig-fd-priority").value) || 0,
-                    charId: scopeVal || null,
+                    scope: selectedScope.scope,
+                    charId: selectedScope.charId,
+                    cardKey: selectedScope.cardKey,
+                    cardLabel: selectedScope.cardLabel,
                     poolIds,
                     seedOverride,
                 });
@@ -5881,7 +6339,7 @@ async function addContextualFilter() {
     result.enabled = true;
     result.poolIds = normalizePoolIdList(result.poolIds);
     result.seedOverride = normalizeSeedOverride(result.seedOverride);
-    result.sortOrder = getNextContextualFilterSortOrder(result.charId);
+    result.sortOrder = getNextContextualFilterSortOrder(result);
     contextualFilters.push(result);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
@@ -5897,8 +6355,8 @@ async function editContextualFilter(id) {
     f.poolIds = normalizePoolIdList(f.poolIds);
     f.seedOverride = normalizeSeedOverride(f.seedOverride);
     f.sortOrder = previousScopeKey === getContextualFilterScopeKey(f)
-        ? normalizeContextualFilterSortOrder(f.sortOrder, getNextContextualFilterSortOrder(f.charId, id))
-        : getNextContextualFilterSortOrder(f.charId, id);
+        ? normalizeContextualFilterSortOrder(f.sortOrder, getNextContextualFilterSortOrder(f, id))
+        : getNextContextualFilterSortOrder(f, id);
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5922,18 +6380,43 @@ function toggleContextualFilter(id) {
 function clearContextualFilters() {
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
-    if (currentCharId != null) {
+    const currentCard = getCurrentCardScopeInfo();
+    if (currentCard.cardKey || currentCharId != null) {
+        const options = [
+            { value: 1, label: "All filters" },
+            { value: 2, label: "Global filters only" },
+        ];
+        if (currentCard.cardKey) {
+            options.push({
+                value: 3,
+                label: `${currentCard.cardLabel || "Current card"} card-only filters`,
+            });
+        }
+        if (currentCharId != null) {
+            options.push({
+                value: currentCard.cardKey ? 4 : 3,
+                label: `${charName || "This character"} character-wide filters`,
+            });
+        }
         const choice = prompt(
-            `Clear filters — type a number:\n1) All filters\n2) Global filters only\n3) ${charName || "This character"}'s filters only\n\nCancel to abort.`
+            `Clear filters — type a number:\n${options.map(option => `${option.value}) ${option.label}`).join("\n")}\n\nCancel to abort.`
         );
         if (!choice) return;
         const n = parseInt(choice);
         if (n === 1) {
             contextualFilters = [];
         } else if (n === 2) {
-            contextualFilters = contextualFilters.filter(f => !!f.charId);
-        } else if (n === 3) {
-            contextualFilters = contextualFilters.filter(f => !f.charId || String(f.charId) !== String(currentCharId));
+            contextualFilters = contextualFilters.filter(filter => getScopedRecordFromEntity(filter).scope !== FILTER_SCOPE_GLOBAL);
+        } else if (currentCard.cardKey && n === 3) {
+            contextualFilters = contextualFilters.filter(filter => {
+                const scopeInfo = getScopedRecordFromEntity(filter);
+                return scopeInfo.scope !== FILTER_SCOPE_CARD || scopeInfo.cardKey !== currentCard.cardKey;
+            });
+        } else if ((currentCard.cardKey && n === 4) || (!currentCard.cardKey && n === 3)) {
+            contextualFilters = contextualFilters.filter(filter => {
+                const scopeInfo = getScopedRecordFromEntity(filter);
+                return scopeInfo.scope !== FILTER_SCOPE_CHAR || String(scopeInfo.charId) !== String(currentCharId);
+            });
         } else {
             return;
         }
@@ -5945,30 +6428,44 @@ function clearContextualFilters() {
     renderContextualFilters();
 }
 
-function buildCopiedContextualFilter(filter, { scope = "global", charId = null } = {}) {
-    const targetScope = scope === "char" ? "char" : "global";
-    const targetCharId = targetScope === "char" && charId != null ? String(charId) : null;
+function buildCopiedContextualFilter(filter, { scope = FILTER_SCOPE_GLOBAL, charId = null, cardKey = null, cardLabel = null } = {}) {
+    const targetScope = getNormalizedScopedRecord(scope, { charId, cardKey, cardLabel });
     return {
         ...JSON.parse(JSON.stringify(filter)),
         id: generateUUID(),
-        charId: targetCharId,
-        poolIds: getMappedPoolIdsForCopiedFilter(filter.poolIds, { scope: targetScope, charId: targetCharId }),
+        scope: targetScope.scope,
+        charId: targetScope.charId,
+        cardKey: targetScope.cardKey,
+        cardLabel: targetScope.cardLabel,
+        poolIds: getMappedPoolIdsForCopiedFilter(filter.poolIds, targetScope),
         seedOverride: normalizeSeedOverride(filter.seedOverride),
-        sortOrder: getNextContextualFilterSortOrder(targetCharId),
+        sortOrder: getNextContextualFilterSortOrder(targetScope),
     };
 }
 
 function duplicateContextualFilter(id) {
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
+    const scopeInfo = getScopedRecordFromEntity(f);
+    const currentCard = getCurrentCardScopeInfo();
     const currentCharId = getCurrentCharId();
-    if (!f.charId && currentCharId == null) {
-        toastr.warning("Open a character chat to duplicate this filter into character scope.");
-        return;
+    let targetScope;
+    if (scopeInfo.scope === FILTER_SCOPE_GLOBAL) {
+        if (currentCard.cardKey) {
+            targetScope = getNormalizedScopedRecord(FILTER_SCOPE_CARD, {
+                cardKey: currentCard.cardKey,
+                cardLabel: currentCard.cardLabel,
+            });
+        } else if (currentCharId != null) {
+            targetScope = getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId });
+        } else {
+            toastr.warning("Open a character card to duplicate this filter into scoped mode.");
+            return;
+        }
+    } else {
+        targetScope = getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL);
     }
-    const targetScope = f.charId ? "global" : "char";
-    const targetCharId = targetScope === "char" ? String(currentCharId) : null;
-    contextualFilters.push(buildCopiedContextualFilter(f, { scope: targetScope, charId: targetCharId }));
+    contextualFilters.push(buildCopiedContextualFilter(f, targetScope));
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
@@ -5976,21 +6473,57 @@ function duplicateContextualFilter(id) {
 function copyContextualFilterToScope(id, target = "global") {
     const filter = contextualFilters.find(entry => entry.id === id);
     if (!filter) return;
-    if (target === "current") {
+    if (target === "current-card" || (target === "current" && getCurrentCardKey())) {
+        const currentCard = getCurrentCardScopeInfo();
+        if (!currentCard.cardKey) {
+            toastr.warning("Open a specific card chat to copy this filter into card-only scope.");
+            return;
+        }
+        contextualFilters.push(buildCopiedContextualFilter(filter, {
+            scope: FILTER_SCOPE_CARD,
+            cardKey: currentCard.cardKey,
+            cardLabel: currentCard.cardLabel,
+        }));
+    } else if (target === "current-char" || target === "current") {
         const currentCharId = getCurrentCharId();
         if (currentCharId == null) {
             toastr.warning("Open a character chat to copy this filter into character scope.");
             return;
         }
-        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: "char", charId: String(currentCharId) }));
+        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId) }));
     } else {
-        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: "global", charId: null }));
+        contextualFilters.push(buildCopiedContextualFilter(filter, { scope: FILTER_SCOPE_GLOBAL }));
     }
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
 }
 
-function copyFilterPoolToCurrentScope(poolId) {
+function copyFilterPoolToCurrentCard(poolId) {
+    const pool = filterPools.find(entry => entry.id === poolId);
+    if (!pool) return;
+    const currentCard = getCurrentCardScopeInfo();
+    if (!currentCard.cardKey) {
+        toastr.warning("Open a specific card chat to copy this pool into card-only scope.");
+        return;
+    }
+    const existing = findFilterPoolByName(pool.name, {
+        scope: FILTER_SCOPE_CARD,
+        cardKey: currentCard.cardKey,
+    });
+    ensureFilterPoolByName(pool.name, {
+        scope: FILTER_SCOPE_CARD,
+        cardKey: currentCard.cardKey,
+        cardLabel: currentCard.cardLabel,
+        enable: true,
+    });
+    ensureFilterPoolsState({ persist: true });
+    renderContextualFilters();
+    if (existing) {
+        toastr.info(`Pool "${pool.name}" already exists for the current card.`);
+    }
+}
+
+function copyFilterPoolToCurrentChar(poolId) {
     const pool = filterPools.find(entry => entry.id === poolId);
     if (!pool) return;
     const currentCharId = getCurrentCharId();
@@ -5998,13 +6531,21 @@ function copyFilterPoolToCurrentScope(poolId) {
         toastr.warning("Open a character chat to copy this pool into character scope.");
         return;
     }
-    const existing = findFilterPoolByName(pool.name, { scope: "char", charId: String(currentCharId) });
-    ensureFilterPoolByName(pool.name, { scope: "char", charId: String(currentCharId), enable: true });
+    const existing = findFilterPoolByName(pool.name, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId) });
+    ensureFilterPoolByName(pool.name, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId), enable: true });
     ensureFilterPoolsState({ persist: true });
     renderContextualFilters();
     if (existing) {
         toastr.info(`Pool "${pool.name}" already exists for the current character.`);
     }
+}
+
+function copyFilterPoolToCurrentScope(poolId) {
+    if (getCurrentCardKey()) {
+        copyFilterPoolToCurrentCard(poolId);
+        return;
+    }
+    copyFilterPoolToCurrentChar(poolId);
 }
 
 function setContextualFilterManagerScope(value) {
@@ -6067,27 +6608,57 @@ function moveContextualFilter(draggedId, targetId, position = "after") {
 
 function getContextualFiltersSummaryViewState() {
     ensureFilterPoolsState();
+    const currentCard = getCurrentCardScopeInfo();
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
-    const globalFilters = contextualFilters.filter(f => !f.charId).sort(compareContextualFilters);
-    const charFilters = currentCharId != null
-        ? contextualFilters.filter(f => f.charId && String(f.charId) === String(currentCharId)).sort(compareContextualFilters)
+    const activeCharIds = new Set(getActiveCharacterScopeIds());
+    const globalFilters = contextualFilters
+        .filter(filter => getScopedRecordFromEntity(filter).scope === FILTER_SCOPE_GLOBAL)
+        .sort(compareContextualFilters);
+    const cardFilters = currentCard.cardKey
+        ? contextualFilters.filter(filter => {
+            const scopeInfo = getScopedRecordFromEntity(filter);
+            return scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey === currentCard.cardKey;
+        }).sort(compareContextualFilters)
+        : [];
+    const charFilters = activeCharIds.size
+        ? contextualFilters.filter(filter => {
+            const scopeInfo = getScopedRecordFromEntity(filter);
+            return scopeInfo.scope === FILTER_SCOPE_CHAR && activeCharIds.has(String(scopeInfo.charId));
+        }).sort(compareContextualFilters)
         : [];
     const enabledPoolIds = getEnabledPoolIdsForCurrentContext();
-    const { globalPools, charPools } = getVisibleFilterPools(currentCharId);
-    const visibleFilters = [...globalFilters, ...charFilters];
+    const { globalPools } = getVisibleFilterPools(getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL));
+    const cardPools = currentCard.cardKey
+        ? getVisibleFilterPools(getNormalizedScopedRecord(FILTER_SCOPE_CARD, {
+            cardKey: currentCard.cardKey,
+            cardLabel: currentCard.cardLabel,
+        })).scopedPools
+        : [];
+    const charPools = currentCharId != null
+        ? getVisibleFilterPools(getNormalizedScopedRecord(FILTER_SCOPE_CHAR, {
+            charId: currentCharId,
+        })).scopedPools
+        : [];
+    const visibleFilters = [...globalFilters, ...cardFilters, ...charFilters];
     const activeVisibleCount = visibleFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds)).length;
     const seededFilterCount = visibleFilters.filter(filter => normalizeSeedOverride(filter?.seedOverride) != null).length;
     const otherScopeCount = getContextualFilterScopeOptions().filter(option =>
-        option.value !== FILTER_MANAGER_SCOPE_CURRENT &&
+        option.value !== FILTER_MANAGER_SCOPE_CURRENT_CARD &&
+        option.value !== FILTER_MANAGER_SCOPE_CURRENT_CHAR &&
         option.value !== FILTER_MANAGER_SCOPE_GLOBAL_ONLY
     ).length;
     return {
+        currentCardKey: currentCard.cardKey,
+        currentCardLabel: currentCard.cardLabel,
         currentCharId,
         charName,
         enabledPoolIds,
         globalPools,
+        cardPools,
         charPools,
+        cardFilters,
+        charFilters,
         visibleFilters,
         activeVisibleCount,
         seededFilterCount,
@@ -6097,13 +6668,18 @@ function getContextualFiltersSummaryViewState() {
 
 function renderContextualFiltersSummary(container, viewState = getContextualFiltersSummaryViewState()) {
     if (!container) return;
-    const totalPools = viewState.globalPools.length + viewState.charPools.length;
-    const scopeLabel = viewState.currentCharId != null ? (viewState.charName || "Current character") : "Global-only context";
-    const hiddenNote = viewState.otherScopeCount > 0
-        ? `Manage Filters can browse ${viewState.otherScopeCount} ${viewState.currentCharId != null ? "other " : ""}character scope(s) without switching chats.`
-        : (viewState.currentCharId != null
-            ? "All filters shown here belong to the current scope."
-            : "This summary is showing global filters only.");
+    const totalPools = viewState.globalPools.length + viewState.cardPools.length + viewState.charPools.length;
+    const scopeLabel = viewState.currentCardKey
+        ? `${viewState.currentCardLabel || "Current card"} + character scope`
+        : (viewState.currentCharId != null ? (viewState.charName || "Current character") : "Global-only context");
+    const scopeParts = [];
+    if (viewState.cardFilters.length) scopeParts.push(`${viewState.cardFilters.length} card-only`);
+    if (viewState.charFilters.length) scopeParts.push(`${viewState.charFilters.length} character-wide`);
+    const hiddenNote = scopeParts.length
+        ? `Current context includes ${scopeParts.join(" and ")} filter(s), plus global filters.${viewState.otherScopeCount > 0 ? ` Manage Filters can browse ${viewState.otherScopeCount} other saved scope(s).` : ""}`
+        : (viewState.otherScopeCount > 0
+            ? `Manage Filters can browse ${viewState.otherScopeCount} other saved scope(s) without switching chats.`
+            : "This summary is showing filters available in the current context.");
     container.innerHTML = `
         <div class="qig-filter-summary">
             <div class="qig-filter-summary-grid">
@@ -6132,56 +6708,96 @@ function getContextualFilterManagerViewState() {
     ensureFilterPoolsState();
     const scopeOptions = getContextualFilterScopeOptions();
     const selectedScopeValue = ensureContextualFilterManagerScopeSelection(scopeOptions);
+    const currentCard = getCurrentCardScopeInfo();
     const currentCharId = getCurrentCharId();
     const currentCharKey = currentCharId != null ? String(currentCharId) : null;
-    const viewedCharId = getSelectedFilterManagerCharId(selectedScopeValue);
-    const knownNames = getKnownFilterScopeCharacterMap();
-    const viewedCharName = viewedCharId != null ? getCharacterNameForFilters(viewedCharId, knownNames) : null;
-    const isViewingCurrentCharScope = viewedCharId != null && currentCharKey != null && viewedCharId === currentCharKey;
-    const enabledPoolIds = getEnabledPoolIdsForScope(viewedCharId);
-    const { globalPools, charPools } = getVisibleFilterPools(viewedCharId);
-    const globalFilters = contextualFilters.filter(filter => !filter.charId).sort(compareContextualFilters);
-    const charFilters = viewedCharId != null
-        ? contextualFilters.filter(filter => filter.charId && String(filter.charId) === viewedCharId).sort(compareContextualFilters)
-        : [];
+    const viewedScope = getSelectedFilterManagerScopeDescriptor(selectedScopeValue);
+    const knownCharNames = getKnownFilterScopeCharacterMap();
+    const knownCardNames = getKnownFilterScopeCardMap();
+    const viewedScopeLabel = viewedScope.scope === FILTER_SCOPE_CARD
+        ? getCardNameForFilters(viewedScope.cardKey, knownCardNames)
+        : viewedScope.scope === FILTER_SCOPE_CHAR
+            ? getCharacterNameForFilters(viewedScope.charId, knownCharNames)
+            : null;
+    const isViewingCurrentCardScope = viewedScope.scope === FILTER_SCOPE_CARD && !!currentCard.cardKey && viewedScope.cardKey === currentCard.cardKey;
+    const isViewingCurrentCharScope = viewedScope.scope === FILTER_SCOPE_CHAR && currentCharKey != null && viewedScope.charId === currentCharKey;
+    const enabledPoolIds = getEnabledPoolIdsForScope(viewedScope);
+    const { globalPools, scopedPools } = getVisibleFilterPools(viewedScope);
+    const globalFilters = contextualFilters
+        .filter(filter => getScopedRecordFromEntity(filter).scope === FILTER_SCOPE_GLOBAL)
+        .sort(compareContextualFilters);
+    const scopedFilters = contextualFilters.filter(filter => {
+        const scopeInfo = getScopedRecordFromEntity(filter);
+        if (viewedScope.scope === FILTER_SCOPE_CARD) {
+            return scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey === viewedScope.cardKey;
+        }
+        if (viewedScope.scope === FILTER_SCOPE_CHAR) {
+            return scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId === viewedScope.charId;
+        }
+        return false;
+    }).sort(compareContextualFilters);
 
     const displayGlobalPools = filterManagerUiState.hideInactive
         ? globalPools.filter(pool => enabledPoolIds.has(pool.id))
         : globalPools;
-    const displayCharPools = filterManagerUiState.hideInactive
-        ? charPools.filter(pool => enabledPoolIds.has(pool.id))
-        : charPools;
+    const displayScopedPools = filterManagerUiState.hideInactive
+        ? scopedPools.filter(pool => enabledPoolIds.has(pool.id))
+        : scopedPools;
     const displayGlobalFilters = filterManagerUiState.hideInactive
         ? globalFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds))
         : globalFilters;
-    const displayCharFilters = filterManagerUiState.hideInactive
-        ? charFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds))
-        : charFilters;
+    const displayScopedFilters = filterManagerUiState.hideInactive
+        ? scopedFilters.filter(filter => isContextualFilterEffective(filter, enabledPoolIds))
+        : scopedFilters;
 
     return {
         scopeOptions,
         selectedScopeValue,
+        currentCardKey: currentCard.cardKey,
+        currentCardLabel: currentCard.cardLabel,
         currentCharId: currentCharKey,
-        viewedCharId,
-        viewedCharName,
+        currentCharName: getCurrentCharName(),
+        viewedScope,
+        viewedScopeLabel,
         isViewingCurrentCharScope,
-        isBrowsingOtherChar: viewedCharId != null && !isViewingCurrentCharScope,
+        isViewingCurrentCardScope,
+        isViewingCurrentScope: viewedScope.scope === FILTER_SCOPE_GLOBAL || isViewingCurrentCardScope || isViewingCurrentCharScope,
+        isBrowsingOtherScope: viewedScope.scope !== FILTER_SCOPE_GLOBAL && !isViewingCurrentCardScope && !isViewingCurrentCharScope,
         enabledPoolIds,
         hideInactive: !!filterManagerUiState.hideInactive,
         globalPools,
-        charPools,
+        scopedPools,
         displayGlobalPools,
-        displayCharPools,
+        displayScopedPools,
         globalFilters,
-        charFilters,
+        scopedFilters,
         displayGlobalFilters,
-        displayCharFilters,
-        visibleFilters: [...globalFilters, ...charFilters],
-        displayFilters: [...displayGlobalFilters, ...displayCharFilters],
-        visiblePools: [...globalPools, ...charPools],
-        displayPools: [...displayGlobalPools, ...displayCharPools],
-        activeVisibleCount: [...globalFilters, ...charFilters].filter(filter => isContextualFilterEffective(filter, enabledPoolIds)).length,
-        seededFilterCount: [...globalFilters, ...charFilters].filter(filter => normalizeSeedOverride(filter?.seedOverride) != null).length,
+        displayScopedFilters,
+        visibleFilters: [...globalFilters, ...scopedFilters],
+        displayFilters: [...displayGlobalFilters, ...displayScopedFilters],
+        visiblePools: [...globalPools, ...scopedPools],
+        displayPools: [...displayGlobalPools, ...displayScopedPools],
+        activeVisibleCount: [...globalFilters, ...scopedFilters].filter(filter => isContextualFilterEffective(filter, enabledPoolIds)).length,
+        seededFilterCount: [...globalFilters, ...scopedFilters].filter(filter => normalizeSeedOverride(filter?.seedOverride) != null).length,
+    };
+}
+
+function getScopeBadgeMeta(scope) {
+    if (scope === FILTER_SCOPE_CARD) {
+        return {
+            className: "qig-scope-badge--card",
+            label: "Card",
+        };
+    }
+    if (scope === FILTER_SCOPE_CHAR) {
+        return {
+            className: "qig-scope-badge--char",
+            label: "Char",
+        };
+    }
+    return {
+        className: "qig-scope-badge--global",
+        label: "G",
     };
 }
 
@@ -6273,24 +6889,29 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
     const filtersContainer = popup.querySelector("#qig-filter-manager-filters");
     if (!actionContainer || !poolsContainer || !filtersContainer) return;
 
-    const renderScopeBadge = (scope, title) => `<span class="qig-scope-badge ${scope === "global" ? "qig-scope-badge--global" : "qig-scope-badge--char"}" title="${escapeHtml(title)}">${scope === "global" ? "G" : "C"}</span>`;
+    const renderScopeBadge = (scope, title) => {
+        const meta = getScopeBadgeMeta(scope);
+        return `<span class="qig-scope-badge ${meta.className}" title="${escapeHtml(title)}">${escapeHtml(meta.label)}</span>`;
+    };
     const formatSectionTitle = (label, shown, total) => `${label} (${shown}${shown !== total ? `/${total}` : ""})`;
 
     const renderPoolRow = (pool) => {
+        const poolScope = getScopedRecordFromEntity(pool);
         const isActive = viewState.enabledPoolIds.has(pool.id);
         const assignedCount = contextualFilters.filter(f => normalizePoolIdList(f.poolIds).includes(pool.id)).length;
         const canDelete = pool.id !== DEFAULT_FILTER_POOL_ID;
-        const isEditable = pool.scope === "global" || viewState.isViewingCurrentCharScope;
+        const isEditable = poolScope.scope === FILTER_SCOPE_GLOBAL || viewState.isViewingCurrentScope;
         if (!isEditable) {
             return `<div class="qig-manager-row qig-manager-row--readonly ${isActive ? "" : "qig-manager-row--dimmed"}">
-                <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""} qig-manager-main-button--readonly" title="Browse mode: copy this pool into the current character scope">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
-                ${renderScopeBadge(pool.scope, pool.scope === "global" ? "Global pool" : "Character pool")}
-                ${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyFilterPoolToCurrentScope('${escapeHtml(pool.id)}')" title="Copy pool to the current character">Copy to Current</button>` : `<span class="qig-manager-muted-inline">Read-only</span>`}
+                <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""} qig-manager-main-button--readonly" title="Browse mode: copy this pool into another scope">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
+                ${renderScopeBadge(poolScope.scope, poolScope.scope === FILTER_SCOPE_GLOBAL ? "Global pool" : poolScope.scope === FILTER_SCOPE_CARD ? "Card-only pool" : "Character-wide pool")}
+                ${viewState.currentCardKey ? `<button class="menu_button qig-manager-copy-button" onclick="copyFilterPoolToCurrentCard('${escapeHtml(pool.id)}')" title="Copy pool to the current card">Copy to Card</button>` : ""}
+                ${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyFilterPoolToCurrentChar('${escapeHtml(pool.id)}')" title="Copy pool to the current character">Copy to Char</button>` : `<span class="qig-manager-muted-inline">Read-only</span>`}
             </div>`;
         }
         return `<div class="qig-manager-row ${isActive ? "" : "qig-manager-row--dimmed"}">
             <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""}" onclick="toggleFilterPool('${escapeHtml(pool.id)}')" title="Toggle pool">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
-            ${renderScopeBadge(pool.scope, pool.scope === "global" ? "Global pool" : "Character pool")}
+            ${renderScopeBadge(poolScope.scope, poolScope.scope === FILTER_SCOPE_GLOBAL ? "Global pool" : poolScope.scope === FILTER_SCOPE_CARD ? "Card-only pool" : "Character-wide pool")}
             <button class="menu_button qig-manager-icon-button" onclick="renameFilterPool('${escapeHtml(pool.id)}')" title="Rename pool">✎</button>
             <button class="menu_button qig-manager-icon-button" onclick="deleteFilterPool('${escapeHtml(pool.id)}')" ${canDelete ? "" : "disabled"} title="Delete pool">🗑️</button>
         </div>`;
@@ -6312,7 +6933,8 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         const poolNames = normalizePoolIdList(f.poolIds).map(id => getPoolNameById(id));
         const poolInfo = poolNames.length ? `Pools: ${poolNames.join(", ")}` : `Pools: ${DEFAULT_FILTER_POOL_NAME}`;
         const ePoolInfo = escapeHtml(poolInfo);
-        const isGlobal = !f.charId;
+        const filterScope = getScopedRecordFromEntity(f);
+        const isGlobal = filterScope.scope === FILTER_SCOPE_GLOBAL;
         const effectiveEnabled = isContextualFilterEffective(f, viewState.enabledPoolIds);
         const seedOverride = normalizeSeedOverride(f.seedOverride);
         const statusParts = [
@@ -6321,8 +6943,13 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             seedOverride != null ? `seed ${seedOverride}` : "",
             effectiveEnabled ? "" : "off",
         ].filter(Boolean).join(" ");
-        const isEditable = isGlobal || viewState.isViewingCurrentCharScope;
-        const tooltip = `${eMode}: ${eDetail}\nPriority: ${f.priority}\n${seedOverride != null ? `Seed Override: ${seedOverride}\n` : ""}${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}`;
+        const isEditable = isGlobal || viewState.isViewingCurrentScope;
+        const scopeLabel = filterScope.scope === FILTER_SCOPE_CARD
+            ? `Card Only: ${filterScope.cardLabel || getCardNameForFilters(filterScope.cardKey)}`
+            : filterScope.scope === FILTER_SCOPE_CHAR
+                ? `Character: ${getCharacterNameForFilters(filterScope.charId)}`
+                : "Global";
+        const tooltip = `${scopeLabel}\n${eMode}: ${eDetail}\nPriority: ${f.priority}\n${seedOverride != null ? `Seed Override: ${seedOverride}\n` : ""}${ePoolInfo}${eRemovalInfo ? `\n${eRemovalInfo}` : ""}`;
         const rowClasses = [
             "qig-manager-row",
             effectiveEnabled ? "" : "qig-manager-row--dimmed",
@@ -6335,21 +6962,25 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         if (!isEditable) {
             return `<div class="${rowClasses}">` +
             `<span class="qig-manager-drag-placeholder" title="Browse mode">⋮⋮</span>` +
-            renderScopeBadge("char", "Character filter") +
+            renderScopeBadge(filterScope.scope, filterScope.scope === FILTER_SCOPE_CARD ? "Card-only filter" : filterScope.scope === FILTER_SCOPE_CHAR ? "Character-wide filter" : "Global filter") +
             `<button class="menu_button qig-manager-main-button qig-manager-main-button--readonly" title="${tooltip}">${eName}</button>` +
             `<span class="qig-filter-status">${escapeHtml(statusParts)}</span>` +
-            `${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'current')" title="Copy filter to the current character">Copy to Current</button>` : ""}` +
+            `${viewState.currentCardKey ? `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'current-card')" title="Copy filter to the current card">Copy to Card</button>` : ""}` +
+            `${viewState.currentCharId != null ? `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'current-char')" title="Copy filter to the current character">Copy to Char</button>` : ""}` +
             `<button class="menu_button qig-manager-copy-button" onclick="copyContextualFilterToScope('${eId}', 'global')" title="Copy filter to global scope">Copy to Global</button>` +
             `</div>`;
         }
 
+        const duplicateTargetLabel = isGlobal
+            ? (viewState.currentCardKey ? "card" : viewState.currentCharId != null ? "character" : "scoped")
+            : "global";
         return `<div class="${rowClasses}" data-filter-id="${eId}">` +
         `<button class="menu_button qig-manager-icon-button qig-filter-drag-handle" type="button" draggable="true" data-filter-id="${eId}" title="Drag to reorder filters with the same priority">⋮⋮</button>` +
         `<input type="checkbox" ${f.enabled ? "checked" : ""} onchange="toggleContextualFilter('${eId}')" title="Enable/disable">` +
-        renderScopeBadge(isGlobal ? "global" : "char", isGlobal ? "Global filter" : "Character filter") +
+        renderScopeBadge(filterScope.scope, filterScope.scope === FILTER_SCOPE_CARD ? "Card-only filter" : filterScope.scope === FILTER_SCOPE_CHAR ? "Character-wide filter" : "Global filter") +
         `<button class="menu_button qig-manager-main-button" onclick="editContextualFilter('${eId}')" title="${tooltip}">${eName}</button>` +
         `<span class="qig-filter-status">${escapeHtml(statusParts)}</span>` +
-        `<button class="menu_button qig-manager-icon-button" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${isGlobal ? "character" : "global"} scope">\u29C9</button>` +
+        `<button class="menu_button qig-manager-icon-button" onclick="duplicateContextualFilter('${eId}')" title="Duplicate to ${duplicateTargetLabel} scope">\u29C9</button>` +
         `<button class="menu_button qig-manager-icon-button" onclick="deleteContextualFilter('${eId}')" title="Delete filter">×</button>` +
         `</div>`;
     };
@@ -6359,9 +6990,12 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         poolHtml += `<div class="qig-manager-section-title">${formatSectionTitle("Global Pools", viewState.displayGlobalPools.length, viewState.globalPools.length)}</div>`;
         poolHtml += viewState.displayGlobalPools.map(renderPoolRow).join("");
     }
-    if (viewState.charPools.length) {
-        poolHtml += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(`${viewState.viewedCharName || "Character"} Pools`, viewState.displayCharPools.length, viewState.charPools.length))}</div>`;
-        poolHtml += viewState.displayCharPools.map(renderPoolRow).join("");
+    if (viewState.scopedPools.length) {
+        const scopedPoolLabel = viewState.viewedScope.scope === FILTER_SCOPE_CARD
+            ? `${viewState.viewedScopeLabel || "Card"} Pools`
+            : `${viewState.viewedScopeLabel || "Character"} Pools`;
+        poolHtml += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(scopedPoolLabel, viewState.displayScopedPools.length, viewState.scopedPools.length))}</div>`;
+        poolHtml += viewState.displayScopedPools.map(renderPoolRow).join("");
     }
     if (!poolHtml) poolHtml = `<div class="qig-help">No pools available yet. Create one from the toolbar above.</div>`;
 
@@ -6370,9 +7004,12 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         html += `<div class="qig-manager-section-title">${formatSectionTitle("Global Filters", viewState.displayGlobalFilters.length, viewState.globalFilters.length)}</div>`;
         html += viewState.displayGlobalFilters.map(renderRow).join("");
     }
-    if (viewState.charFilters.length) {
-        html += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(`${viewState.viewedCharName || "Character"} Filters`, viewState.displayCharFilters.length, viewState.charFilters.length))}</div>`;
-        html += viewState.displayCharFilters.map(renderRow).join("");
+    if (viewState.scopedFilters.length) {
+        const scopedFilterLabel = viewState.viewedScope.scope === FILTER_SCOPE_CARD
+            ? `${viewState.viewedScopeLabel || "Card"} Filters`
+            : `${viewState.viewedScopeLabel || "Character"} Filters`;
+        html += `<div class="qig-manager-section-title">${escapeHtml(formatSectionTitle(scopedFilterLabel, viewState.displayScopedFilters.length, viewState.scopedFilters.length))}</div>`;
+        html += viewState.displayScopedFilters.map(renderRow).join("");
     }
     if (!viewState.displayFilters.length && viewState.visibleFilters.length && viewState.hideInactive) {
         html += `<div class="qig-manager-muted">All filters in this view are currently inactive.</div>`;
@@ -6386,11 +7023,13 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             ${escapeHtml(option.label)}
         </option>
     `).join("");
-    const scopeSummary = viewState.viewedCharId != null
-        ? `${escapeHtml(viewState.viewedCharName || "Character")} + global`
-        : "Global only";
-    const browseSummary = viewState.isBrowsingOtherChar
-        ? ` Browsing another character is read-only; use copy buttons to bring items into the current/global scope.`
+    const scopeSummary = viewState.viewedScope.scope === FILTER_SCOPE_CARD
+        ? `Card: ${escapeHtml(viewState.viewedScopeLabel || "Current")} + global`
+        : viewState.viewedScope.scope === FILTER_SCOPE_CHAR
+            ? `Character: ${escapeHtml(viewState.viewedScopeLabel || "Current")} + global`
+            : "Global only";
+    const browseSummary = viewState.isBrowsingOtherScope
+        ? ` Browsing another ${viewState.viewedScope.scope === FILTER_SCOPE_CARD ? "card" : "character"} scope is read-only; use copy buttons to bring items into the current/global scope.`
         : "";
     const hiddenSummary = viewState.hideInactive && viewState.displayFilters.length !== viewState.visibleFilters.length
         ? ` Showing ${viewState.displayFilters.length} after hiding inactive rows.`
@@ -6411,6 +7050,7 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         </div>
         <div class="qig-filter-manager-actions">
             <button class="menu_button" onclick="addFilterPoolGlobal()">+ Global Pool</button>
+            <button class="menu_button" onclick="addFilterPoolForCurrentCard()">+ Card Pool</button>
             <button class="menu_button" onclick="addFilterPoolForCurrentChar()">+ Char Pool</button>
             <button class="menu_button" onclick="setVisiblePoolsEnabled(true)">Enable Shown Pools</button>
             <button class="menu_button" onclick="setVisiblePoolsEnabled(false)">Disable Shown Pools</button>
@@ -6666,10 +7306,13 @@ window.clearContextualFilters = clearContextualFilters;
 window.duplicateContextualFilter = duplicateContextualFilter;
 window.copyContextualFilterToScope = copyContextualFilterToScope;
 window.copyFilterPoolToCurrentScope = copyFilterPoolToCurrentScope;
+window.copyFilterPoolToCurrentCard = copyFilterPoolToCurrentCard;
+window.copyFilterPoolToCurrentChar = copyFilterPoolToCurrentChar;
 window.showContextualFilterManager = showContextualFilterManager;
 window.setContextualFilterManagerScope = setContextualFilterManagerScope;
 window.setContextualFilterManagerHideInactive = setContextualFilterManagerHideInactive;
 window.addFilterPoolGlobal = () => addFilterPool("global");
+window.addFilterPoolForCurrentCard = () => addFilterPool("card");
 window.addFilterPoolForCurrentChar = () => addFilterPool("char");
 window.renameFilterPool = renameFilterPool;
 window.deleteFilterPool = deleteFilterPool;
@@ -6744,10 +7387,16 @@ function getCurrentCharId() {
 }
 
 function getCurrentCharName() {
-    const ctx = getContext();
-    if (ctx?.characterId == null) return null;
-    const char = ctx.characters?.[ctx.characterId];
-    return char?.name || char?.avatar || null;
+    const entry = getCurrentCharacterEntry();
+    return entry?.name || entry?.avatar || null;
+}
+
+function getCurrentCardKey() {
+    return getCurrentCardScopeInfo().cardKey;
+}
+
+function getCurrentCardLabel() {
+    return getCurrentCardScopeInfo().cardLabel;
 }
 
 function getKnownFilterScopeCharacterMap(ctx = getContext()) {
@@ -6783,19 +7432,82 @@ function getCharacterNameForFilters(charId, knownMap = getKnownFilterScopeCharac
     return knownMap.get(key) || `Character ${key}`;
 }
 
-function getDefaultFilterManagerScopeValue() {
-    return getCurrentCharId() != null ? FILTER_MANAGER_SCOPE_CURRENT : FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+function getKnownFilterScopeCardMap(ctx = getContext()) {
+    const known = new Map();
+    for (const entry of getContextCharactersList(ctx)) {
+        const rawCardKey = String(entry?.avatar || entry?.data?.avatar || "").trim();
+        const cardKey = normalizeCardScopeKey(rawCardKey);
+        if (!cardKey || known.has(cardKey)) continue;
+        known.set(cardKey, normalizeScopeLabel(entry?.name || entry?.avatar) || formatCardScopeFallbackLabel(rawCardKey));
+    }
+
+    const currentCard = getCurrentCardScopeInfo(ctx);
+    if (currentCard.cardKey && !known.has(currentCard.cardKey)) {
+        known.set(currentCard.cardKey, currentCard.cardLabel || formatCardScopeFallbackLabel(currentCard.cardKey));
+    }
+
+    for (const filter of contextualFilters) {
+        const scopeInfo = getScopedRecordFromEntity(filter);
+        if (scopeInfo.scope !== FILTER_SCOPE_CARD || !scopeInfo.cardKey || known.has(scopeInfo.cardKey)) continue;
+        known.set(scopeInfo.cardKey, normalizeScopeLabel(filter.cardLabel) || formatCardScopeFallbackLabel(scopeInfo.cardKey));
+    }
+
+    for (const pool of filterPools) {
+        const scopeInfo = getScopedRecordFromEntity(pool);
+        if (scopeInfo.scope !== FILTER_SCOPE_CARD || !scopeInfo.cardKey || known.has(scopeInfo.cardKey)) continue;
+        known.set(scopeInfo.cardKey, normalizeScopeLabel(pool.cardLabel) || formatCardScopeFallbackLabel(scopeInfo.cardKey));
+    }
+
+    return known;
 }
 
-function getSelectedFilterManagerCharId(selectedScopeValue = filterManagerUiState.selectedScopeCharId) {
-    if (selectedScopeValue === FILTER_MANAGER_SCOPE_CURRENT) {
-        const currentCharId = getCurrentCharId();
-        return currentCharId != null ? String(currentCharId) : null;
+function getCardNameForFilters(cardKey, knownMap = getKnownFilterScopeCardMap()) {
+    const key = normalizeCardScopeKey(cardKey);
+    if (!key) return "Card";
+    return knownMap.get(key) || formatCardScopeFallbackLabel(key);
+}
+
+function getFilterManagerScopeValue(scope, { cardKey = null, charId = null } = {}) {
+    if (scope === FILTER_SCOPE_CARD && cardKey) return `card:${normalizeCardScopeKey(cardKey)}`;
+    if (scope === FILTER_SCOPE_CHAR && charId != null && charId !== "") return `char:${String(charId)}`;
+    return FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+}
+
+function getDefaultFilterManagerScopeValue() {
+    if (getCurrentCardKey()) return FILTER_MANAGER_SCOPE_CURRENT_CARD;
+    if (getCurrentCharId() != null) return FILTER_MANAGER_SCOPE_CURRENT_CHAR;
+    return FILTER_MANAGER_SCOPE_GLOBAL_ONLY;
+}
+
+function getSelectedFilterManagerScopeDescriptor(selectedScopeValue = filterManagerUiState.selectedScopeCharId) {
+    if (selectedScopeValue === FILTER_MANAGER_SCOPE_CURRENT_CARD) {
+        const currentCard = getCurrentCardScopeInfo();
+        return getNormalizedScopedRecord(FILTER_SCOPE_CARD, {
+            cardKey: currentCard.cardKey,
+            cardLabel: currentCard.cardLabel,
+        });
     }
-    if (selectedScopeValue == null || selectedScopeValue === FILTER_MANAGER_SCOPE_GLOBAL_ONLY || selectedScopeValue === "") {
-        return null;
+    if (selectedScopeValue === FILTER_MANAGER_SCOPE_CURRENT_CHAR) {
+        return getNormalizedScopedRecord(FILTER_SCOPE_CHAR, {
+            charId: getCurrentCharId(),
+        });
     }
-    return String(selectedScopeValue);
+    if (selectedScopeValue == null || selectedScopeValue === FILTER_MANAGER_SCOPE_GLOBAL_ONLY || selectedScopeValue === "" || selectedScopeValue === FILTER_SCOPE_GLOBAL) {
+        return getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL);
+    }
+    if (String(selectedScopeValue).startsWith("card:")) {
+        const rawCardKey = String(selectedScopeValue).slice(5);
+        return getNormalizedScopedRecord(FILTER_SCOPE_CARD, {
+            cardKey: rawCardKey,
+            cardLabel: getCardNameForFilters(rawCardKey),
+        });
+    }
+    if (String(selectedScopeValue).startsWith("char:")) {
+        return getNormalizedScopedRecord(FILTER_SCOPE_CHAR, {
+            charId: String(selectedScopeValue).slice(5),
+        });
+    }
+    return getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL);
 }
 
 function resetContextualFilterManagerState() {
@@ -6810,49 +7522,82 @@ function resetContextualFilterManagerState() {
 
 function getContextualFilterScopeOptions() {
     const currentCharId = getCurrentCharId();
+    const currentCard = getCurrentCardScopeInfo();
     const currentKey = currentCharId != null ? String(currentCharId) : null;
     const nameMap = getKnownFilterScopeCharacterMap();
+    const cardMap = getKnownFilterScopeCardMap();
     const otherCharIds = new Set();
+    const otherCardKeys = new Set();
 
     for (const filter of contextualFilters) {
-        if (filter?.charId != null && filter.charId !== "") {
-            otherCharIds.add(String(filter.charId));
+        const scopeInfo = getScopedRecordFromEntity(filter);
+        if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+            otherCharIds.add(String(scopeInfo.charId));
+        }
+        if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+            otherCardKeys.add(scopeInfo.cardKey);
         }
     }
     for (const pool of filterPools) {
-        if (pool?.scope === "char" && pool.charId != null && pool.charId !== "") {
-            otherCharIds.add(String(pool.charId));
+        const scopeInfo = getScopedRecordFromEntity(pool);
+        if (scopeInfo.scope === FILTER_SCOPE_CHAR && scopeInfo.charId) {
+            otherCharIds.add(String(scopeInfo.charId));
+        }
+        if (scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey) {
+            otherCardKeys.add(scopeInfo.cardKey);
         }
     }
 
     const options = [];
+    if (currentCard.cardKey) {
+        options.push({
+            value: FILTER_MANAGER_SCOPE_CURRENT_CARD,
+            scope: FILTER_SCOPE_CARD,
+            cardKey: currentCard.cardKey,
+            label: `Current Card: ${getCardNameForFilters(currentCard.cardKey, cardMap)}`,
+            isCurrent: true,
+        });
+    }
     if (currentKey != null) {
         options.push({
-            value: FILTER_MANAGER_SCOPE_CURRENT,
+            value: FILTER_MANAGER_SCOPE_CURRENT_CHAR,
+            scope: FILTER_SCOPE_CHAR,
             charId: currentKey,
-            label: `Current: ${getCharacterNameForFilters(currentKey, nameMap)}`,
+            label: `Current Character: ${getCharacterNameForFilters(currentKey, nameMap)}`,
             isCurrent: true,
         });
     }
 
     options.push({
         value: FILTER_MANAGER_SCOPE_GLOBAL_ONLY,
-        charId: null,
+        scope: FILTER_SCOPE_GLOBAL,
         label: "Global only",
         isCurrent: false,
     });
 
-    const otherOptions = [...otherCharIds]
-        .filter(charId => charId !== currentKey)
-        .map(charId => ({
-            value: charId,
-            charId,
-            label: getCharacterNameForFilters(charId, nameMap),
+    const otherCardOptions = [...otherCardKeys]
+        .filter(cardKey => cardKey !== currentCard.cardKey)
+        .map(cardKey => ({
+            value: getFilterManagerScopeValue(FILTER_SCOPE_CARD, { cardKey }),
+            scope: FILTER_SCOPE_CARD,
+            cardKey,
+            label: `Card: ${getCardNameForFilters(cardKey, cardMap)}`,
             isCurrent: false,
         }))
         .sort((a, b) => a.label.localeCompare(b.label));
 
-    return [...options, ...otherOptions];
+    const otherOptions = [...otherCharIds]
+        .filter(charId => charId !== currentKey)
+        .map(charId => ({
+            value: getFilterManagerScopeValue(FILTER_SCOPE_CHAR, { charId }),
+            scope: FILTER_SCOPE_CHAR,
+            charId,
+            label: `Character: ${getCharacterNameForFilters(charId, nameMap)}`,
+            isCurrent: false,
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label));
+
+    return [...options, ...otherCardOptions, ...otherOptions];
 }
 
 function ensureContextualFilterManagerScopeSelection(scopeOptions = getContextualFilterScopeOptions()) {
@@ -7187,6 +7932,7 @@ function savePreset() {
     preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
     preset.filterPools = JSON.parse(JSON.stringify(filterPools));
     preset.activeFilterPoolIdsGlobal = [...normalizePoolIdList(activeFilterPoolIdsGlobal)];
+    preset.activeFilterPoolIdsByCard = JSON.parse(JSON.stringify(activeFilterPoolIdsByCard || {}));
     preset.activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(activeFilterPoolIdsByChar || {}));
     preset.promptReplacements = JSON.parse(JSON.stringify(promptReplacements));
     preset.activePromptReplacementIdsGlobal = [...normalizePoolIdList(activePromptReplacementIdsGlobal)];
@@ -7218,6 +7964,9 @@ function loadPreset(i) {
     }
     if (p.activeFilterPoolIdsGlobal) {
         activeFilterPoolIdsGlobal = JSON.parse(JSON.stringify(p.activeFilterPoolIdsGlobal));
+    }
+    if (p.activeFilterPoolIdsByCard) {
+        activeFilterPoolIdsByCard = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByCard));
     }
     if (p.activeFilterPoolIdsByChar) {
         activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByChar));
@@ -7358,7 +8107,7 @@ window.clearPresets = clearPresets;
 // === Export / Import Settings ===
 function exportAllSettings() {
     const data = {
-        version: 4,
+        version: 5,
         exportDate: new Date().toISOString(),
         connectionProfiles,
         comfyWorkflows,
@@ -7369,6 +8118,7 @@ function exportAllSettings() {
         contextualFilters,
         filterPools,
         activeFilterPoolIdsGlobal,
+        activeFilterPoolIdsByCard,
         activeFilterPoolIdsByChar,
         promptReplacements,
         activePromptReplacementIdsGlobal,
@@ -7442,6 +8192,11 @@ function importSettings() {
                 activeFilterPoolIdsGlobal = data.activeFilterPoolIdsGlobal;
                 if (!safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal))) throw new Error("Could not save imported global pool states. Browser storage may be full.");
                 backupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
+            }
+            if (data.activeFilterPoolIdsByCard && typeof data.activeFilterPoolIdsByCard === "object") {
+                activeFilterPoolIdsByCard = data.activeFilterPoolIdsByCard;
+                if (!safeSetStorage("qig_active_pool_ids_by_card", JSON.stringify(activeFilterPoolIdsByCard))) throw new Error("Could not save imported card pool states. Browser storage may be full.");
+                backupToSettings("qig_active_pool_ids_by_card", activeFilterPoolIdsByCard);
             }
             if (data.activeFilterPoolIdsByChar && typeof data.activeFilterPoolIdsByChar === "object") {
                 activeFilterPoolIdsByChar = data.activeFilterPoolIdsByChar;
