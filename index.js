@@ -2795,6 +2795,8 @@ async function generateLLMPrompt(s, basePrompt, signal) {
     clearStyleCache();
 
     checkAborted(); // Bail early if already cancelled
+
+    // Only show status message when actually generating
     log("Generating prompt via SillyTavern LLM...");
     showStatus("🤖 Creating image prompt...");
 
@@ -10176,7 +10178,14 @@ async function generateImageInjectPalette() {
                 if (skippedConsumed > 0) {
                     log(`Palette inject: Skipping ${skippedConsumed} previously consumed tag(s) from last AI message`);
                 }
-                if (matches.length > 0) {
+
+                // If all tags were filtered but some were detected, use them anyway for manual generation
+                if (matches.length === 0 && detectedPrompts.length > 0) {
+                    log(`Palette inject: All ${detectedPrompts.length} detected tags were marked consumed`);
+                    log(`Palette inject: Using detected tags for manual generation: ${detectedPrompts.map(p => p.substring(0, 50)).join(', ')}`);
+                    matches = detectedPrompts;
+                    sourceInjectMessage = null; // Don't mark as consumed again
+                } else if (matches.length > 0) {
                     sourceInjectMessage = lastAiMessage.message;
                 }
             }
@@ -10604,7 +10613,8 @@ function getInjectConsumptionSignature(message, settings = getSettings()) {
     const signaturePayload = JSON.stringify({
         regexPattern: getInjectRegexPattern(settings),
         swipeId: Number.isInteger(message?.swipe_id) ? message.swipe_id : 0,
-        sources: sources.map(source => [source.key, source.text]),
+        // Use content hashes instead of full text to survive normalization during chat reload
+        sourceHashes: sources.map(source => [source.key, hashString(source.text || '')]),
     });
     return hashString(signaturePayload);
 }
@@ -10697,7 +10707,8 @@ async function persistConsumedInjectPrompts(message, prompts, settings = getSett
         await ctx.saveChat();
     }
     if (cleaned && typeof ctx?.reloadCurrentChat === "function") {
-        await ctx.reloadCurrentChat();
+        // Defer reload to prevent re-triggering MESSAGE_RECEIVED during processing
+        setTimeout(() => ctx.reloadCurrentChat(), 0);
     }
 
     return { remembered, cleaned };
