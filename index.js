@@ -7353,7 +7353,18 @@ function cloneCharScopedState(s = getSettings()) {
 
 function applyCharScopedState(state, s = getSettings()) {
     if (!state) return;
-    s.prompt = state.prompt ?? defaultSettings.prompt;
+
+    // Detect if user has manually edited the prompt field
+    const promptEl = document.getElementById("qig-prompt");
+    const hasManualPromptEdit = promptEl && promptEl.value !== s.prompt;
+
+    // Only apply character-scoped prompt if there's no manual edit
+    if (!hasManualPromptEdit) {
+        s.prompt = state.prompt ?? defaultSettings.prompt;
+    } else {
+        log(`[Prompt] Preserving manual edit, not applying character-scoped prompt`);
+    }
+
     s.negativePrompt = state.negativePrompt ?? defaultSettings.negativePrompt;
     s.style = state.style ?? defaultSettings.style;
     s.width = state.width ?? defaultSettings.width;
@@ -7362,12 +7373,16 @@ function applyCharScopedState(state, s = getSettings()) {
     s.nanobananaRefImages = [...(state.nanobananaRefImages || [])];
     s.nanogptRefImages = [...(state.nanogptRefImages || [])];
 
-    const promptEl = document.getElementById("qig-prompt");
     const negativeEl = document.getElementById("qig-negative");
     const styleEl = document.getElementById("qig-style");
     const widthEl = document.getElementById("qig-width");
     const heightEl = document.getElementById("qig-height");
-    if (promptEl) promptEl.value = s.prompt ?? "";
+
+    // Only update textarea value if we applied character-scoped prompt
+    if (promptEl && !hasManualPromptEdit) {
+        promptEl.value = s.prompt ?? "";
+    }
+
     if (negativeEl) negativeEl.value = s.negativePrompt ?? "";
     if (styleEl) styleEl.value = s.style ?? defaultSettings.style;
     if (widthEl) widthEl.value = s.width ?? defaultSettings.width;
@@ -8466,9 +8481,12 @@ function bind(id, key, isNum = false, isCheckbox = false, onChange = null) {
     }
     const el = getOrCacheElement(id);
     if (!el) return;
-    el.onchange = (e) => {
+    el.oninput = (e) => {
         const value = isCheckbox ? e.target.checked : (isNum ? parseFloat(e.target.value) : e.target.value);
         getSettings()[key] = value;
+        if (key === "prompt") {
+            log(`[Prompt] Saved to settings: "${value.substring(0, 50)}..."`);
+        }
         if (typeof onChange === "function") onChange(value, e);
         saveSettingsDebounced();
     };
@@ -10397,6 +10415,15 @@ async function generateImage() {
 
     try {
     checkAborted(cancelCheckpoint);
+
+    // DEFENSIVE FIX: Check if textarea has unsaved changes
+    const promptEl = document.getElementById("qig-prompt");
+    if (promptEl && promptEl.value !== s.prompt) {
+        log(`[Prompt Fix] Textarea value differs from settings - using textarea value`);
+        s.prompt = promptEl.value;
+        saveSettingsDebounced();
+    }
+
     let basePrompt = resolvePrompt(s.prompt);
     let scenePrompt = "";
 
