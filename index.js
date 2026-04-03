@@ -127,6 +127,10 @@ const defaultSettings = {
     proxySeed: -1,
     proxyRefImages: [],
     proxyExtraInstructions: "",
+    proxyEndpointMode: "auto",
+    proxyPayloadMode: "extended",
+    proxyRefImageMode: "auto",
+    proxySse: "auto",
     proxyComfyMode: false,
     proxyComfyTimeout: 300,
     proxyComfyNodeId: "",
@@ -522,7 +526,7 @@ const PROVIDER_KEYS = {
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
 
 const PROVIDERS = {
@@ -668,6 +672,301 @@ function extractNovelAIProxyImageUrl(json, proxyUrl) {
     }
 
     throw new Error(`NovelAI proxy error: ${JSON.stringify(json)}`);
+}
+
+function isHttpUrl(value) {
+    return /^https?:\/\/\S+$/i.test(String(value || "").trim());
+}
+
+function isDataImageUrl(value) {
+    return /^data:image\/[^;]+;base64,/i.test(String(value || "").trim());
+}
+
+function normalizeProxyEndpointSetting(value) {
+    return ["auto", "chat_completions", "images_generations"].includes(value) ? value : "auto";
+}
+
+function normalizeProxyPayloadSetting(value) {
+    return ["extended", "openai_strict"].includes(value) ? value : "extended";
+}
+
+function normalizeProxyRefImageSetting(value) {
+    return ["auto", "url_only", "inline_or_url"].includes(value) ? value : "auto";
+}
+
+function normalizeProxySseSetting(value) {
+    return ["auto", "on", "off"].includes(value) ? value : "auto";
+}
+
+function inferProxyEndpointMode(proxyUrl) {
+    const trimmed = String(proxyUrl || "").trim().replace(/\/$/, "");
+    if (/\/chat\/completions$/i.test(trimmed)) return "chat_completions";
+    if (/\/images(?:\/generations)?$/i.test(trimmed)) return "images_generations";
+    if (trimmed.includes("/v1") && !trimmed.includes("/images")) return "chat_completions";
+    return "images_generations";
+}
+
+function resolveProxyEndpointMode(proxyUrl, settings) {
+    const configured = normalizeProxyEndpointSetting(settings?.proxyEndpointMode);
+    return configured === "auto" ? inferProxyEndpointMode(proxyUrl) : configured;
+}
+
+function resolveProxyRequestUrl(proxyUrl, endpointMode) {
+    const trimmed = String(proxyUrl || "").trim().replace(/\/$/, "");
+    if (!trimmed) return "";
+
+    if (endpointMode === "chat_completions") {
+        if (/\/chat\/completions$/i.test(trimmed)) return trimmed;
+        if (/\/images\/generations$/i.test(trimmed)) return trimmed.replace(/\/images\/generations$/i, "/chat/completions");
+        if (/\/images$/i.test(trimmed)) return trimmed.replace(/\/images$/i, "/chat/completions");
+        if (/\/v1$/i.test(trimmed)) return `${trimmed}/chat/completions`;
+        return `${trimmed}/chat/completions`;
+    }
+
+    if (/\/images\/generations$/i.test(trimmed)) return trimmed;
+    if (/\/chat\/completions$/i.test(trimmed)) return trimmed.replace(/\/chat\/completions$/i, "/images/generations");
+    if (/\/images$/i.test(trimmed)) return `${trimmed}/generations`;
+    if (/\/v1$/i.test(trimmed)) return `${trimmed}/images/generations`;
+    return trimmed;
+}
+
+function parseProxyLoras(raw) {
+    return raw
+        ? raw.split(",")
+            .map(l => {
+                const t = l.trim();
+                const lc = t.lastIndexOf(":");
+                const hasWeight = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1)));
+                const id = (hasWeight ? t.slice(0, lc) : t).trim();
+                const weight = hasWeight ? parseFloat(t.slice(lc + 1)) : NaN;
+                return { id, weight: isNaN(weight) ? 0.8 : weight };
+            })
+            .filter(l => l.id)
+        : undefined;
+}
+
+function summarizeProxyRefImage(img) {
+    if (isDataImageUrl(img)) {
+        const base64 = String(img).replace(/^data:image\/[^;]+;base64,/i, "");
+        return `${Math.round(base64.length * 0.75 / 1024)}KB inline`;
+    }
+    if (isHttpUrl(img)) return "remote URL";
+    return "local/non-public URL";
+}
+
+function normalizeProxyRefImages(refImages, refMode) {
+    const normalized = [];
+    for (const raw of refImages || []) {
+        if (typeof raw !== "string") continue;
+        const value = raw.trim();
+        if (!value) continue;
+        if (refMode === "url_only" && !isHttpUrl(value)) {
+            throw new Error("This proxy compatibility mode only accepts public image URLs for reference images. Remove uploaded/local refs and paste https:// image URLs instead.");
+        }
+        normalized.push(value);
+    }
+    return normalized;
+}
+
+function shouldUseProxySse(settings, payloadMode) {
+    const configured = normalizeProxySseSetting(settings?.proxySse);
+    if (configured === "on") return true;
+    if (configured === "off") return false;
+    return payloadMode !== "openai_strict";
+}
+
+async function readProxyErrorResponse(res) {
+    const text = await res.text().catch(() => "");
+    return text.replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function extractProxyImageFromString(value) {
+    const contentStr = typeof value === "string" ? value.trim() : "";
+    if (!contentStr) return null;
+    if (contentStr.startsWith("data:image/")) return contentStr;
+    if (isHttpUrl(contentStr)) return contentStr;
+
+    const embeddedUrlMatch = contentStr.match(/(https?:\/\/\S+)/i);
+    if (embeddedUrlMatch) {
+        return embeddedUrlMatch[1].replace(/[)\],.;]+$/, "");
+    }
+
+    const b64Match = contentStr.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
+    if (b64Match) return b64Match[0];
+
+    const rawB64Match = contentStr.match(/^[A-Za-z0-9+/]{100,}[=]{0,2}$/);
+    if (rawB64Match) return `data:image/png;base64,${rawB64Match[0]}`;
+
+    return null;
+}
+
+function extractProxyImageValue(candidate) {
+    if (!candidate) return null;
+    if (typeof candidate === "string") return extractProxyImageFromString(candidate);
+    if (candidate.image_url?.url) return candidate.image_url.url;
+    if (candidate.url) return candidate.url;
+    if (candidate.b64_json) return `data:image/png;base64,${candidate.b64_json}`;
+    if (candidate.base64) return `data:image/png;base64,${candidate.base64}`;
+    if (candidate.source?.data) return `data:${candidate.source.media_type || "image/png"};base64,${candidate.source.data}`;
+    if (candidate.inline_data?.data) return `data:${candidate.inline_data.mime_type || "image/png"};base64,${candidate.inline_data.data}`;
+    if (candidate.inlineData?.data) return `data:${candidate.inlineData.mimeType || "image/png"};base64,${candidate.inlineData.data}`;
+    return null;
+}
+
+function extractProxyImageFromJson(data) {
+    const directCandidates = [
+        data?.data?.[0],
+        data?.output?.[0],
+        { url: data?.url },
+        { url: data?.image_url },
+        { url: data?.imageUrl },
+        { b64_json: data?.b64_json || data?.image_base64 || data?.imageBase64 },
+        { base64: data?.base64 },
+        extractProxyImageFromString(data?.image),
+    ];
+    for (const candidate of directCandidates) {
+        const result = extractProxyImageValue(candidate);
+        if (result) return result;
+    }
+
+    const images = data?.choices?.[0]?.message?.images;
+    if (Array.isArray(images)) {
+        for (const img of images) {
+            const result = extractProxyImageValue(img);
+            if (result) return result;
+        }
+    }
+
+    const msgContent = data?.choices?.[0]?.message?.content;
+    if (Array.isArray(msgContent)) {
+        for (const item of msgContent) {
+            const result = extractProxyImageValue(item);
+            if (result) return result;
+        }
+    } else {
+        const result = extractProxyImageFromString(msgContent);
+        if (result) return result;
+    }
+
+    const parts = data?.choices?.[0]?.message?.parts;
+    if (Array.isArray(parts)) {
+        for (const part of parts) {
+            const result = extractProxyImageValue(part);
+            if (result) return result;
+        }
+    }
+
+    for (const candidate of data?.candidates || []) {
+        for (const part of candidate?.content?.parts || []) {
+            const result = extractProxyImageValue(part);
+            if (result) return result;
+        }
+    }
+
+    return null;
+}
+
+function extractProxyImageFromSseText(text) {
+    for (const line of String(text || "").split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === "data: [DONE]" || trimmed === "data: : keepalive") continue;
+        if (!trimmed.startsWith("data:")) continue;
+
+        const payload = trimmed.slice(5).trim();
+        const direct = extractProxyImageFromString(payload);
+        if (direct) return direct;
+
+        try {
+            const parsed = JSON.parse(payload);
+            log(`SSE event: ${JSON.stringify(parsed).substring(0, 200)}`);
+            const result = extractProxyImageFromJson(parsed);
+            if (result) return result;
+        } catch {
+            // Ignore non-JSON SSE lines.
+        }
+    }
+    return null;
+}
+
+function buildProxyChatPayload(prompt, negative, s, refImages, payloadMode, proxySeed) {
+    const negPrompt = negative ? `\nAvoid: ${negative}` : "";
+    const extraInstr = s.proxyExtraInstructions ? `\n${s.proxyExtraInstructions}` : "";
+    const content = [];
+    const hasRefImages = refImages.length > 0;
+
+    if (hasRefImages) {
+        log(`Attaching ${refImages.length} reference image(s) to chat request`);
+        for (const img of refImages) {
+            log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`);
+            content.push({ type: "image_url", image_url: { url: img } });
+        }
+    } else {
+        log("No reference images found in proxyRefImages");
+    }
+
+    const refPrefix = hasRefImages
+        ? "Look at the reference image(s) provided. Match their style, composition, and visual characteristics. Generate a new image: "
+        : "Generate an image: ";
+    content.push({ type: "text", text: `${refPrefix}${prompt}${negPrompt}${extraInstr}` });
+
+    const payload = {
+        model: s.proxyModel,
+        messages: [{ role: "user", content }],
+        max_tokens: 4096,
+    };
+
+    if (payloadMode !== "openai_strict") {
+        payload.width = s.width;
+        payload.height = s.height;
+        payload.steps = s.proxySteps || 25;
+        payload.cfg_scale = s.proxyCfg || 6;
+        payload.sampler = s.proxySampler || "Euler a";
+        payload.seed = proxySeed;
+        payload.negative_prompt = negative;
+        payload.loras = parseProxyLoras(s.proxyLoras);
+        payload.facefix = s.proxyFacefix || undefined;
+    }
+
+    if (/gemini.*image|gemini.*preview/i.test(s.proxyModel)) {
+        payload.response_modalities = ["TEXT", "IMAGE"];
+        payload.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
+        log("Gemini image model detected, adding responseModalities");
+    }
+
+    return payload;
+}
+
+function buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, proxySeed, sseEnabled) {
+    const strictPrompt = payloadMode === "openai_strict"
+        ? [prompt, negative ? `Avoid: ${negative}` : "", s.proxyExtraInstructions || ""].filter(Boolean).join("\n")
+        : prompt;
+    const payload = {
+        model: s.proxyModel,
+        prompt: strictPrompt,
+        n: 1,
+        size: `${s.width}x${s.height}`,
+    };
+
+    if (payloadMode !== "openai_strict") {
+        payload.negative_prompt = negative;
+        payload.width = s.width;
+        payload.height = s.height;
+        payload.steps = s.proxySteps || 25;
+        payload.cfg_scale = s.proxyCfg || 6;
+        payload.sampler = s.proxySampler || "Euler a";
+        payload.seed = proxySeed;
+        payload.sse = sseEnabled;
+        payload.loras = parseProxyLoras(s.proxyLoras);
+        payload.facefix = s.proxyFacefix || undefined;
+    }
+
+    if (refImages.length > 0) {
+        log(`Attaching ${refImages.length} reference image(s) to images/generations request`);
+        refImages.forEach(img => log(`  ref image: ${img.substring(0, Math.min(img.length, 80))}${img.length > 80 ? "..." : ""} (${summarizeProxyRefImage(img)})`));
+        payload.image = refImages;
+    }
+
+    return payload;
 }
 
 const STYLES = {
@@ -1112,6 +1411,10 @@ async function loadSettings() {
     }
     if (!s.injectRegex) s.injectRegex = buildDefaultInjectRegex(savedTagName);
     if (!s.injectPrompt) s.injectPrompt = buildDefaultInjectPrompt(savedTagName);
+    s.proxyEndpointMode = normalizeProxyEndpointSetting(s.proxyEndpointMode);
+    s.proxyPayloadMode = normalizeProxyPayloadSetting(s.proxyPayloadMode);
+    s.proxyRefImageMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
+    s.proxySse = normalizeProxySseSetting(s.proxySse);
     // Restore localStorage stores from extensionSettings backup if localStorage was wiped
     const restoreTargets = [
         { localKey: "qig_templates", backupKey: "_backupTemplates", setter: v => { promptTemplates = v; } },
@@ -4324,252 +4627,79 @@ async function genProxy(prompt, negative, s, signal) {
     const headers = { "Content-Type": "application/json" };
     if (s.proxyKey) headers["Authorization"] = `Bearer ${s.proxyKey}`;
 
-    const hasRefImages = s.proxyRefImages?.length > 0;
-    const isChatProxy = s.proxyUrl.includes("/v1") && !s.proxyUrl.includes("/images");
+    const endpointMode = resolveProxyEndpointMode(s.proxyUrl, s);
+    const payloadMode = normalizeProxyPayloadSetting(s.proxyPayloadMode);
+    const refMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
+    const requestUrl = resolveProxyRequestUrl(s.proxyUrl, endpointMode);
     const proxySeed = resolveRandomSeed(s.proxySeed, s);
-    log(`Proxy mode: isChatProxy=${isChatProxy}, refImages=${s.proxyRefImages?.length || 0}, url=${s.proxyUrl.substring(0, 60)}`);
+    const refImages = normalizeProxyRefImages(s.proxyRefImages || [], refMode);
+    const sseEnabled = endpointMode === "images_generations" ? shouldUseProxySse(s, payloadMode) : false;
 
-    if (isChatProxy) {
-        const proxyUrlBase = s.proxyUrl.replace(/\/$/, "");
-        const chatUrl = /\/chat\/completions$/i.test(proxyUrlBase)
-            ? proxyUrlBase
-            : proxyUrlBase + "/chat/completions";
-        log(`Using chat completions: ${chatUrl}`);
-        const negPrompt = negative ? `\nAvoid: ${negative}` : "";
-        const extraInstr = s.proxyExtraInstructions ? `\n${s.proxyExtraInstructions}` : "";
+    if (!requestUrl) throw new Error("Proxy URL is required");
+    log(`Proxy mode: endpoint=${endpointMode}, payload=${payloadMode}, refMode=${refMode}, sse=${sseEnabled}, refImages=${refImages.length}, url=${requestUrl.substring(0, 80)}`);
 
-        // Build message content with reference images
-        const content = [];
-        const hasRefImages = s.proxyRefImages?.length > 0;
-        if (hasRefImages) {
-            log(`Attaching ${s.proxyRefImages.length} reference image(s) to chat request`);
-            for (const img of s.proxyRefImages) {
-                const isDataUrl = img.startsWith('data:');
-                log(`  ref image: ${isDataUrl ? img.substring(0, 40) + '...' : img.substring(0, 80)} (${isDataUrl ? Math.round(img.length / 1024) + 'KB' : 'URL'})`);
-                content.push({ type: "image_url", image_url: { url: img } });
-            }
-        } else {
-            log(`No reference images found in proxyRefImages`);
+    const controller = new AbortController();
+    let timedOut = false;
+    const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 120000);
+    if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+
+    let res;
+    try {
+        const payload = endpointMode === "chat_completions"
+            ? buildProxyChatPayload(prompt, negative, s, refImages, payloadMode, proxySeed)
+            : buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, proxySeed, sseEnabled);
+        log(`${endpointMode === "chat_completions" ? "Chat" : "Images"} endpoint payload keys: ${Object.keys(payload).join(", ")}`);
+        res = await fetch(requestUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal: controller.signal
+        });
+    } catch (e) {
+        if (e.name === "AbortError" && timedOut && !signal?.aborted) {
+            throw new Error("Proxy request timed out after 120 seconds");
         }
-        const refPrefix = hasRefImages ? `Look at the reference image(s) provided. Match their style, composition, and visual characteristics. Generate a new image: ` : `Generate an image: `;
-        content.push({ type: "text", text: `${refPrefix}${prompt}${negPrompt}${extraInstr}` });
+        throw e;
+    } finally {
+        clearTimeout(timeoutId);
+    }
 
-        // Detect Gemini image models and add responseModalities so proxies can forward it
-        const isGeminiImage = /gemini.*image|gemini.*preview/i.test(s.proxyModel);
-        const payload = {
-                model: s.proxyModel,
-                messages: [{ role: "user", content }],
-                max_tokens: 4096,
-                width: s.width,
-                height: s.height,
-                steps: s.proxySteps || 25,
-                cfg_scale: s.proxyCfg || 6,
-                sampler: s.proxySampler || "Euler a",
-                seed: proxySeed,
-                negative_prompt: negative,
-                loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
-                facefix: s.proxyFacefix || undefined
-        };
-        if (isGeminiImage) {
-            payload.response_modalities = ["TEXT", "IMAGE"];
-            payload.generationConfig = { responseModalities: ["TEXT", "IMAGE"] };
-            log(`Gemini image model detected, adding responseModalities`);
-        }
-        const controller = new AbortController();
-        let timedOut = false;
-        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, 120000);
-        if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
-        let res;
+    if (!res.ok) {
+        const detail = await readProxyErrorResponse(res);
+        throw new Error(`Proxy error ${res.status}: ${detail || res.statusText}`);
+    }
+
+    const contentType = res.headers.get("content-type") || "";
+    if (endpointMode === "images_generations" && (contentType.includes("text/event-stream") || contentType.includes("text/plain"))) {
+        log(`Parsing ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
+        const text = await res.text();
+        const direct = extractProxyImageFromString(text);
+        if (direct) return direct;
+        const streamed = extractProxyImageFromSseText(text);
+        if (streamed) return streamed;
         try {
-            res = await fetch(chatUrl, {
-                method: "POST",
-                headers,
-                body: JSON.stringify(payload),
-                signal: controller.signal
-            });
-        } catch (e) {
-            if (e.name === "AbortError" && timedOut && !signal?.aborted) {
-                throw new Error("Proxy request timed out after 120 seconds");
-            }
-            throw e;
-        } finally {
-            clearTimeout(timeoutId);
+            const parsed = JSON.parse(text);
+            const parsedImage = extractProxyImageFromJson(parsed);
+            if (parsedImage) return parsedImage;
+        } catch {
+            // Not JSON; continue to error below.
         }
-        if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
-        const data = await res.json();
-        log(`Response keys: ${JSON.stringify(Object.keys(data))}`);
+        throw new Error(`No image in ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
+    }
 
-        const images = data.choices?.[0]?.message?.images;
-        if (images && images.length > 0) {
-            const img = images[0];
-            if (img.image_url?.url) return img.image_url.url;
-            if (img.url) return img.url;
-            if (img.b64_json) return `data:image/png;base64,${img.b64_json}`;
-            // Direct base64 string
-            if (typeof img === 'string' && img.length > 100) {
-                return img.startsWith('data:') ? img : `data:image/png;base64,${img}`;
-            }
-        }
+    const data = await res.json();
+    log(`Response keys: ${JSON.stringify(Object.keys(data || {}))}`);
+    const imageUrl = extractProxyImageFromJson(data);
+    if (imageUrl) return imageUrl;
 
-        const msgContent = data.choices?.[0]?.message?.content;
-
-        // Handle content as array (multimodal response)
-        if (Array.isArray(msgContent)) {
-            for (const item of msgContent) {
-                if (item.type === 'image_url' && item.image_url?.url) {
-                    return item.image_url.url;
-                }
-                if (item.type === 'image' && item.source?.data) {
-                    return `data:${item.source.media_type || 'image/png'};base64,${item.source.data}`;
-                }
-                if (item.image_url?.url) {
-                    return item.image_url.url;
-                }
-                // Inline base64 in content array
-                if (typeof item === 'string' && item.startsWith('data:image')) {
-                    return item;
-                }
-            }
-        }
-
-        // Handle content as string
-        const contentStr = typeof msgContent === 'string' ? msgContent : '';
-
-        // Check for plain URL (like LinkAPI/Naistera style)
-        const urlMatch = contentStr.match(/^https?:\/\/[^\s]+\.(png|jpg|jpeg|webp|gif)(\?[^\s]*)?$/i);
-        if (urlMatch) {
-            log(`Found image URL in content: ${contentStr.substring(0, 50)}...`);
-            return contentStr.trim();
-        }
-
-        // Check for URL embedded in text
-        const embeddedUrlMatch = contentStr.match(/(https?:\/\/[^\s]+\.(png|jpg|jpeg|webp|gif)(\?[^\s]*)?)/i);
-        if (embeddedUrlMatch) {
-            log(`Found embedded image URL: ${embeddedUrlMatch[1].substring(0, 50)}...`);
-            return embeddedUrlMatch[1];
-        }
-
-        const b64Match = contentStr.match(/data:image\/[^;]+;base64,[A-Za-z0-9+/=]+/);
-        if (b64Match) return b64Match[0];
-
-        // Check for raw base64 (no data: prefix) - common in some APIs
-        const rawB64Match = contentStr.match(/^[A-Za-z0-9+/]{100,}[=]{0,2}$/);
-        if (rawB64Match) return `data:image/png;base64,${rawB64Match[0]}`;
-
-        const parts = data.choices?.[0]?.message?.parts;
-        if (parts) {
-            for (const part of parts) {
-                if (part.inline_data?.data) {
-                    return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
-                }
-            }
-        }
-
-        for (const candidate of data.candidates || []) {
-            for (const part of candidate.content?.parts || []) {
-                if (part.inlineData?.data) {
-                    return `data:${part.inlineData.mimeType || "image/png"};base64,${part.inlineData.data}`;
-                }
-                if (part.inline_data?.data) {
-                    return `data:${part.inline_data.mime_type || "image/png"};base64,${part.inline_data.data}`;
-                }
-            }
-        }
-
-        // Log full response structure for debugging
-        log(`Full message structure: ${JSON.stringify(data.choices?.[0]?.message || {}).substring(0, 500)}`);
+    if (endpointMode === "chat_completions") {
+        log(`Full message structure: ${JSON.stringify(data?.choices?.[0]?.message || {}).substring(0, 500)}`);
+        const msgContent = data?.choices?.[0]?.message?.content;
         throw new Error(msgContent === null
             ? "Model returned empty response - image generation may not be supported via this proxy"
             : "No image in response");
     }
 
-    const controller2 = new AbortController();
-    let timedOut2 = false;
-    const timeoutId2 = setTimeout(() => { timedOut2 = true; controller2.abort(); }, 120000);
-    if (signal) signal.addEventListener("abort", () => controller2.abort(), { once: true });
-    let res;
-    try {
-        const payload = {
-            model: s.proxyModel,
-            prompt: prompt,
-            negative_prompt: negative,
-            n: 1,
-            size: `${s.width}x${s.height}`,
-            width: s.width,
-            height: s.height,
-            steps: s.proxySteps || 25,
-            cfg_scale: s.proxyCfg || 6,
-            sampler: s.proxySampler || "Euler a",
-            seed: proxySeed,
-            sse: true,
-            loras: s.proxyLoras ? s.proxyLoras.split(",").map(l => { const t = l.trim(); const lc = t.lastIndexOf(":"); const hw = lc > 0 && !isNaN(parseFloat(t.slice(lc + 1))); const id = (hw ? t.slice(0, lc) : t).trim(); const pw = hw ? parseFloat(t.slice(lc + 1)) : NaN; return { id, weight: isNaN(pw) ? 0.8 : pw }; }).filter(l => l.id) : undefined,
-            facefix: s.proxyFacefix || undefined
-        };
-        if (hasRefImages) {
-            log(`Attaching ${s.proxyRefImages.length} reference image(s) to images/generations request`);
-            payload.image = s.proxyRefImages.map(img => {
-                const match = img.match(/^data:([^;]+);base64,(.+)$/);
-                if (match) {
-                    log(`  ref image: ${match[1]}, ${Math.round(match[2].length * 0.75 / 1024)}KB`);
-                    return img;
-                }
-                return img;
-            });
-        }
-        log(`Images endpoint payload keys: ${Object.keys(payload).join(', ')}`);
-        res = await fetch(s.proxyUrl, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(payload),
-            signal: controller2.signal
-        });
-    } catch (e) {
-        if (e.name === "AbortError" && timedOut2 && !signal?.aborted) {
-            throw new Error("Proxy request timed out after 120 seconds");
-        }
-        throw e;
-    } finally {
-        clearTimeout(timeoutId2);
-    }
-    if (!res.ok) throw new Error(`Proxy error: ${res.status}`);
-
-    // Handle SSE streaming response
-    const contentType = res.headers.get("content-type") || "";
-    if (contentType.includes("text/event-stream") || contentType.includes("text/plain")) {
-        log(`Parsing SSE stream response`);
-        const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = "";
-        let imageUrl = null;
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split("\n");
-            buffer = lines.pop();
-            for (const line of lines) {
-                const trimmed = line.trim();
-                if (!trimmed || trimmed === "data: [DONE]" || trimmed === "data: : keepalive") continue;
-                if (trimmed.startsWith("data: ")) {
-                    try {
-                        const data = JSON.parse(trimmed.slice(6));
-                        log(`SSE event: ${JSON.stringify(data).substring(0, 200)}`);
-                        if (data.data?.[0]?.url) { imageUrl = data.data[0].url; break; }
-                        if (data.data?.[0]?.b64_json) { imageUrl = `data:image/png;base64,${data.data[0].b64_json}`; break; }
-                        if (data.url) { imageUrl = data.url; break; }
-                        if (data.b64_json) { imageUrl = `data:image/png;base64,${data.b64_json}`; break; }
-                    } catch (e) { /* skip non-JSON lines */ }
-                }
-            }
-            if (imageUrl) break;
-        }
-        if (imageUrl) return imageUrl;
-        throw new Error("No image in SSE response");
-    }
-
-    const data = await res.json();
-    if (data.data?.[0]?.url) return data.data[0].url;
-    if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
     throw new Error("No image in response");
 }
 
@@ -5141,16 +5271,7 @@ function displayImage(entryOrUrl, skipGallery) {
 
             // Add to provider-specific references if applicable
             if (s.provider === "proxy") {
-                if (!s.proxyRefImages) s.proxyRefImages = [];
-                if (s.proxyRefImages.length >= 15) {
-                    toastr.warning("Maximum 15 reference images reached");
-                    return;
-                }
-                s.proxyRefImages.push(imgSrc);
-                saveSettingsDebounced();
-                renderRefImages();
-                popup.style.display = "none";
-                toastr.success("Image added to reference images");
+                if (addProxyRefImage(imgSrc, "Image added to reference images")) popup.style.display = "none";
                 return;
             }
             if (s.provider === "nanobanana") {
@@ -5382,16 +5503,7 @@ function displayBatchResults(results) {
             const s = getSettings();
 
             if (s.provider === "proxy") {
-                if (!s.proxyRefImages) s.proxyRefImages = [];
-                if (s.proxyRefImages.length >= 15) {
-                    toastr.warning("Maximum 15 reference images reached");
-                    return;
-                }
-                s.proxyRefImages.push(imgSrc);
-                saveSettingsDebounced();
-                renderRefImages();
-                popup.style.display = "none";
-                toastr.success("Image added to reference images");
+                if (addProxyRefImage(imgSrc, "Image added to reference images")) popup.style.display = "none";
                 return;
             }
             if (s.provider === "nanobanana") {
@@ -8076,7 +8188,7 @@ function deleteSelectedComfyWorkflowPreset() {
 }
 
 // === Generation Presets ===
-const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength"];
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse"];
 
 function savePreset() {
     const name = prompt("Preset name:");
@@ -8504,7 +8616,7 @@ function refreshProviderInputs(provider) {
             ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
             ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
-        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -8528,11 +8640,20 @@ function refreshProviderInputs(provider) {
 
     // Update reference images display
     if (provider === "proxy") {
+        s.proxyEndpointMode = normalizeProxyEndpointSetting(s.proxyEndpointMode);
+        s.proxyPayloadMode = normalizeProxyPayloadSetting(s.proxyPayloadMode);
+        s.proxyRefImageMode = normalizeProxyRefImageSetting(s.proxyRefImageMode);
+        s.proxySse = normalizeProxySseSetting(s.proxySse);
+        ["qig-proxy-endpoint-mode", "qig-proxy-payload-mode", "qig-proxy-ref-mode", "qig-proxy-sse-mode"].forEach((id) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (id === "qig-proxy-endpoint-mode") el.value = s.proxyEndpointMode;
+            if (id === "qig-proxy-payload-mode") el.value = s.proxyPayloadMode;
+            if (id === "qig-proxy-ref-mode") el.value = s.proxyRefImageMode;
+            if (id === "qig-proxy-sse-mode") el.value = s.proxySse;
+        });
         renderRefImages();
-        const comfyOpts = document.getElementById("qig-proxy-comfy-opts");
-        const stdOpts = document.getElementById("qig-proxy-standard-opts");
-        if (comfyOpts) comfyOpts.style.display = s.proxyComfyMode ? "block" : "none";
-        if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
+        updateProxyCompatibilityUI();
     }
     if (provider === "nanobanana") renderNanobananaRefImages();
     if (provider === "nanogpt") renderNanogptRefImages();
@@ -8560,12 +8681,86 @@ function updateProviderUI() {
     }
 }
 
+function addProxyRefImage(src, successMessage = "") {
+    const s = getSettings();
+    const value = String(src || "").trim();
+    if (!value) return false;
+    if (!s.proxyRefImages) s.proxyRefImages = [];
+    if (s.proxyRefImages.length >= 15) {
+        toastr.warning("Maximum 15 reference images reached");
+        return false;
+    }
+    if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only" && !isHttpUrl(value)) {
+        toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+        return false;
+    }
+    s.proxyRefImages.push(value);
+    saveSettingsDebounced();
+    renderRefImages();
+    updateProxyCompatibilityUI();
+    if (successMessage) toastr.success(successMessage);
+    return true;
+}
+
+function updateProxyCompatibilityUI() {
+    const s = getSettings();
+    const comfyOpts = document.getElementById("qig-proxy-comfy-opts");
+    const stdOpts = document.getElementById("qig-proxy-standard-opts");
+    if (comfyOpts) comfyOpts.style.display = s.proxyComfyMode ? "block" : "none";
+    if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
+
+    const isUrlOnly = normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only";
+    const invalidRefCount = (s.proxyRefImages || []).filter(img => typeof img === "string" && img.trim() && !isHttpUrl(img)).length;
+    const refBtn = getOrCacheElement("qig-proxy-ref-btn");
+    const refInput = getOrCacheElement("qig-proxy-ref-input");
+    const refUrl = getOrCacheElement("qig-proxy-ref-url");
+    const hint = getOrCacheElement("qig-proxy-compat-hint");
+
+    if (refBtn) {
+        refBtn.disabled = isUrlOnly;
+        refBtn.title = isUrlOnly ? "This mode only accepts public image URLs" : "Add local files as reference images";
+        refBtn.style.opacity = isUrlOnly ? "0.5" : "1";
+        refBtn.style.cursor = isUrlOnly ? "not-allowed" : "pointer";
+    }
+    if (refInput) refInput.disabled = isUrlOnly;
+    if (refUrl) {
+        refUrl.placeholder = isUrlOnly
+            ? "Paste a public https:// image URL and press Enter"
+            : "Paste image URL and press Enter";
+    }
+
+    if (hint) {
+        const endpointMode = resolveProxyEndpointMode(s.proxyUrl, s);
+        const payloadMode = normalizeProxyPayloadSetting(s.proxyPayloadMode);
+        const sseMode = normalizeProxySseSetting(s.proxySse);
+        const hintParts = [
+            endpointMode === "chat_completions"
+                ? "Using chat-completions style routing."
+                : "Using /images/generations style routing.",
+            payloadMode === "openai_strict"
+                ? "Strict payload strips nonstandard image fields, which helps with proxies that 400 on extra parameters."
+                : "Extended payload keeps provider-specific extras like steps, CFG, sampler, seed, LoRAs, and face fix.",
+            sseMode === "auto"
+                ? `SSE auto is currently ${shouldUseProxySse(s, payloadMode) ? "enabled" : "disabled"}.`
+                : `SSE is forced ${sseMode}.`,
+        ];
+        if (isUrlOnly) {
+            hintParts.push("Reference images must be public http(s) URLs. Uploaded, local, blob, and data URLs will be rejected.");
+        }
+        if (invalidRefCount > 0) {
+            hintParts.push(`${invalidRefCount} saved reference image(s) are incompatible with the current URL-only mode.`);
+        }
+        hint.textContent = hintParts.join(" ");
+    }
+}
+
 function renderRefImages() {
     const container = getOrCacheElement("qig-proxy-refs");
     if (!container) return;
     const imgs = getSettings().proxyRefImages || [];
+    const isUrlOnly = normalizeProxyRefImageSetting(getSettings().proxyRefImageMode) === "url_only";
     container.innerHTML = imgs.map((src, i) =>
-        `<div style="position:relative;"><img src="${escapeHtml(src || "")}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
+        `<div style="position:relative;" title="${escapeHtml(summarizeProxyRefImage(src || ""))}"><img src="${escapeHtml(src || "")}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;border:1px solid ${isUrlOnly && !isHttpUrl(src || "") ? "#e94560" : "#333"};"><button onclick="removeRefImage(${i})" style="position:absolute;top:-4px;right:-4px;width:16px;height:16px;border-radius:50%;border:none;background:#e94560;color:#fff;font-size:10px;cursor:pointer;line-height:1;">×</button></div>`
     ).join('');
 }
 
@@ -8575,6 +8770,7 @@ window.removeRefImage = function (idx) {
     s.proxyRefImages.splice(idx, 1);
     saveSettingsDebounced();
     renderRefImages();
+    updateProxyCompatibilityUI();
 };
 
 function renderNanobananaRefImages() {
@@ -9187,6 +9383,35 @@ function createUI() {
                     <div id="qig-proxy-standard-opts" style="display:${s.proxyComfyMode ? "none" : "block"}">
                     <label>Model</label>
                     <input id="qig-proxy-model" type="text" value="${esc(s.proxyModel)}" placeholder="PixAI model ID">
+                    <div class="qig-row">
+                        <div><label>Endpoint Mode</label>
+                            <select id="qig-proxy-endpoint-mode">
+                                <option value="auto" ${s.proxyEndpointMode === "auto" ? "selected" : ""}>Auto</option>
+                                <option value="chat_completions" ${s.proxyEndpointMode === "chat_completions" ? "selected" : ""}>Chat Completions</option>
+                                <option value="images_generations" ${s.proxyEndpointMode === "images_generations" ? "selected" : ""}>Images Generations</option>
+                            </select>
+                        </div>
+                        <div><label>Payload Mode</label>
+                            <select id="qig-proxy-payload-mode">
+                                <option value="extended" ${s.proxyPayloadMode === "extended" ? "selected" : ""}>Extended</option>
+                                <option value="openai_strict" ${s.proxyPayloadMode === "openai_strict" ? "selected" : ""}>OpenAI Strict</option>
+                            </select>
+                        </div>
+                        <div><label>SSE</label>
+                            <select id="qig-proxy-sse-mode">
+                                <option value="auto" ${s.proxySse === "auto" ? "selected" : ""}>Auto</option>
+                                <option value="on" ${s.proxySse === "on" ? "selected" : ""}>Force On</option>
+                                <option value="off" ${s.proxySse === "off" ? "selected" : ""}>Force Off</option>
+                            </select>
+                        </div>
+                    </div>
+                    <label>Reference Image Mode</label>
+                    <select id="qig-proxy-ref-mode">
+                        <option value="auto" ${s.proxyRefImageMode === "auto" ? "selected" : ""}>Auto</option>
+                        <option value="url_only" ${s.proxyRefImageMode === "url_only" ? "selected" : ""}>Public URLs Only</option>
+                        <option value="inline_or_url" ${s.proxyRefImageMode === "inline_or_url" ? "selected" : ""}>Inline Or URL</option>
+                    </select>
+                    <div id="qig-proxy-compat-hint" class="form-hint" style="margin-top:4px;"></div>
                     <label>LoRAs (id:weight, comma-separated)</label>
                     <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                     <input id="qig-proxy-loras" type="text" value="${esc(s.proxyLoras || "")}" placeholder="123456:0.8, 789012:0.6">
@@ -9931,9 +10156,16 @@ function createUI() {
         reader.readAsDataURL(file);
     };
 
-    bind("qig-proxy-url", "proxyUrl");
+    bind("qig-proxy-url", "proxyUrl", () => updateProxyCompatibilityUI());
     bind("qig-proxy-key", "proxyKey");
     bind("qig-proxy-model", "proxyModel");
+    bind("qig-proxy-endpoint-mode", "proxyEndpointMode", () => updateProxyCompatibilityUI());
+    bind("qig-proxy-payload-mode", "proxyPayloadMode", () => updateProxyCompatibilityUI());
+    bind("qig-proxy-ref-mode", "proxyRefImageMode", () => {
+        renderRefImages();
+        updateProxyCompatibilityUI();
+    });
+    bind("qig-proxy-sse-mode", "proxySse", () => updateProxyCompatibilityUI());
     bind("qig-proxy-loras", "proxyLoras");
     bind("qig-proxy-steps", "proxySteps", true);
     bind("qig-proxy-cfg", "proxyCfg", true);
@@ -9949,10 +10181,7 @@ function createUI() {
         const s = getSettings();
         s.proxyComfyMode = e.target.checked;
         saveSettingsDebounced();
-        const comfyOpts = document.getElementById("qig-proxy-comfy-opts");
-        const stdOpts = document.getElementById("qig-proxy-standard-opts");
-        if (comfyOpts) comfyOpts.style.display = s.proxyComfyMode ? "block" : "none";
-        if (stdOpts) stdOpts.style.display = s.proxyComfyMode ? "none" : "block";
+        updateProxyCompatibilityUI();
     };
 
     // Reference images handling
@@ -9962,6 +10191,11 @@ function createUI() {
     refInput.onchange = async (e) => {
         const files = Array.from(e.target.files);
         const s = getSettings();
+        if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only") {
+            toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+            refInput.value = "";
+            return;
+        }
         if (!s.proxyRefImages) s.proxyRefImages = [];
         const remaining = 15 - s.proxyRefImages.length;
         const filesToProcess = files.slice(0, remaining);
@@ -9978,6 +10212,7 @@ function createUI() {
         s.proxyRefImages.push(...results);
         saveSettingsDebounced();
         renderRefImages();
+        updateProxyCompatibilityUI();
         refInput.value = "";
     };
     // URL input for proxy ref images
@@ -9986,16 +10221,12 @@ function createUI() {
         if (e.key !== "Enter") return;
         const url = proxyRefUrl.value.trim();
         if (!url) return;
-        const s = getSettings();
-        if (!s.proxyRefImages) s.proxyRefImages = [];
-        if (s.proxyRefImages.length >= 15) { toastr.warning("Maximum 15 reference images"); return; }
-        s.proxyRefImages.push(url);
-        saveSettingsDebounced();
-        renderRefImages();
-        proxyRefUrl.value = "";
-        toastr.success("Reference image URL added");
+        if (addProxyRefImage(url, "Reference image URL added")) {
+            proxyRefUrl.value = "";
+        }
     };
     renderRefImages();
+    updateProxyCompatibilityUI();
 
     // Nanobanana reference images handling
     const nanoRefInput = getOrCacheElement("qig-nanobanana-ref-input");
