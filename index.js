@@ -3615,6 +3615,22 @@ async function genNanobanana(prompt, negative, s, signal) {
             const match = img.match(/^data:([^;]+);base64,(.+)$/);
             if (match) {
                 parts.push({ inlineData: { mimeType: match[1], data: match[2] } });
+            } else if (img.startsWith('http')) {
+                // URL-based reference image — fetch and convert to inline data
+                try {
+                    log(`Fetching reference image URL: ${img.substring(0, 80)}`);
+                    const imgRes = await fetch(img, { signal });
+                    const blob = await imgRes.blob();
+                    const base64 = await new Promise(resolve => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result);
+                        reader.readAsDataURL(blob);
+                    });
+                    const urlMatch = base64.match(/^data:([^;]+);base64,(.+)$/);
+                    if (urlMatch) parts.push({ inlineData: { mimeType: urlMatch[1], data: urlMatch[2] } });
+                } catch (e) {
+                    log(`Failed to fetch reference image URL: ${e.message}`);
+                }
             }
         }
     }
@@ -8735,7 +8751,10 @@ function createUI() {
                     <label>Reference Images (up to 15)</label>
                     <div id="qig-nanogpt-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-nanogpt-ref-input" accept="image/*" multiple style="display:none">
-                    <button id="qig-nanogpt-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <button id="qig-nanogpt-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Files</button>
+                        <input id="qig-nanogpt-ref-url" type="text" placeholder="Paste image URL and press Enter" style="flex:1;font-size:11px;">
+                    </div>
                 </div>
                 
                 <div id="qig-chutes-settings" class="qig-provider-section">
@@ -8777,7 +8796,10 @@ function createUI() {
                     <label>Reference Images (up to 15)</label>
                     <div id="qig-nanobanana-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-nanobanana-ref-input" accept="image/*" multiple style="display:none">
-                    <button id="qig-nanobanana-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <button id="qig-nanobanana-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Files</button>
+                        <input id="qig-nanobanana-ref-url" type="text" placeholder="Paste image URL and press Enter" style="flex:1;font-size:11px;">
+                    </div>
                 </div>
 
                 <div id="qig-stability-settings" class="qig-provider-section">
@@ -9191,7 +9213,10 @@ function createUI() {
                     <label>Reference Images (up to 15)</label>
                     <div id="qig-proxy-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
                     <input type="file" id="qig-proxy-ref-input" accept="image/*" multiple style="display:none">
-                    <button id="qig-proxy-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Add Reference Images</button>
+                    <div style="display:flex;gap:4px;align-items:center;">
+                        <button id="qig-proxy-ref-btn" class="menu_button" style="padding:4px 8px;">📎 Files</button>
+                        <input id="qig-proxy-ref-url" type="text" placeholder="Paste image URL and press Enter" style="flex:1;font-size:11px;">
+                    </div>
                     </div>
                 </div>
                 
@@ -9955,6 +9980,21 @@ function createUI() {
         renderRefImages();
         refInput.value = "";
     };
+    // URL input for proxy ref images
+    const proxyRefUrl = getOrCacheElement("qig-proxy-ref-url");
+    if (proxyRefUrl) proxyRefUrl.onkeydown = (e) => {
+        if (e.key !== "Enter") return;
+        const url = proxyRefUrl.value.trim();
+        if (!url) return;
+        const s = getSettings();
+        if (!s.proxyRefImages) s.proxyRefImages = [];
+        if (s.proxyRefImages.length >= 15) { toastr.warning("Maximum 15 reference images"); return; }
+        s.proxyRefImages.push(url);
+        saveSettingsDebounced();
+        renderRefImages();
+        proxyRefUrl.value = "";
+        toastr.success("Reference image URL added");
+    };
     renderRefImages();
 
     // Nanobanana reference images handling
@@ -9982,6 +10022,21 @@ function createUI() {
         renderNanobananaRefImages();
         nanoRefInput.value = "";
     };
+    // URL input for nanobanana ref images
+    const nanoRefUrl = getOrCacheElement("qig-nanobanana-ref-url");
+    if (nanoRefUrl) nanoRefUrl.onkeydown = (e) => {
+        if (e.key !== "Enter") return;
+        const url = nanoRefUrl.value.trim();
+        if (!url) return;
+        const s = getSettings();
+        if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
+        if (s.nanobananaRefImages.length >= 15) { toastr.warning("Maximum 15 reference images"); return; }
+        s.nanobananaRefImages.push(url);
+        saveSettingsDebounced();
+        renderNanobananaRefImages();
+        nanoRefUrl.value = "";
+        toastr.success("Reference image URL added");
+    };
     renderNanobananaRefImages();
 
     // NanoGPT reference images handling
@@ -10008,6 +10063,21 @@ function createUI() {
         saveSettingsDebounced();
         renderNanogptRefImages();
         nanogptRefInput.value = "";
+    };
+    // URL input for nanogpt ref images
+    const nanogptRefUrl = getOrCacheElement("qig-nanogpt-ref-url");
+    if (nanogptRefUrl) nanogptRefUrl.onkeydown = (e) => {
+        if (e.key !== "Enter") return;
+        const url = nanogptRefUrl.value.trim();
+        if (!url) return;
+        const s = getSettings();
+        if (!s.nanogptRefImages) s.nanogptRefImages = [];
+        if (s.nanogptRefImages.length >= 15) { toastr.warning("Maximum 15 reference images"); return; }
+        s.nanogptRefImages.push(url);
+        saveSettingsDebounced();
+        renderNanogptRefImages();
+        nanogptRefUrl.value = "";
+        toastr.success("Reference image URL added");
     };
     renderNanogptRefImages();
 
