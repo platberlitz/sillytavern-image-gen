@@ -4322,12 +4322,14 @@ async function genProxy(prompt, negative, s, signal) {
 
         // Build message content with reference images
         const content = [];
-        if (s.proxyRefImages?.length) {
+        const hasRefImages = s.proxyRefImages?.length > 0;
+        if (hasRefImages) {
             for (const img of s.proxyRefImages) {
                 content.push({ type: "image_url", image_url: { url: img } });
             }
         }
-        content.push({ type: "text", text: `Generate an image: ${prompt}${negPrompt}${extraInstr}` });
+        const refPrefix = hasRefImages ? `Look at the reference image(s) provided. Match their style, composition, and visual characteristics. Generate a new image: ` : `Generate an image: `;
+        content.push({ type: "text", text: `${refPrefix}${prompt}${negPrompt}${extraInstr}` });
 
         // Detect Gemini image models and add responseModalities so proxies can forward it
         const isGeminiImage = /gemini.*image|gemini.*preview/i.test(s.proxyModel);
@@ -5066,7 +5068,20 @@ function displayImage(entryOrUrl, skipGallery) {
             if (!imgSrc) return;
             const s = getSettings();
 
-            // Add to nanobanana references if that's the current provider
+            // Add to provider-specific references if applicable
+            if (s.provider === "proxy") {
+                if (!s.proxyRefImages) s.proxyRefImages = [];
+                if (s.proxyRefImages.length >= 15) {
+                    toastr.warning("Maximum 15 reference images reached");
+                    return;
+                }
+                s.proxyRefImages.push(imgSrc);
+                saveSettingsDebounced();
+                renderRefImages();
+                popup.style.display = "none";
+                toastr.success("Image added to reference images");
+                return;
+            }
             if (s.provider === "nanobanana") {
                 if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
                 if (s.nanobananaRefImages.length >= 15) {
@@ -5077,7 +5092,7 @@ function displayImage(entryOrUrl, skipGallery) {
                 saveSettingsDebounced();
                 renderNanobananaRefImages();
                 popup.style.display = "none";
-                toastr.success("Image added to Nanobanana reference images");
+                toastr.success("Image added to reference images");
                 return;
             }
 
@@ -5294,6 +5309,34 @@ function displayBatchResults(results) {
             const imgSrc = document.getElementById("qig-batch-img")?.src;
             if (!imgSrc) return;
             const s = getSettings();
+
+            if (s.provider === "proxy") {
+                if (!s.proxyRefImages) s.proxyRefImages = [];
+                if (s.proxyRefImages.length >= 15) {
+                    toastr.warning("Maximum 15 reference images reached");
+                    return;
+                }
+                s.proxyRefImages.push(imgSrc);
+                saveSettingsDebounced();
+                renderRefImages();
+                popup.style.display = "none";
+                toastr.success("Image added to reference images");
+                return;
+            }
+            if (s.provider === "nanobanana") {
+                if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
+                if (s.nanobananaRefImages.length >= 15) {
+                    toastr.warning("Maximum 15 reference images reached");
+                    return;
+                }
+                s.nanobananaRefImages.push(imgSrc);
+                saveSettingsDebounced();
+                renderNanobananaRefImages();
+                popup.style.display = "none";
+                toastr.success("Image added to reference images");
+                return;
+            }
+
             s.localRefImage = imgSrc;
             saveSettingsDebounced();
             const preview = document.getElementById("qig-local-ref-preview");
