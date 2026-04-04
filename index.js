@@ -2489,6 +2489,24 @@ function getActiveCharacterScopeIds(ctx = getContext()) {
     return uniqueStringList(profile.charIds);
 }
 
+function resolveContextualFilterText(value) {
+    return resolvePrompt(value).trim();
+}
+
+function resolveContextualFilter(filter) {
+    if (!filter || typeof filter !== "object") return filter;
+    return {
+        ...filter,
+        name: resolveContextualFilterText(filter.name || ""),
+        description: resolveContextualFilterText(filter.description || ""),
+        keywords: resolveContextualFilterText(filter.keywords || ""),
+        positive: resolveContextualFilterText(filter.positive || ""),
+        negative: resolveContextualFilterText(filter.negative || ""),
+        removePositive: resolveContextualFilterText(filter.removePositive || ""),
+        removeNegative: resolveContextualFilterText(filter.removeNegative || ""),
+    };
+}
+
 function enrichSceneTextForFilters(sceneText, label = "Contextual filters") {
     const base = String(sceneText || "").trim();
     const profile = resolveChatProfileContext();
@@ -2503,7 +2521,9 @@ function enrichSceneTextForFilters(sceneText, label = "Contextual filters") {
         extraLines.push(`${profile.userName} profile: ${truncateForContext(profile.userDesc, 600)}`);
     }
     if (!extraLines.length) return base;
-    const enriched = [base, ...extraLines].filter(Boolean).join("\n\n");
+    const missingLines = extraLines.filter(line => !base.includes(line));
+    if (!missingLines.length) return base;
+    const enriched = [base, ...missingLines].filter(Boolean).join("\n\n");
     const addedChars = Math.max(0, enriched.length - base.length);
     if (addedChars > 0) {
         log(`${label}: enriched matching context (+${addedChars} chars)`);
@@ -2851,12 +2871,13 @@ function applyContextualFilters(prompt, negative, sceneText) {
     for (const f of activeFilters) {
         if (!f.enabled) continue;
         if (f.matchMode === "LLM") continue;
-        const keywords = f.keywords.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
+        const resolvedFilter = resolveContextualFilter(f);
+        const keywords = resolvedFilter.keywords.split(",").map(k => k.trim().toLowerCase()).filter(Boolean);
         if (!keywords.length) continue;
-        const hit = f.matchMode === "AND"
+        const hit = resolvedFilter.matchMode === "AND"
             ? keywords.every(kw => scene.includes(kw))
             : keywords.some(kw => scene.includes(kw));
-        if (hit) matched.push({ ...f, _keywords: new Set(keywords) });
+        if (hit) matched.push({ ...resolvedFilter, _keywords: new Set(keywords) });
     }
     if (!matched.length) return { prompt, negative, matchedFilters: [] };
     matched.sort(compareContextualFilters);
@@ -2997,11 +3018,15 @@ function applyPromptReplacementMaps(prompt, negative) {
 }
 
 async function matchLLMFilters(sceneText, signal = null) {
-    const llmFilters = getActiveFilters().filter(f => f.enabled && f.matchMode === "LLM" && f.description);
+    const llmFilters = getActiveFilters()
+        .filter(f => f.enabled && f.matchMode === "LLM" && f.description)
+        .map(resolveContextualFilter)
+        .filter(f => f.description);
     if (!llmFilters.length || !sceneText) return [];
     const sceneForMatching = enrichSceneTextForFilters(sceneText, "LLM filters");
 
-    const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name}": ${f.description}`).join('\n');
+    const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name || "(unnamed)"}": ${f.description}`).join('\n');
+    log(`LLM filter matching concepts: ${previewTextForLog(conceptList, 180)}`);
 
     const instruction = `Given the following scene, identify which concepts are present.
 Reply ONLY with the numbers of matching concepts, comma-separated. If none match, reply "none".
@@ -11024,9 +11049,8 @@ async function generateImageInjectPalette() {
         log(`Palette inject: Found ${matches.length} image tag(s), generating images...`);
 
         // Step 3: Generate images for each extracted prompt (same pipeline as processInjectMessage)
-        // Build enriched scene context with character names for filter matching
+        // Keep raw scene text here; the shared contextual filter pipeline enriches it as needed.
         const baseSceneText = getMessages() || "";
-        const sceneTextForFilters = enrichSceneTextForFilters(baseSceneText, "Palette inject filters");
         for (const extractedPrompt of matches) {
             checkAborted(cancelCheckpoint);
             showStatus(`🖼️ Generating palette-inject image...`);
@@ -11067,8 +11091,8 @@ async function generateImageInjectPalette() {
             }
 
             const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-                matchText: sceneTextForFilters,
-                llmSceneText: sceneTextForFilters,
+                matchText: baseSceneText || prompt,
+                llmSceneText: baseSceneText || extractedPrompt,
                 signal: currentAbortController?.signal,
             });
             checkAborted(cancelCheckpoint);

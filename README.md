@@ -5,6 +5,10 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.7
+- Fixed contextual filter macro matching so keyword filters and LLM concept filters now resolve `{{user}}` / `{{char}}` before matching, improving persona- and name-based trigger reliability.
+- Fixed a duplicate filter-context enrichment path in palette inject mode that could repeat character/profile blocks inside LLM filter matching requests and muddy concept detection.
+
 ## What's New in v1.8.6
 - Fixed a remaining palette inject fallback issue where one helper-LLM reply could produce several fallback `<image>` tags and trigger a short burst of multiple generations.
 - Palette inject fallback now asks for exactly one best visual moment and hard-caps helper-generated fallback tags to a single image even if the model ignores instructions.
