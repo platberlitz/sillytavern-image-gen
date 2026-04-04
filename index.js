@@ -5843,12 +5843,58 @@ async function finalizeGeneratedEntry(rawUrl, prompt, negative, settings, option
 
 async function addToGallery(entryOrUrl) {
     const entry = normalizeGenerationEntry(entryOrUrl);
-    if (!entry.url) return;
+    if (!entry.url) return null;
     const persistentUrl = await persistImageUrl(entry.url);
     const thumbnail = await createThumbnail(persistentUrl);
-    sessionGallery.unshift({ ...entry, url: persistentUrl, thumbnail, date: entry.date ?? Date.now() });
+    const savedEntry = { ...entry, url: persistentUrl, thumbnail, date: entry.date ?? Date.now() };
+    sessionGallery.unshift(savedEntry);
     if (sessionGallery.length > 50) sessionGallery.pop();
     saveGallery();
+    return savedEntry;
+}
+
+function normalizeGalleryImportUrl(rawUrl) {
+    const source = String(rawUrl || "").trim();
+    if (!source) return "";
+    if (isDataImageUrl(source) || source.startsWith("blob:")) return source;
+
+    const absoluteUrl = toAbsoluteImageUrl(source);
+    return isHttpUrl(absoluteUrl) ? absoluteUrl : "";
+}
+
+function createImportedImageEntry(url) {
+    return normalizeGenerationEntry({
+        url,
+        sourceUrl: "",
+        prompt: "Imported Image",
+        negative: "",
+        provider: getSettings()?.provider || "",
+        promptWasLLM: false,
+        date: Date.now(),
+    });
+}
+
+async function importImageUrlToGallery(rawUrl, { insert = false } = {}) {
+    const normalizedUrl = normalizeGalleryImportUrl(rawUrl);
+    if (!normalizedUrl) {
+        throw new Error("Enter a valid image URL or data URL");
+    }
+
+    const savedEntry = await addToGallery(createImportedImageEntry(normalizedUrl));
+    if (!savedEntry) {
+        throw new Error("Failed to import image URL");
+    }
+
+    if (insert) {
+        const s = getSettings();
+        if (s.insertAsHiddenReply) {
+            await insertImageAsHiddenReply(savedEntry);
+        } else {
+            await insertImageIntoMessage(savedEntry);
+        }
+    }
+
+    return savedEntry;
 }
 
 function saveGallery() {
@@ -6271,39 +6317,86 @@ function showGallery() {
                     <button id="qig-gallery-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
                 </div>
             </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+                <input id="qig-gallery-import-url" type="text" placeholder="Paste image URL or data URL" style="flex:1;min-width:220px;background:#0f1419;color:#fff;border:1px solid #333;border-radius:4px;padding:8px;font-size:12px;">
+                <button id="qig-gallery-import-add" class="menu_button" style="padding:6px 10px;font-size:11px;">Add URL</button>
+                <button id="qig-gallery-import-insert" class="menu_button" style="padding:6px 10px;font-size:11px;">Insert URL</button>
+            </div>
+            <div style="font-size:10px;opacity:0.7;margin-bottom:12px;">Add URL saves it into QIG Gallery. Insert URL saves it and sends it straight into chat.</div>
             <div id="qig-gallery-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;"></div>
         </div>`, (gallery) => {
+        const grid = document.getElementById("qig-gallery-grid");
+        const importInput = document.getElementById("qig-gallery-import-url");
+
+        const renderGalleryGrid = () => {
+            const titleEl = gallery.querySelector("h3");
+            if (titleEl) titleEl.textContent = `Gallery (${sessionGallery.length})`;
+            grid.innerHTML = sessionGallery.length ? sessionGallery.map((item, index) => {
+                const imgSrc = escapeHtml(item.thumbnail || item.url || "");
+                const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
+                const safeSnippet = escapeHtml(snippet);
+                return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
+                    `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
+                    (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${safeSnippet}</div>` : '') +
+                    `</div>`;
+            }).join('') : '<p style="color:#888;">No images yet</p>';
+
+            grid.querySelectorAll("[data-gallery-index]").forEach(el => {
+                el.onclick = (e) => {
+                    e.stopPropagation();
+                    const item = sessionGallery[parseInt(el.dataset.galleryIndex)];
+                    if (!item) return;
+                    lastPrompt = item.prompt || "";
+                    lastNegative = item.negative || "";
+                    lastPromptWasLLM = !!item.promptWasLLM;
+                    gallery.style.display = "none";
+                    displayImage(item, true);
+                };
+            });
+        };
+
+        const runImport = async ({ insert = false } = {}) => {
+            const rawUrl = importInput?.value?.trim() || "";
+            if (!rawUrl) {
+                toastr.warning("Paste an image URL first");
+                return;
+            }
+            try {
+                await importImageUrlToGallery(rawUrl, { insert });
+                renderGalleryGrid();
+                if (importInput) importInput.value = "";
+                toastr.success(insert ? "Image URL inserted into chat" : "Image URL added to gallery");
+            } catch (err) {
+                log(`Gallery import failed: ${err.message}`);
+                toastr.error("Failed to import image URL: " + err.message);
+            }
+        };
+
         document.getElementById("qig-gallery-close").onclick = () => gallery.style.display = "none";
         document.getElementById("qig-gallery-clear").onclick = () => {
             if (confirm("Clear entire gallery?")) {
                 blobUrls.forEach(u => URL.revokeObjectURL(u)); blobUrls.clear();
                 sessionGallery = [];
                 localStorage.removeItem("qig_gallery");
-                document.getElementById("qig-gallery-grid").innerHTML = '<p style="color:#888;">No images yet</p>';
+                renderGalleryGrid();
             }
         };
-        const grid = document.getElementById("qig-gallery-grid");
-        grid.innerHTML = sessionGallery.length ? sessionGallery.map((item, index) => {
-            const imgSrc = escapeHtml(item.thumbnail || item.url || "");
-            const snippet = item.prompt ? item.prompt.substring(0, 40) + (item.prompt.length > 40 ? '...' : '') : '';
-            const safeSnippet = escapeHtml(snippet);
-            return `<div style="position:relative;cursor:pointer;" data-gallery-index="${index}">` +
-                `<img src="${imgSrc}" style="width:100%;border-radius:6px;" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><text y=%2240%22 x=%2220%22 fill=%22gray%22>expired</text></svg>'">` +
-                (snippet ? `<div style="position:absolute;bottom:0;left:0;right:0;background:rgba(0,0,0,0.7);color:#ccc;font-size:9px;padding:2px 4px;border-radius:0 0 6px 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">${safeSnippet}</div>` : '') +
-                `</div>`;
-        }).join('') : '<p style="color:#888;">No images yet</p>';
-        grid.querySelectorAll("[data-gallery-index]").forEach(el => {
-            el.onclick = (e) => {
-                e.stopPropagation();
-                const item = sessionGallery[parseInt(el.dataset.galleryIndex)];
-                if (!item) return;
-                lastPrompt = item.prompt || "";
-                lastNegative = item.negative || "";
-                lastPromptWasLLM = !!item.promptWasLLM;
-                gallery.style.display = "none";
-                displayImage(item, true);
+        document.getElementById("qig-gallery-import-add").onclick = (e) => {
+            e.stopPropagation();
+            runImport({ insert: false });
+        };
+        document.getElementById("qig-gallery-import-insert").onclick = (e) => {
+            e.stopPropagation();
+            runImport({ insert: true });
+        };
+        if (importInput) {
+            importInput.onkeydown = (e) => {
+                if (e.key !== "Enter") return;
+                e.preventDefault();
+                runImport({ insert: false });
             };
-        });
+        }
+        renderGalleryGrid();
     });
 }
 
