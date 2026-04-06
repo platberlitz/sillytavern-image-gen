@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.18
+- Added a Quick Image Gen action on chat messages so manual generation can target a specific previous message in one click.
+- Manual generation now carries that targeted message through prompt building, proxy auto-reference images, and chat insertion.
+- Hardened helper-LLM parsing for OpenAI-compatible backends so structured replies are less likely to be misread as empty, and empty-response warnings now say what actually failed.
+
 ## What's New in v1.8.17
 - Manual image inserts now prefer the latest non-user / assistant message instead of attaching to the latest raw message by default.
 
@@ -211,6 +216,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 2. Provider defaults to **Pollinations** (free!)
 3. Enter a prompt: `{{char}} smiling in a garden`
 4. Click **Generate**
+5. For a specific previous message, open that message's **Message Actions** menu and click the **QIG palette button** to generate from that exact message
 
 ---
 
@@ -224,8 +230,8 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | **Prompt** | Base prompt with `{{char}}` and `{{user}}` placeholders |
 | **Negative Prompt** | What to avoid in generation |
 | **Quality Tags** | Tags prepended to prompt |
-| **Use chat message** | Use chat message(s) as prompt |
-| **Message selection** | Which messages to use: `-1` (last), `5` (single), `3-7` (range), `3,5,7` (specific), `last5` (last N) |
+| **Use chat message** | Use chat message(s) as prompt for palette/manual generation |
+| **Message selection** | Advanced selector for palette/manual generation: `-1` (last), `5` (single), `3-7` (range), `3,5,7` (specific), `last5` (last N) |
 | **Use LLM** | Have LLM convert scene to image prompt (tags/natural/custom) |
 | **Edit LLM prompt** | Review and edit AI-generated prompts before generation |
 | **Prefill** | Text to start LLM response with (e.g., "Tags:", "Image prompt:") |
@@ -259,6 +265,7 @@ git clone https://github.com/platberlitz/sillytavern-image-gen.git
 | 💾 Save Preset | Save all current generation settings as a named preset |
 | 📤 Export | Export all settings (profiles, Comfy workflow presets, templates, presets, char settings) to JSON |
 | 📥 Import | Import settings from a previously exported JSON file |
+| 🎨 QIG message action | Generate from that specific chat message using your current QIG settings |
 | 📌 Insert All | Insert all batch images into chat (batch mode) |
 | 💾 Save All | Download all batch images with metadata (batch mode) |
 | 🔄 Regenerate | Same prompt, new seed |

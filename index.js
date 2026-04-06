@@ -298,6 +298,7 @@ let lastPrompt = "";
 let lastNegative = "";
 let lastPromptWasLLM = false;
 let lastProxyContextRefImages = [];
+let lastGenerationSourceMessageIndex = null;
 let originalPrompt = "";
 let originalNegative = "";
 function safeParse(key, fallback) {
@@ -405,10 +406,15 @@ let paletteCancelLockUntil = 0;
 let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 let _palettePresetMenuCleanup = null;
+let transientGenerationTarget = null;
+let qigMessageActionObserver = null;
+let qigMessageActionRefreshQueued = false;
+let qigMessageActionClicksBound = false;
 const PALETTE_GENERATE_LOCK_MS = 350;
 const PALETTE_CANCEL_LOCK_MS = 500;
 const INTERNAL_LLM_AUTOGEN_GRACE_MS = 2000;
 const INJECT_CONSUMED_EXTRA_KEY = "qig_inject_consumed";
+const QIG_MESSAGE_ACTION_CLASS = "qig-message-generate";
 const FILTER_SCOPE_GLOBAL = "global";
 const FILTER_SCOPE_CARD = "card";
 const FILTER_SCOPE_CHAR = "char";
@@ -2810,6 +2816,47 @@ function getSettings() {
     return extension_settings[extensionName];
 }
 
+function clampChatMessageIndex(index, chatLength) {
+    if (!Number.isFinite(chatLength) || chatLength <= 0) return null;
+    const numeric = Number(index);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.max(0, Math.min(Math.trunc(numeric), chatLength - 1));
+}
+
+function setTransientGenerationTarget(messageIndex, { forceMessagePrompt = true } = {}) {
+    transientGenerationTarget = {
+        messageIndex: Number(messageIndex),
+        forceMessagePrompt: forceMessagePrompt !== false,
+        createdAt: Date.now(),
+    };
+    return transientGenerationTarget;
+}
+
+function clearTransientGenerationTarget() {
+    transientGenerationTarget = null;
+}
+
+function getTransientGenerationTarget(ctx = getContext?.()) {
+    if (!transientGenerationTarget || typeof transientGenerationTarget !== "object") return null;
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const resolvedIndex = clampChatMessageIndex(transientGenerationTarget.messageIndex, chat.length);
+    if (!Number.isInteger(resolvedIndex)) {
+        return { ...transientGenerationTarget, messageIndex: null, message: null };
+    }
+    const message = chat[resolvedIndex];
+    if (!message || typeof message !== "object") return null;
+    return {
+        ...transientGenerationTarget,
+        messageIndex: resolvedIndex,
+        message,
+    };
+}
+
+function shouldUseChatMessageScene(settings = getSettings(), ctx = getContext?.()) {
+    const target = getTransientGenerationTarget(ctx);
+    return !!target?.message || !!settings?.useLastMessage;
+}
+
 function resolvePrompt(template, overrides = null) {
     if (template == null) return "";
     const text = typeof template === "string" ? template : String(template);
@@ -2999,29 +3046,39 @@ function parseMessageRange(rangeStr, chatLength) {
     return [...indices].sort((a, b) => a - b);
 }
 
-function getMessages() {
-    const ctx = getContext();
-    if (!ctx) return "";
-    const chat = ctx.chat;
-    if (!chat || chat.length === 0) return "";
-    const s = getSettings();
-    const indices = parseMessageRange(s.messageRange, chat.length);
-    if (indices.length === 0) return "";
+function getSceneMessageEntries(settings = getSettings(), ctx = getContext?.()) {
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    if (!chat.length) return [];
+
+    const target = getTransientGenerationTarget(ctx);
+    if (target?.message) {
+        return [{ index: target.messageIndex, message: target.message, targeted: true }];
+    }
+
+    const indices = parseMessageRange(settings?.messageRange, chat.length);
+    return indices
+        .map(index => ({ index, message: chat[index], targeted: false }))
+        .filter(entry => entry.message && typeof entry.message === "object");
+}
+
+function getMessages(settings = getSettings(), ctx = getContext?.()) {
+    const entries = getSceneMessageEntries(settings, ctx);
+    if (!entries.length) return "";
 
     // Single message: return plain text (backward compatible, no labels)
-    if (indices.length === 1) {
-        const msg = chat[indices[0]];
+    if (entries.length === 1) {
+        const msg = entries[0].message;
         return normalizeSceneMessageText(msg?.mes || "");
     }
 
     // Multiple messages: return speaker-labeled concatenation
     const lines = [];
-    for (const i of indices) {
-        const msg = chat[i];
+    for (const entry of entries) {
+        const msg = entry.message;
         if (!msg || !msg.mes) continue;
         const plainText = normalizeSceneMessageText(msg.mes);
         if (!plainText) continue;
-        const name = msg.name || (msg.is_user ? ctx.name1 : ctx.name2) || "Unknown";
+        const name = msg.name || (msg.is_user ? ctx?.name1 : ctx?.name2) || "Unknown";
         lines.push(`[${name}]: ${plainText}`);
     }
     const result = lines.join("\n\n");
@@ -3032,12 +3089,7 @@ function getMessages() {
 }
 
 function getSelectedSceneMessages(settings = getSettings(), ctx = getContext()) {
-    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
-    if (!chat.length) return [];
-    const indices = parseMessageRange(settings?.messageRange, chat.length);
-    return indices
-        .map(index => ({ index, message: chat[index] }))
-        .filter(entry => entry.message && typeof entry.message === "object");
+    return getSceneMessageEntries(settings, ctx);
 }
 
 function extractMessageAttachedImageRefs(message) {
@@ -3062,7 +3114,7 @@ function extractMessageAttachedImageRefs(message) {
 }
 
 async function collectChatContextProxyRefImages(settings = getSettings(), ctx = getContext()) {
-    if (settings?.provider !== "proxy" || !settings?.useLastMessage) return [];
+    if (settings?.provider !== "proxy" || !shouldUseChatMessageScene(settings, ctx)) return [];
 
     const selectedMessages = getSelectedSceneMessages(settings, ctx);
     if (!selectedMessages.length) return [];
@@ -3479,21 +3531,199 @@ ${conceptList}`;
 
 const skinPattern = /\b(dark[- ]?skin(?:ned)?|brown[- ]?skin(?:ned)?|black[- ]?skin(?:ned)?|tan(?:ned)?[- ]?skin|ebony|melanin|mocha|chocolate[- ]?skin|caramel[- ]?skin)\b/gi;
 
-function extractLLMResponse(response) {
-    if (typeof response === "string") return response;
-    if (response && typeof response === "object") {
-        // CMRS extractData format: { content, reasoning }
-        if (typeof response.content === "string") return response.content;
-        // OpenAI raw format fallback
-        const choiceContent = response.choices?.[0]?.message?.content ?? response.choices?.[0]?.text;
-        if (typeof choiceContent === "string") return choiceContent;
-        // Generic message format
-        if (typeof response.message?.content === "string") return response.message.content;
-        // Try text property
-        if (typeof response.text === "string") return response.text;
+function summarizeLLMValueShape(value, depth = 0) {
+    if (value === null) return "null";
+    if (value === undefined) return "undefined";
+    if (typeof value === "string") return "string";
+    if (typeof value !== "object") return typeof value;
+    if (Array.isArray(value)) {
+        if (depth >= 1) return `array(${value.length})`;
+        const parts = value.slice(0, 3).map(item => summarizeLLMValueShape(item, depth + 1));
+        return `array(${value.length})[${parts.join(", ")}${value.length > 3 ? ", ..." : ""}]`;
     }
-    log(`LLM Override: Unexpected response format: ${JSON.stringify(response).substring(0, 200)}`);
-    return "";
+
+    const keys = Object.keys(value);
+    if (depth >= 1) {
+        return `object{${keys.slice(0, 4).join(",")}${keys.length > 4 ? ",..." : ""}}`;
+    }
+
+    const summary = keys.slice(0, 4)
+        .map(key => `${key}:${summarizeLLMValueShape(value[key], depth + 1)}`)
+        .join(", ");
+    return `object{${summary}${keys.length > 4 ? ", ..." : ""}}`;
+}
+
+function appendLLMTextSegments(value, segments, visited = new WeakSet()) {
+    if (typeof value === "string") {
+        segments.push(value);
+        return true;
+    }
+    if (value == null || typeof value !== "object") return false;
+    if (visited.has(value)) return false;
+    visited.add(value);
+
+    if (Array.isArray(value)) {
+        let found = false;
+        for (const item of value) {
+            found = appendLLMTextSegments(item, segments, visited) || found;
+        }
+        return found;
+    }
+
+    let found = false;
+    const pushString = (candidate) => {
+        if (typeof candidate !== "string") return false;
+        segments.push(candidate);
+        found = true;
+        return true;
+    };
+
+    if (pushString(value.output_text)) return true;
+    if (pushString(value.text)) return true;
+    if (/text/i.test(String(value.type || "")) && pushString(value.value)) return true;
+    if (pushString(value.content)) return true;
+
+    const nestedCandidates = [value.text, value.content, value.parts, value.output, value.data, value.message, value.value];
+    for (const candidate of nestedCandidates) {
+        if (candidate == null || candidate === value) continue;
+        found = appendLLMTextSegments(candidate, segments, visited) || found;
+    }
+
+    return found;
+}
+
+function extractLLMResponseDetails(response) {
+    if (typeof response === "string") {
+        return {
+            text: response,
+            sourcePath: "response",
+            extractionStatus: response ? "text" : "empty_string",
+            finishReason: null,
+            responseShape: "string",
+            contentShape: "string",
+        };
+    }
+
+    const finishReason = response?.choices?.[0]?.finish_reason ?? response?.finish_reason ?? response?.response?.finish_reason ?? null;
+    const responseShape = summarizeLLMValueShape(response);
+    if (!response || typeof response !== "object") {
+        return {
+            text: "",
+            sourcePath: "",
+            extractionStatus: response == null ? "null_content" : "unsupported_shape",
+            finishReason,
+            responseShape,
+            contentShape: "",
+        };
+    }
+
+    const candidates = [
+        { label: "content", value: response.content },
+        { label: "choices[0].message.content", value: response.choices?.[0]?.message?.content },
+        { label: "choices[0].text", value: response.choices?.[0]?.text },
+        { label: "message.content", value: response.message?.content },
+        { label: "text", value: response.text },
+        { label: "output_text", value: response.output_text },
+        { label: "output[0].content", value: response.output?.[0]?.content },
+        { label: "output", value: response.output },
+    ];
+
+    let sawNullContent = false;
+    let sawStructuredContent = false;
+    let sawCandidate = false;
+    let firstCandidateLabel = "";
+    let firstCandidateShape = "";
+
+    for (const candidate of candidates) {
+        if (candidate.value === undefined) continue;
+        sawCandidate = true;
+        if (!firstCandidateLabel) firstCandidateLabel = candidate.label;
+        if (!firstCandidateShape) firstCandidateShape = summarizeLLMValueShape(candidate.value);
+
+        if (candidate.value === null) {
+            sawNullContent = true;
+            continue;
+        }
+
+        if (Array.isArray(candidate.value) || (candidate.value && typeof candidate.value === "object")) {
+            sawStructuredContent = true;
+        }
+
+        const segments = [];
+        const foundText = appendLLMTextSegments(candidate.value, segments);
+        const extractedText = segments.join("");
+        if (foundText && extractedText.trim()) {
+            return {
+                text: extractedText,
+                sourcePath: candidate.label,
+                extractionStatus: Array.isArray(candidate.value) || typeof candidate.value === "object" ? "structured_text" : "text",
+                finishReason,
+                responseShape,
+                contentShape: summarizeLLMValueShape(candidate.value),
+            };
+        }
+    }
+
+    return {
+        text: "",
+        sourcePath: firstCandidateLabel,
+        extractionStatus: sawNullContent
+            ? "null_content"
+            : (sawStructuredContent ? "no_text_parts" : (sawCandidate ? "empty_string" : "unsupported_shape")),
+        finishReason,
+        responseShape,
+        contentShape: firstCandidateShape,
+    };
+}
+
+function getLLMHelperRouteDescription(route) {
+    switch (route) {
+        case "llm_override":
+            return "LLM Override";
+        case "override_unavailable_main_chat":
+            return "main chat AI fallback (override unavailable)";
+        case "override_failed_main_chat":
+            return "main chat AI fallback (override failed)";
+        case "main_chat_ai":
+        default:
+            return "main chat AI";
+    }
+}
+
+function logLLMHelperResponseMeta(meta, label = "LLM helper") {
+    if (!meta || typeof meta !== "object") return;
+    const parts = [`route=${getLLMHelperRouteDescription(meta.route)}`];
+    if (meta.sourcePath) parts.push(`source=${meta.sourcePath}`);
+    if (meta.extractionStatus) parts.push(`extraction=${meta.extractionStatus}`);
+    if (meta.finishReason) parts.push(`finish_reason=${meta.finishReason}`);
+    if (Number.isFinite(meta.requestedMaxTokens)) parts.push(`max_tokens=${meta.requestedMaxTokens}`);
+    if (meta.responseShape) parts.push(`shape=${meta.responseShape}`);
+    log(`${label}: ${parts.join(", ")}`);
+}
+
+function buildLLMEmptyPromptWarning(meta, rawText, cleanedText) {
+    const routeLabel = getLLMHelperRouteDescription(meta?.route);
+    if (meta?.finishReason === "length") {
+        return `${routeLabel} hit finish_reason=length — using raw prompt. Consider raising max tokens.`;
+    }
+
+    switch (meta?.extractionStatus) {
+        case "null_content":
+            return `${routeLabel} returned empty/null content — using raw prompt.`;
+        case "no_text_parts":
+            return `${routeLabel} returned structured content with no text parts — using raw prompt.`;
+        case "unsupported_shape":
+            return `${routeLabel} returned an unsupported response shape — using raw prompt.`;
+        default:
+            if (rawText && !String(cleanedText || "").trim()) {
+                return `${routeLabel} returned no usable text after cleanup — using raw prompt.`;
+            }
+            return `${routeLabel} returned no text — using raw prompt.`;
+    }
+}
+
+function extractLLMResponse(response) {
+    return extractLLMResponseDetails(response).text;
 }
 
 function findSecretKeyForId(secretId) {
@@ -3506,8 +3736,9 @@ function findSecretKeyForId(secretId) {
     return null;
 }
 
-async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { assistantPrefill = "" } = {}) {
+async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { assistantPrefill = "", returnMeta = false } = {}) {
     const s = getSettings();
+    const requestedMaxTokens = s.llmOverrideMaxTokens || 500;
     let CMRS = null;
     try {
         const ctx = getContext();
@@ -3523,9 +3754,20 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
             label: "LLM override fallback request",
             prefill: assistantPrefill,
         };
-        return assistantPrefill
+        const fallbackText = assistantPrefill
             ? await callInternalStandaloneLLM(instruction, fallbackOptions)
             : await callInternalQuietPrompt(instruction, fallbackOptions);
+        const fallbackMeta = {
+            text: fallbackText,
+            route: "override_unavailable_main_chat",
+            sourcePath: "response",
+            extractionStatus: fallbackText ? "text" : "empty_string",
+            finishReason: null,
+            requestedMaxTokens,
+            responseShape: summarizeLLMValueShape(fallbackText),
+            contentShape: summarizeLLMValueShape(fallbackText),
+        };
+        return returnMeta ? fallbackMeta : fallbackText;
     }
 
     const messages = [];
@@ -3573,10 +3815,20 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
         const response = await runWithInternalLLMRequest("LLM override profile request", async () => await runAbortableTask(() => CMRS.sendRequest(
             s.llmOverrideProfileId,
             messages,
-            s.llmOverrideMaxTokens || 500,
+            requestedMaxTokens,
             { extractData: true, includePreset: true, stream: false }
         ), signal));
-        return extractLLMResponse(response);
+        const details = extractLLMResponseDetails(response);
+        const meta = {
+            ...details,
+            route: "llm_override",
+            requestedMaxTokens,
+            profileId: s.llmOverrideProfileId,
+        };
+        if (!details.text) {
+            logLLMHelperResponseMeta(meta, "LLM Override response");
+        }
+        return returnMeta ? meta : details.text;
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`LLM Override failed (profile: ${s.llmOverrideProfileId}): ${e.message}`);
@@ -3587,9 +3839,22 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
             label: "LLM override recovery request",
             prefill: assistantPrefill,
         };
-        return assistantPrefill
+        const fallbackText = assistantPrefill
             ? await callInternalStandaloneLLM(instruction, recoveryOptions)
             : await callInternalQuietPrompt(instruction, recoveryOptions);
+        const fallbackMeta = {
+            text: fallbackText,
+            route: "override_failed_main_chat",
+            sourcePath: "response",
+            extractionStatus: fallbackText ? "text" : "empty_string",
+            finishReason: null,
+            requestedMaxTokens,
+            responseShape: summarizeLLMValueShape(fallbackText),
+            contentShape: summarizeLLMValueShape(fallbackText),
+            error: e.message,
+            profileId: s.llmOverrideProfileId,
+        };
+        return returnMeta ? fallbackMeta : fallbackText;
     } finally {
         // Restore original secret
         if (previousSecretId && secretKey && rotateSecret) {
@@ -3970,9 +4235,14 @@ Tags:`;
         // Prefer a standalone request path so the helper prompt can use prefill and avoid ambient chat leakage.
         // Fallback to the quiet prompt path if standalone generation is unavailable.
         let llmPrompt;
+        let helperResponseMeta;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
-            llmPrompt = await callOverrideLLM(instructionWithEntropy, "", signal, { assistantPrefill: resolvedPrefill });
+            helperResponseMeta = await callOverrideLLM(instructionWithEntropy, "", signal, {
+                assistantPrefill: resolvedPrefill,
+                returnMeta: true,
+            });
+            llmPrompt = helperResponseMeta?.text || "";
         } else {
             llmPrompt = await callInternalStandaloneLLM(instructionWithEntropy, {
                 signal,
@@ -3980,9 +4250,19 @@ Tags:`;
                 label: "image prompt generation request",
                 prefill: resolvedPrefill,
             });
+            helperResponseMeta = {
+                text: llmPrompt,
+                route: "main_chat_ai",
+                sourcePath: "response",
+                extractionStatus: llmPrompt ? "text" : "empty_string",
+                finishReason: null,
+                responseShape: summarizeLLMValueShape(llmPrompt),
+                contentShape: summarizeLLMValueShape(llmPrompt),
+            };
         }
 
         checkAborted(); // Check immediately after LLM call returns
+        logLLMHelperResponseMeta(helperResponseMeta, "LLM helper response");
         log(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
 
@@ -3998,8 +4278,10 @@ Tags:`;
         cleaned = cleaned.trim();
 
         if (!cleaned) {
-            log("WARNING: LLM returned empty response — using extracted prompt as-is. Check your provider's token/output limit.");
-            toastr.warning("LLM prompt was empty — using raw prompt. Check token limits.", "Image Gen", { timeOut: 5000 });
+            const warningMessage = buildLLMEmptyPromptWarning(helperResponseMeta, llmPrompt, cleaned);
+            log(`WARNING: ${warningMessage}`);
+            logLLMHelperResponseMeta(helperResponseMeta, "LLM helper empty response");
+            toastr.warning(warningMessage, "Image Gen", { timeOut: 5000 });
             return basePrompt;
         }
 
@@ -5605,6 +5887,7 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
     const chat = ctx.chat;
     if (!chat || chat.length === 0) throw new Error("No messages in chat");
 
+    const entry = normalizeGenerationEntry(entryOrUrl);
     const s = getSettings();
     const indices = parseMessageRange(s.messageRange, chat.length);
     const fallbackCandidates = indices.length > 0 ? indices : chat.map((_, index) => index);
@@ -5612,13 +5895,14 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
     const fallbackIdx = Number.isInteger(fallbackAssistantIdx)
         ? fallbackAssistantIdx
         : (indices.length > 0 ? indices[indices.length - 1] : chat.length - 1);
-    const idx = Number.isInteger(targetMessageIndex)
-        ? Math.max(0, Math.min(targetMessageIndex, chat.length - 1))
-        : fallbackIdx;
+    const preferredEntryIdx = clampChatMessageIndex(entry.sourceMessageIndex, chat.length);
+    const resolvedTargetIdx = clampChatMessageIndex(targetMessageIndex, chat.length);
+    const idx = Number.isInteger(resolvedTargetIdx)
+        ? resolvedTargetIdx
+        : (Number.isInteger(preferredEntryIdx) ? preferredEntryIdx : fallbackIdx);
     const message = chat[idx];
     if (!message) throw new Error("Could not find target message");
 
-    const entry = normalizeGenerationEntry(entryOrUrl);
     let url = await resolveChatInsertImageUrl(entry);
     if (url.startsWith('blob:')) {
         url = await blobUrlToDataUrl(url);
@@ -5801,6 +6085,7 @@ function createGenerationEntry(url, prompt = lastPrompt, negative = lastNegative
     return {
         url,
         sourceUrl: options.sourceUrl ?? url,
+        sourceMessageIndex: Number.isInteger(options.sourceMessageIndex) ? options.sourceMessageIndex : null,
         thumbnail: options.thumbnail ?? null,
         prompt: prompt || "",
         negative: negative || "",
@@ -5824,6 +6109,9 @@ function normalizeGenerationEntry(entryOrUrl, fallback = {}) {
     return {
         ...entryOrUrl,
         sourceUrl: entryOrUrl.sourceUrl ?? fallback.sourceUrl ?? entryOrUrl.url ?? fallback.url ?? "",
+        sourceMessageIndex: Number.isInteger(entryOrUrl.sourceMessageIndex)
+            ? entryOrUrl.sourceMessageIndex
+            : (Number.isInteger(fallback.sourceMessageIndex) ? fallback.sourceMessageIndex : null),
         prompt: entryOrUrl.prompt ?? fallback.prompt ?? "",
         negative: entryOrUrl.negative ?? fallback.negative ?? "",
         provider,
@@ -6013,6 +6301,7 @@ function displayImage(entryOrUrl, skipGallery) {
                 lastNegative = negativeTextarea.value;
             }
             lastPromptWasLLM = false;
+            lastGenerationSourceMessageIndex = Number.isInteger(entry.sourceMessageIndex) ? entry.sourceMessageIndex : null;
             if (!lastPrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
@@ -6251,6 +6540,8 @@ function displayBatchResults(results) {
                 lastNegative = batchNegativeTextarea.value;
             }
             lastPromptWasLLM = false;
+            const activeEntry = getCurrentEntry();
+            lastGenerationSourceMessageIndex = Number.isInteger(activeEntry?.sourceMessageIndex) ? activeEntry.sourceMessageIndex : null;
             if (!lastPrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
@@ -6704,7 +6995,10 @@ async function regenerateImage() {
             checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
-                const entry = await finalizeGeneratedEntry(result, lastPrompt, lastNegative, s, { promptWasLLM: lastPromptWasLLM });
+                const entry = await finalizeGeneratedEntry(result, lastPrompt, lastNegative, s, {
+                    promptWasLLM: lastPromptWasLLM,
+                    sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
+                });
                 if (entry) displayImage(entry);
             }
         } else {
@@ -6718,7 +7012,10 @@ async function regenerateImage() {
                 const expandedNegative = expandWildcards(lastNegative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal, providerRuntimeOptions);
                 if (result) {
-                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, {
+                        promptWasLLM: lastPromptWasLLM,
+                        sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
+                    });
                     if (entry) results.push(entry);
                 }
             }
@@ -11554,6 +11851,130 @@ function showPalettePresetMenu(event) {
     };
 }
 
+function getMessageGenerateActionMount(messageElement) {
+    return messageElement?.querySelector?.(".extraMesButtons")
+        || messageElement?.querySelector?.(".mes_buttons")
+        || messageElement?.querySelector?.(".ch_name")
+        || messageElement?.querySelector?.(".mes_block")
+        || null;
+}
+
+function createMessageGenerateActionButton(messageIndex) {
+    const button = document.createElement("div");
+    button.className = `mes_button fa-solid fa-palette ${QIG_MESSAGE_ACTION_CLASS}`;
+    button.title = "Generate image from this message with Quick Image Gen";
+    button.dataset.messageIndex = String(messageIndex);
+    return button;
+}
+
+function getMessageElementsWithin(root = document) {
+    const elements = [];
+    if (root instanceof Element && root.matches(".mes[mesid]")) {
+        elements.push(root);
+    }
+    if (root?.querySelectorAll) {
+        elements.push(...root.querySelectorAll(".mes[mesid]"));
+    }
+    return elements;
+}
+
+function ensureMessageGenerateAction(messageElement, ctx = getContext?.()) {
+    if (!(messageElement instanceof Element)) return;
+    if (messageElement.querySelector(`.${QIG_MESSAGE_ACTION_CLASS}`)) return;
+
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const messageIndex = clampChatMessageIndex(messageElement.getAttribute("mesid"), chat.length);
+    if (!Number.isInteger(messageIndex)) return;
+
+    const message = chat[messageIndex];
+    if (!message || message.is_system) return;
+
+    const mount = getMessageGenerateActionMount(messageElement);
+    if (!(mount instanceof Element)) return;
+
+    const button = createMessageGenerateActionButton(messageIndex);
+    if (!mount.classList.contains("extraMesButtons")) {
+        button.classList.add(`${QIG_MESSAGE_ACTION_CLASS}--fallback`);
+    }
+    mount.appendChild(button);
+}
+
+function refreshMessageGenerateActions(root = document) {
+    const ctx = getContext?.();
+    for (const messageElement of getMessageElementsWithin(root)) {
+        ensureMessageGenerateAction(messageElement, ctx);
+    }
+}
+
+function scheduleRefreshMessageGenerateActions() {
+    if (qigMessageActionRefreshQueued) return;
+    qigMessageActionRefreshQueued = true;
+    const scheduleFn = typeof window !== "undefined" && typeof window.requestAnimationFrame === "function"
+        ? window.requestAnimationFrame.bind(window)
+        : (cb) => setTimeout(cb, 0);
+    scheduleFn(() => {
+        qigMessageActionRefreshQueued = false;
+        refreshMessageGenerateActions(document.getElementById("chat") || document);
+    });
+}
+
+function initMessageGenerateActionObserver() {
+    const chatRoot = document.getElementById("chat");
+    if (!chatRoot) {
+        setTimeout(initMessageGenerateActionObserver, 500);
+        return;
+    }
+
+    if (qigMessageActionObserver) {
+        qigMessageActionObserver.disconnect();
+    }
+    qigMessageActionObserver = new MutationObserver((mutations) => {
+        if (mutations.some(mutation => mutation.type === "childList" && (mutation.addedNodes.length > 0 || mutation.removedNodes.length > 0))) {
+            scheduleRefreshMessageGenerateActions();
+        }
+    });
+    qigMessageActionObserver.observe(chatRoot, { childList: true, subtree: true });
+    scheduleRefreshMessageGenerateActions();
+}
+
+function bindMessageGenerateActionClicks() {
+    if (qigMessageActionClicksBound) return;
+    qigMessageActionClicksBound = true;
+
+    $(document).on("click", `.${QIG_MESSAGE_ACTION_CLASS}`, async function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+
+        if (isGenerating) {
+            toastr.warning("Generation already in progress");
+            return;
+        }
+
+        const ctx = getContext?.();
+        const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        const messageElement = event.currentTarget.closest(".mes[mesid]");
+        const messageIndex = clampChatMessageIndex(
+            messageElement?.getAttribute?.("mesid") ?? event.currentTarget.dataset.messageIndex,
+            chat.length,
+        );
+
+        if (!Number.isInteger(messageIndex)) {
+            toastr.error("Could not find the target chat message");
+            return;
+        }
+
+        try {
+            setTransientGenerationTarget(messageIndex);
+            await generateImage();
+        } catch (e) {
+            log(`Message action: Generation failed for message ${messageIndex}: ${e.message}`);
+            toastr.error("Failed to generate from that message: " + e.message);
+        } finally {
+            clearTransientGenerationTarget();
+        }
+    });
+}
+
 function addInputButton() {
     if (document.getElementById("qig-input-btn")) return;
     if (getSettings().disablePaletteButton) return;
@@ -11836,6 +12257,9 @@ async function generateImage() {
     const s = getSettings();
     const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = getGenerationSeedValue(s);
+    const activeMessageTarget = getTransientGenerationTarget();
+    const sourceMessageIndexForEntries = Number.isInteger(activeMessageTarget?.messageIndex) ? activeMessageTarget.messageIndex : null;
+    const useChatMessageScene = shouldUseChatMessageScene(s);
 
     try {
     checkAborted(cancelCheckpoint);
@@ -11852,7 +12276,13 @@ async function generateImage() {
     let scenePrompt = "";
     let chatContextProxyRefImages = [];
 
-    if (s.useLastMessage) {
+    lastGenerationSourceMessageIndex = Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : null;
+
+    if (Number.isInteger(sourceMessageIndexForEntries)) {
+        log(`Manual message target: Generating from chat message ${sourceMessageIndexForEntries}`);
+    }
+
+    if (useChatMessageScene) {
         const messages = getMessages();
         if (messages) {
             scenePrompt = messages;
@@ -11868,7 +12298,7 @@ async function generateImage() {
         }
     }
 
-    if (s.provider === "proxy" && s.useLastMessage) {
+    if (s.provider === "proxy" && useChatMessageScene) {
         chatContextProxyRefImages = await collectChatContextProxyRefImages(s);
         checkAborted(cancelCheckpoint);
     }
@@ -11946,7 +12376,10 @@ async function generateImage() {
                 const expandedNegative = expandWildcards(negative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal, providerRuntimeOptions);
                 if (result) {
-                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                    const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, {
+                        promptWasLLM: lastPromptWasLLM,
+                        sourceMessageIndex: Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : undefined,
+                    });
                     if (entry) results.push(entry);
                 }
             }
@@ -11962,13 +12395,14 @@ async function generateImage() {
                 return undefined;
             })();
             if (s.autoInsert) {
+                const autoInsertTarget = Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : lastCharIdx;
                 for (const r of results) {
                     addToGallery(r);
                     try {
                         if (s.insertAsHiddenReply) {
                             await insertImageAsHiddenReply(r);
                         } else {
-                            await insertImageIntoMessage(r, lastCharIdx);
+                            await insertImageIntoMessage(r, autoInsertTarget);
                         }
                     } catch (err) {
                         console.error("[Quick Image Gen] Auto-insert failed:", err);
@@ -12550,6 +12984,8 @@ jQuery(function () {
             await loadSettings();
             createUI();
             addInputButton();
+            bindMessageGenerateActionClicks();
+            initMessageGenerateActionObserver();
             loadCharSettings();
 
             // Ensure paletteMode select reflects saved setting after DOM insertion
@@ -12566,6 +13002,7 @@ jQuery(function () {
             const { eventSource, event_types } = scriptModule;
             if (eventSource) {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
+                    scheduleRefreshMessageGenerateActions();
                     if (shouldSuppressAutoGenerateFromInternalLLM(messageIndex)) return;
                     if (_paletteInjectActive || _injectProcessingCount > 0) return;
                     const s = getSettings();
@@ -12599,6 +13036,7 @@ jQuery(function () {
                 }
                 eventSource.on(event_types.CHAT_CHANGED, () => {
                     closePalettePresetMenu();
+                    scheduleRefreshMessageGenerateActions();
                     if (_autoGenTimeout) {
                         clearTimeout(_autoGenTimeout);
                         _autoGenTimeout = null;

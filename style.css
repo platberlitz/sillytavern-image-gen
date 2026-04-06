@@ -29,6 +29,10 @@
     opacity: 1;
 }
 
+.qig-message-generate--fallback {
+    margin-left: 4px;
+}
+
 #qig-status {
     display: none;
     position: fixed;
