@@ -5,6 +5,11 @@ One-click image generation for SillyTavern. 13 providers (Pollinations free, Nov
 
 **Install:** Extensions → Install from URL → `https://github.com/platberlitz/sillytavern-image-gen`
 
+## What's New in v1.8.20
+- Fixed helper-LLM scene extraction so image prompt generation can read the selected chat message more reliably again, including chats where the visible text lives outside plain `mes`.
+- Adjusted multi-message scene formatting/instructions so the helper is less likely to echo the chat transcript back instead of turning it into an image prompt.
+- Added better scene-selection debug logging to help diagnose future prompt-context issues.
+
 ## What's New in v1.8.19
 - Added a manual insert target setting, so Gallery inserts, Insert URL, and popup/manual insert actions can attach to the latest user message when you want to hand an image to the user.
 - Kept per-message Quick Image Gen actions targeted, so generating from a specific message still inserts back into that exact message instead of following the global fallback target.

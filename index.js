@@ -649,6 +649,110 @@ function normalizeSceneMessageText(text) {
     }
 }
 
+function getCurrentMessageSwipeText(message) {
+    if (!Array.isArray(message?.swipes)) return "";
+    const swipeId = Number.isInteger(message?.swipe_id) ? message.swipe_id : 0;
+    return typeof message.swipes[swipeId] === "string" ? message.swipes[swipeId] : "";
+}
+
+function getSceneMessageSources(message) {
+    if (!message || typeof message !== "object") return [];
+
+    const sources = [];
+    const seenTexts = new Set();
+    const pushSource = (key, label, value) => {
+        const normalized = normalizeSceneMessageText(value);
+        if (!normalized || seenTexts.has(normalized)) return;
+        seenTexts.add(normalized);
+        sources.push({ key, label, text: normalized });
+    };
+
+    pushSource("extra.display_text", "display text", message?.extra?.display_text);
+    pushSource("mes", "message", message?.mes);
+    pushSource("swipes.current", "current swipe", getCurrentMessageSwipeText(message));
+    pushSource("extra.reasoning_display_text", "reasoning display", message?.extra?.reasoning_display_text);
+    pushSource("extra.reasoning", "reasoning", message?.extra?.reasoning);
+
+    return sources;
+}
+
+function resolveSceneMessageSource(message) {
+    const sources = getSceneMessageSources(message);
+    return sources.length ? sources[0] : null;
+}
+
+function getSceneMessageSpeakerName(message, ctx = getContext?.()) {
+    const fallbackName = message?.is_user ? ctx?.name1 : ctx?.name2;
+    const resolved = String(message?.name || fallbackName || "Unknown").trim();
+    return resolved || "Unknown";
+}
+
+function buildSceneMessageContext(entries, ctx = getContext?.(), { logDebug = false } = {}) {
+    const selectedIndices = entries
+        .map(entry => entry?.index)
+        .filter(index => Number.isInteger(index));
+
+    if (logDebug) {
+        log(`Scene context: selected message indices ${selectedIndices.length ? selectedIndices.join(", ") : "(none)"}`);
+    }
+
+    const resolvedEntries = [];
+    for (const entry of entries) {
+        const source = resolveSceneMessageSource(entry?.message);
+        if (!source) {
+            if (logDebug) {
+                log(`Scene context: message #${entry?.index ?? "?"} resolved empty after normalization`);
+            }
+            continue;
+        }
+
+        if (logDebug) {
+            log(`Scene context: message #${entry.index} using ${source.label} (${source.key}), ${source.text.length} chars`);
+        }
+
+        resolvedEntries.push({
+            ...entry,
+            speakerName: getSceneMessageSpeakerName(entry.message, ctx),
+            source,
+        });
+    }
+
+    if (!resolvedEntries.length) {
+        if (logDebug) {
+            log("Scene context: no usable message text after normalization");
+        }
+        return { text: "", isMultiMessage: false, resolvedEntries: [] };
+    }
+
+    if (resolvedEntries.length === 1) {
+        const text = resolvedEntries[0].source.text;
+        if (logDebug) {
+            log(`Scene context: built single-message scene (${text.length} chars)`);
+        }
+        return { text, isMultiMessage: false, resolvedEntries };
+    }
+
+    const text = resolvedEntries
+        .map(entry => `${entry.speakerName}: ${entry.source.text}`)
+        .join("\n\n");
+    if (logDebug) {
+        log(`Scene context: built multi-message scene (${resolvedEntries.length} messages, ${text.length} chars)`);
+    }
+    if (text.length > 10000) {
+        console.warn("[QIG] Multi-message context exceeds 10000 chars:", text.length);
+    }
+    return { text, isMultiMessage: true, resolvedEntries };
+}
+
+function isSceneTranscriptPrompt(text) {
+    const blocks = String(text || "")
+        .split(/\n{2,}/)
+        .map(block => block.trim())
+        .filter(Boolean);
+    if (blocks.length < 2) return false;
+    return blocks.every(block => /^[^:\n]{1,80}:\s+\S/.test(block));
+}
+
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
@@ -3069,31 +3173,10 @@ function getSceneMessageEntries(settings = getSettings(), ctx = getContext?.()) 
         .filter(entry => entry.message && typeof entry.message === "object");
 }
 
-function getMessages(settings = getSettings(), ctx = getContext?.()) {
+function getMessages(settings = getSettings(), ctx = getContext?.(), options = {}) {
     const entries = getSceneMessageEntries(settings, ctx);
     if (!entries.length) return "";
-
-    // Single message: return plain text (backward compatible, no labels)
-    if (entries.length === 1) {
-        const msg = entries[0].message;
-        return normalizeSceneMessageText(msg?.mes || "");
-    }
-
-    // Multiple messages: return speaker-labeled concatenation
-    const lines = [];
-    for (const entry of entries) {
-        const msg = entry.message;
-        if (!msg || !msg.mes) continue;
-        const plainText = normalizeSceneMessageText(msg.mes);
-        if (!plainText) continue;
-        const name = msg.name || (msg.is_user ? ctx?.name1 : ctx?.name2) || "Unknown";
-        lines.push(`[${name}]: ${plainText}`);
-    }
-    const result = lines.join("\n\n");
-    if (result.length > 10000) {
-        console.warn("[QIG] Multi-message context exceeds 10000 chars:", result.length);
-    }
-    return result;
+    return buildSceneMessageContext(entries, ctx, options).text;
 }
 
 function getSelectedSceneMessages(settings = getSettings(), ctx = getContext()) {
@@ -4105,7 +4188,12 @@ async function generateLLMPrompt(s, basePrompt, signal) {
         const isNatural = s.llmPromptStyle === "natural";
         const wantsCustom = s.llmPromptStyle === "custom";
         const isCustom = wantsCustom && !!s.llmCustomInstruction?.trim();
-        const isMultiMessage = basePrompt.includes("\n\n[") && basePrompt.includes("]: ");
+        const isMultiMessage = isSceneTranscriptPrompt(basePrompt);
+        const multiMessageContextBlock = isMultiMessage
+            ? `\nMULTI-MESSAGE SCENE CONTEXT:\n- The selected scene below is speaker-tagged context from the chosen chat messages.\n- Use it to infer one coherent visual moment.\n- Do NOT copy speaker labels, quote dialogue, or echo transcript lines in the output.\n- Convert the exchange into visual details only: subjects, actions, expressions, setting, camera framing, lighting, and mood.`
+            : "";
+
+        log(`LLM scene mode: ${isMultiMessage ? "multi-message transcript" : "single-message scene"} (${basePrompt.length} chars)`);
 
         let instruction;
         if (isCustom) {
@@ -4155,10 +4243,11 @@ async function generateLLMPrompt(s, basePrompt, signal) {
             instruction = `[STANDALONE IMAGE PROMPT GENERATION TASK]${skinEnforce}
 
 CRITICAL INSTRUCTIONS:
-- IGNORE ALL chat messages, roleplay dialogue, and conversation history
-- Generate ONLY a new image prompt based on the scene below
-- DO NOT repeat, paraphrase, or use any roleplay text as input
+- IGNORE any ambient chat history outside the selected scene below
+- Generate ONLY a new image prompt based on the selected scene below
+- DO NOT repeat or paraphrase the scene text verbatim
 - This is a standalone task, not a continuation of chat
+${multiMessageContextBlock}
 
 [Output ONLY an image generation prompt. No commentary or explanation.]${skinEnforce}
 
@@ -4205,10 +4294,11 @@ Prompt:`;
             instruction = `### STANDALONE IMAGE GENERATION TASK ###${skinEnforce}
 
 CRITICAL - THIS IS NOT A CONTINUATION OF CHAT:
-- IGNORE ALL previous messages and roleplay dialogue
-- Generate a FRESH image prompt based ONLY on scene below
-- DO NOT repeat, rephrase, or incorporate any chat text
+- IGNORE any ambient chat history outside the selected scene below
+- Generate a FRESH image prompt based ONLY on the selected scene below
+- DO NOT repeat or paraphrase the scene text verbatim
 - This is a standalone generation task
+${multiMessageContextBlock}
 
 ### OUTPUT FORMAT (MANDATORY) ###
 Output ONLY comma-separated Danbooru/Booru-style tags. No sentences. No descriptions. No paragraphs. No prose. No explanations.
@@ -12328,7 +12418,7 @@ async function generateImage() {
     }
 
     if (useChatMessageScene) {
-        const messages = getMessages();
+        const messages = getMessages(s, getContext?.(), { logDebug: true });
         if (messages) {
             scenePrompt = messages;
             basePrompt = messages;
@@ -12528,9 +12618,7 @@ function limitInjectFallbackMatches(matches, label = "Inject fallback") {
 }
 
 function getInjectCurrentSwipeText(message) {
-    if (!Array.isArray(message?.swipes)) return "";
-    const swipeId = Number.isInteger(message?.swipe_id) ? message.swipe_id : 0;
-    return typeof message.swipes[swipeId] === "string" ? message.swipes[swipeId] : "";
+    return getCurrentMessageSwipeText(message);
 }
 
 function getInjectMessageSources(message) {
