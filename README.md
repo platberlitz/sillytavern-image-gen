@@ -7,13 +7,11 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.0
-- Removed Prompt Replacement Maps from the UI and runtime.
-- Removed Prompt Templates from the UI and storage.
-- Removed manual palette inject mode and the old palette mode switch.
-- Kept inject for automatic AI-tag processing only.
-- Added best-effort migration from legacy prompt replacement maps into Contextual Filters.
-- Legacy template storage is ignored and cleaned up automatically.
+## What's New in v2.0.1
+- Fixed inject auto-insert targeting so auto-generated images attach to the latest relevant AI message instead of getting stuck on the greeting/first message.
+- Added `Xiaolong` to the Pollinations model suggestions.
+- Added current Pollinations paid support with optional API key entry and safer authenticated generation for paid models.
+- Pollinations model selection now accepts typed custom model IDs instead of being limited to a small hardcoded dropdown.
 
 ## Features
 

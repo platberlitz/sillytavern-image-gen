@@ -190,6 +190,7 @@ const defaultSettings = {
     zaiModel: "cogview-4-250304",
     zaiQuality: "hd",
     // Pollinations
+    pollinationsKey: "",
     pollinationsModel: "",
     // Local (A1111/ComfyUI)
     localUrl: "http://127.0.0.1:7860",
@@ -907,7 +908,7 @@ function customInstructionHasMacro(template, macroName) {
 }
 
 const PROVIDER_KEYS = {
-    pollinations: ["pollinationsModel"],
+    pollinations: ["pollinationsKey", "pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
     arliai: ["arliKey", "arliModel"],
     nanogpt: ["nanogptKey", "nanogptModel", "nanogptRefImages", "nanogptStrength"],
@@ -924,7 +925,7 @@ const PROVIDER_KEYS = {
 };
 
 const PROVIDERS = {
-    pollinations: { name: "Pollinations (Free)", needsKey: false },
+    pollinations: { name: "Pollinations (Free + Paid)", needsKey: false },
     novelai: { name: "NovelAI", needsKey: true },
     arliai: { name: "ArliAI", needsKey: true },
     nanogpt: { name: "NanoGPT", needsKey: true },
@@ -1605,11 +1606,40 @@ const STYLES = {
     retroanime: { name: "90s Anime", prefix: "90s anime style, retro anime, cel animation, ", suffix: ", vintage anime, old school anime" }
 };
 
+const POLLINATIONS_MODEL_OPTIONS = [
+    { id: "", name: "Default (legacy anonymous endpoint)" },
+    { id: "flux", name: "Flux" },
+    { id: "turbo", name: "Turbo" },
+    { id: "xiaolong", name: "Xiaolong" },
+    { id: "zimage", name: "Z-Image Turbo" },
+    { id: "gptimage", name: "GPT Image 1 Mini" },
+    { id: "gptimage-large", name: "GPT Image 1.5" },
+    { id: "wan-image", name: "Wan 2.7 Image" },
+    { id: "qwen-image", name: "Qwen Image Plus" },
+    { id: "klein", name: "FLUX.2 Klein 4B" },
+    { id: "kontext", name: "FLUX.1 Kontext" },
+    { id: "nanobanana", name: "NanoBanana (Paid)", paid: true },
+    { id: "nanobanana-2", name: "NanoBanana 2 (Paid)", paid: true },
+    { id: "nanobanana-pro", name: "NanoBanana Pro (Paid)", paid: true },
+    { id: "seedream5", name: "Seedream 5.0 Lite (Paid)", paid: true },
+    { id: "wan-image-pro", name: "Wan 2.7 Image Pro (Paid)", paid: true },
+    { id: "grok-imagine", name: "Grok Imagine (Paid)", paid: true },
+    { id: "grok-imagine-pro", name: "Grok Imagine Pro (Paid)", paid: true },
+    { id: "p-image", name: "Pruna p-image (Paid)", paid: true },
+    { id: "p-image-edit", name: "Pruna p-image-edit (Paid)", paid: true },
+    { id: "nova-canvas", name: "Nova Canvas (Paid)", paid: true },
+];
+
+const POLLINATIONS_PAID_MODEL_IDS = new Set(
+    POLLINATIONS_MODEL_OPTIONS.filter(model => model.paid).map(model => model.id),
+);
+
 const PROVIDER_MODELS = {
     pollinations: [
         { id: "", name: "Default" },
         { id: "flux", name: "Flux" },
-        { id: "turbo", name: "Turbo" }
+        { id: "turbo", name: "Turbo" },
+        { id: "xiaolong", name: "Xiaolong" }
     ],
     zai: [
         { id: "cogview-4-250304", name: "CogView 4" },
@@ -4535,12 +4565,58 @@ async function generateLiteralFallback(originalInstruction) {
         return originalInstruction;
     }
 }
+
+async function pollinationsFetchImageData(prompt, negative, s, signal) {
+    const model = String(s.pollinationsModel || "").trim() || "flux";
+    const seed = resolveRandomSeed(s.seed, s);
+    const res = await fetch("https://gen.pollinations.ai/v1/images/generations", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${s.pollinationsKey}`,
+        },
+        body: JSON.stringify({
+            model,
+            prompt,
+            negative_prompt: negative || undefined,
+            size: `${s.width}x${s.height}`,
+            seed,
+            n: 1,
+            response_format: "b64_json",
+        }),
+        signal,
+    });
+
+    if (!res.ok) {
+        const err = await res.json().catch(() => null);
+        const message = err?.error?.message || err?.message || res.statusText || `HTTP ${res.status}`;
+        throw new Error(`Pollinations error ${res.status}: ${message}`);
+    }
+
+    const data = await res.json();
+    if (data.data?.[0]?.b64_json) return `data:image/png;base64,${data.data[0].b64_json}`;
+    if (data.data?.[0]?.url) return data.data[0].url;
+    throw new Error("No image in Pollinations response");
+}
+
 async function genPollinations(prompt, negative, s, signal) {
     if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
+    const model = String(s.pollinationsModel || "").trim();
+    const key = String(s.pollinationsKey || "").trim();
+
+    if (key) {
+        log(`Pollinations: using authenticated API${model ? ` with model '${model}'` : ""}`);
+        return await pollinationsFetchImageData(prompt, negative, s, signal);
+    }
+
+    if (model && POLLINATIONS_PAID_MODEL_IDS.has(model)) {
+        throw new Error(`Pollinations model '${model}' requires an API key`);
+    }
+
     const seed = resolveRandomSeed(s.seed, s);
     let url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=${s.width}&height=${s.height}&seed=${seed}&nologo=true`;
     if (negative) url += `&negative=${encodeURIComponent(negative)}`;
-    if (s.pollinationsModel && s.pollinationsModel !== "flux") url += `&model=${s.pollinationsModel}`;
+    if (model && model !== "flux") url += `&model=${encodeURIComponent(model)}`;
     log(`Pollinations URL: ${url.substring(0, 100)}...`);
     return url;
 }
@@ -9956,6 +10032,31 @@ function modelSelect(provider, settingKey, currentVal) {
     return `<select id="qig-${settingKey}">${opts}</select>`;
 }
 
+function pollinationsModelInput(currentVal) {
+    const value = escapeHtml(currentVal ?? "");
+    const knownIds = new Set();
+    const datalistOptions = [];
+
+    for (const model of POLLINATIONS_MODEL_OPTIONS) {
+        if (knownIds.has(model.id)) continue;
+        knownIds.add(model.id);
+        const label = model.id
+            ? `${model.name} - ${model.id}`
+            : model.name;
+        datalistOptions.push(`<option value="${escapeHtml(model.id)}" label="${escapeHtml(label)}"></option>`);
+    }
+
+    const normalizedCurrent = String(currentVal ?? "").trim();
+    if (normalizedCurrent && !knownIds.has(normalizedCurrent)) {
+        datalistOptions.push(`<option value="${escapeHtml(normalizedCurrent)}" label="${escapeHtml(`${normalizedCurrent} - current custom model`)}"></option>`);
+    }
+
+    return `
+        <input id="qig-pollinations-model" type="text" list="qig-pollinations-model-list" value="${value}" placeholder="Leave blank for default or type any Pollinations model ID">
+        <datalist id="qig-pollinations-model-list">${datalistOptions.join("")}</datalist>
+    `;
+}
+
 function buildOptions(items, selectedValue, labelFn) {
     return items.map(([k, v]) =>
         `<option value="${k}" ${selectedValue === k ? "selected" : ""}>${labelFn ? labelFn(v) : v}</option>`
@@ -10006,8 +10107,12 @@ function createUI() {
                 <small style="opacity:0.6;font-size:10px;">Visual style preset applied to the prompt</small>
                 
                 <div id="qig-pollinations-settings" class="qig-provider-section">
+                    <label>Pollinations API Key <small>(optional, required for paid models)</small></label>
+                    <input id="qig-pollinations-key" type="password" value="${esc(s.pollinationsKey)}" placeholder="pk_... or sk_...">
+                    <small style="opacity:0.6;font-size:10px;">Latest Pollinations paid access uses API keys. Use <code>pk_</code> keys for browser/client-side use when possible.</small>
                     <label>Model</label>
-                    ${modelSelect("pollinations", "pollinations-model", s.pollinationsModel)}
+                    ${pollinationsModelInput(s.pollinationsModel)}
+                    <small style="opacity:0.6;font-size:10px;">Suggestions include current free and paid Pollinations image models. You can also type any custom model ID manually.</small>
                 </div>
                 
                 <div id="qig-novelai-settings" class="qig-provider-section">
@@ -10841,6 +10946,7 @@ function createUI() {
         saveSettingsDebounced();
     };
 
+    bind("qig-pollinations-key", "pollinationsKey");
     bind("qig-pollinations-model", "pollinationsModel");
     bind("qig-nai-key", "naiKey");
     bind("qig-nai-model", "naiModel");
@@ -12278,6 +12384,39 @@ function findLastInjectCandidateMessage(chat) {
     return null;
 }
 
+function resolveInjectTargetMessage(chat, preferredIndex = null) {
+    if (!Array.isArray(chat) || chat.length === 0) return null;
+
+    const latestCandidate = findLastInjectCandidateMessage(chat);
+    const explicitIndex = clampChatMessageIndex(preferredIndex, chat.length);
+    const explicitMessage = Number.isInteger(explicitIndex) ? chat[explicitIndex] : null;
+
+    if (!latestCandidate) {
+        if (explicitMessage && !explicitMessage.is_user) {
+            return { message: explicitMessage, index: explicitIndex };
+        }
+        return null;
+    }
+
+    if (!explicitMessage || explicitMessage.is_user) {
+        return latestCandidate;
+    }
+
+    const explicitHasSources = getInjectMessageSources(explicitMessage).length > 0;
+    if (explicitIndex === latestCandidate.index) {
+        return { message: explicitMessage, index: explicitIndex };
+    }
+    if (!explicitHasSources) {
+        return latestCandidate;
+    }
+    if (explicitIndex > latestCandidate.index) {
+        return { message: explicitMessage, index: explicitIndex };
+    }
+
+    log(`Inject: MESSAGE_RECEIVED pointed at older message ${explicitIndex}; using latest AI message ${latestCandidate.index} instead`);
+    return latestCandidate;
+}
+
 function cleanInjectTagsFromMessage(message, regexPattern, promptsToRemove = null) {
     if (!message || typeof message !== "object") return false;
 
@@ -12363,6 +12502,7 @@ async function processInjectMessage(messageText, messageIndex) {
     let startedGeneration = false;
     let s;
     let sourceMessage = null;
+    let sourceMessageIndex = null;
     const consumedMessagePrompts = new Set();
 
     try {
@@ -12372,12 +12512,15 @@ async function processInjectMessage(messageText, messageIndex) {
 
         const ctx = getContext();
         const chat = ctx?.chat;
-        const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
-        const message = idx >= 0 ? chat?.[idx] : (typeof messageText === "string" ? { mes: messageText } : null);
+        const resolvedTarget = resolveInjectTargetMessage(chat, messageIndex);
+        const idx = Number.isInteger(resolvedTarget?.index)
+            ? resolvedTarget.index
+            : (typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1));
+        const message = resolvedTarget?.message || (idx >= 0 ? chat?.[idx] : (typeof messageText === "string" ? { mes: messageText } : null));
         if (!message) return;
-        if (idx >= 0 && chat?.[idx]) {
-            sourceMessage = chat[idx];
-        }
+        sourceMessageIndex = Number.isInteger(resolvedTarget?.index) ? resolvedTarget.index : (idx >= 0 && chat?.[idx] ? idx : null);
+        sourceMessage = Number.isInteger(sourceMessageIndex) ? chat?.[sourceMessageIndex] : null;
+        lastGenerationSourceMessageIndex = Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : null;
 
         let detection;
         let matches;
@@ -12499,7 +12642,10 @@ async function processInjectMessage(messageText, messageIndex) {
                     const expandedNegative = expandWildcards(negative);
                     const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
                     if (result) {
-                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, { promptWasLLM: lastPromptWasLLM });
+                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, {
+                            promptWasLLM: lastPromptWasLLM,
+                            sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
+                        });
                         if (entry) results.push(entry);
                     }
                 }
@@ -12511,7 +12657,7 @@ async function processInjectMessage(messageText, messageIndex) {
                             addToGallery(results[0]);
                             try {
                                 await autoInsertInjectImage(results[0], {
-                                    messageIndex,
+                                    messageIndex: sourceMessageIndex,
                                     insertMode: s.injectInsertMode,
                                 });
                             } catch (err) {
@@ -12638,9 +12784,11 @@ jQuery(function () {
                     if (s.injectEnabled) {
                         const ctx = getContext();
                         const chat = ctx?.chat;
-                        const idx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
+                        const preferredIdx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
+                        const resolvedTarget = resolveInjectTargetMessage(chat, preferredIdx);
+                        const idx = Number.isInteger(resolvedTarget?.index) ? resolvedTarget.index : preferredIdx;
                         if (idx < 0 || _processedInjectIndices.has(idx)) return;
-                        const msg = chat?.[idx];
+                        const msg = resolvedTarget?.message || chat?.[idx];
                         if (msg && !msg.is_user && !msg.extra?.inline_image) {
                             _processedInjectIndices.add(idx);
                             setTimeout(() => processInjectMessage(msg.mes || "", idx), 300);
