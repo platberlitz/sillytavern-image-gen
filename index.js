@@ -92,6 +92,10 @@ function normalizeManualInsertTarget(value) {
     return "assistant";
 }
 
+function normalizePaletteMode(value) {
+    return String(value || "").trim().toLowerCase() === "inject" ? "inject" : "direct";
+}
+
 const defaultSettings = {
     provider: "pollinations",
     style: "none",
@@ -123,6 +127,7 @@ const defaultSettings = {
     saveToServer: false,
     saveToServerEmbedMetadata: true,
     disablePaletteButton: false,
+    paletteMode: "direct",
     confirmBeforeGenerate: false,
     enableParagraphPicker: false,
     batchCount: 1,
@@ -407,6 +412,8 @@ let _lastAutoGenerateSuppressionLogTs = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
 let _palettePresetMenuCleanup = null;
+let _paletteInjectActive = false;
+let _paletteInjectSerial = 0;
 let transientGenerationTarget = null;
 let qigMessageActionObserver = null;
 let qigMessageActionRefreshQueued = false;
@@ -2158,7 +2165,7 @@ async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
-    delete s.paletteMode;
+    s.paletteMode = normalizePaletteMode(s.paletteMode);
     const savedTagName = getInjectTagName(saved);
     s.injectTagName = savedTagName;
     // Migrate old messageIndex to messageRange
@@ -7711,16 +7718,7 @@ function showFilterDialog(filter) {
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
     const managerScope = getSelectedFilterManagerScopeDescriptor();
-    const isManagerScopeValid = (managerScope.scope === FILTER_SCOPE_CARD && managerScope.cardKey === currentCard.cardKey) ||
-        (managerScope.scope === FILTER_SCOPE_CHAR && String(managerScope.charId) === String(currentCharId)) ||
-        managerScope.scope === FILTER_SCOPE_GLOBAL;
-    const defaultScope = isManagerScopeValid
-        ? managerScope
-        : (currentCard.cardKey
-            ? getNormalizedScopedRecord(FILTER_SCOPE_CARD, { cardKey: currentCard.cardKey, cardLabel: currentCard.cardLabel })
-            : (currentCharId != null
-                ? getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId })
-                : getNormalizedScopedRecord(FILTER_SCOPE_GLOBAL)));
+    const defaultScope = managerScope;
     const f = filter || {
         name: "",
         keywords: "",
@@ -7760,8 +7758,8 @@ function showFilterDialog(filter) {
                                 <option value="global" ${scopeInfo.scope === FILTER_SCOPE_GLOBAL ? "selected" : ""}>Global (all characters)</option>
                                 ${currentCard.cardKey ? `<option value="card:${escapeHtml(String(currentCard.cardKey))}" ${scopeInfo.scope === FILTER_SCOPE_CARD && scopeInfo.cardKey === currentCard.cardKey ? "selected" : ""}>Card Only: ${escapeHtml(currentCard.cardLabel || "Current Card")}</option>` : ""}
                                 ${currentCharId != null ? `<option value="char:${escapeHtml(String(currentCharId))}" ${scopeInfo.scope === FILTER_SCOPE_CHAR && String(scopeInfo.charId) === String(currentCharId) ? "selected" : ""}>Character: ${escapeHtml(charName || "Unknown")}</option>` : ""}
-                                ${editingDifferentCard ? `<option value="card:${escapeHtml(String(scopeInfo.cardKey))}" selected disabled>Other Card (${escapeHtml(scopeInfo.cardLabel || getCardNameForFilters(scopeInfo.cardKey))})</option>` : ""}
-                                ${editingDifferentChar ? `<option value="char:${escapeHtml(String(scopeInfo.charId))}" selected disabled>Other Character (${escapeHtml(getCharacterNameForFilters(scopeInfo.charId))})</option>` : ""}
+                                ${editingDifferentCard ? `<option value="card:${escapeHtml(String(scopeInfo.cardKey))}" selected>Card: ${escapeHtml(scopeInfo.cardLabel || getCardNameForFilters(scopeInfo.cardKey))}</option>` : ""}
+                                ${editingDifferentChar ? `<option value="char:${escapeHtml(String(scopeInfo.charId))}" selected>Character: ${escapeHtml(getCharacterNameForFilters(scopeInfo.charId))}</option>` : ""}
                             </select>
                         </div>
                         <div class="qig-form-field qig-form-field--full">
@@ -8520,7 +8518,7 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
         const isActive = viewState.enabledPoolIds.has(pool.id);
         const assignedCount = contextualFilters.filter(f => normalizePoolIdList(f.poolIds).includes(pool.id)).length;
         const canDelete = pool.id !== DEFAULT_FILTER_POOL_ID;
-        const isEditable = poolScope.scope === FILTER_SCOPE_GLOBAL || viewState.isViewingCurrentScope;
+        const isEditable = true;
         if (!isEditable) {
             return `<div class="qig-manager-row qig-manager-row--readonly ${isActive ? "" : "qig-manager-row--dimmed"}">
                 <button class="menu_button qig-manager-main-button ${isActive ? "qig-manager-main-button--active" : ""} qig-manager-main-button--readonly" title="Browse mode: copy this pool into another scope">${isActive ? "✅" : "⬜"} ${escapeHtml(pool.name)} (${assignedCount})</button>
@@ -8563,7 +8561,7 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             seedOverride != null ? `seed ${seedOverride}` : "",
             effectiveEnabled ? "" : "off",
         ].filter(Boolean).join(" ");
-        const isEditable = isGlobal || viewState.isViewingCurrentScope;
+        const isEditable = true;
         const scopeLabel = filterScope.scope === FILTER_SCOPE_CARD
             ? `Card Only: ${filterScope.cardLabel || getCardNameForFilters(filterScope.cardKey)}`
             : filterScope.scope === FILTER_SCOPE_CHAR
@@ -8649,7 +8647,7 @@ function renderContextualFilterManager(popup = document.getElementById("qig-filt
             ? `Character: ${escapeHtml(viewState.viewedScopeLabel || "Current")} + global`
             : "Global only";
     const browseSummary = viewState.isBrowsingOtherScope
-        ? ` Browsing another ${viewState.viewedScope.scope === FILTER_SCOPE_CARD ? "card" : "character"} scope is read-only; use copy buttons to bring items into the current/global scope.`
+        ? ` Browsing another ${viewState.viewedScope.scope === FILTER_SCOPE_CARD ? "card" : "character"} scope; edits here apply directly to that saved scope.`
         : "";
     const hiddenSummary = viewState.hideInactive && viewState.displayFilters.length !== viewState.visibleFilters.length
         ? ` Showing ${viewState.displayFilters.length} after hiding inactive rows.`
@@ -9380,16 +9378,10 @@ function savePreset() {
     const s = getSettings();
     const preset = { id: generateUUID(), name };
     PRESET_KEYS.forEach(k => preset[k] = s[k]);
-    // Always include contextual filters snapshot in preset
-    preset.contextualFilters = JSON.parse(JSON.stringify(contextualFilters));
-    preset.filterPools = JSON.parse(JSON.stringify(filterPools));
-    preset.activeFilterPoolIdsGlobal = [...normalizePoolIdList(activeFilterPoolIdsGlobal)];
-    preset.activeFilterPoolIdsByCard = JSON.parse(JSON.stringify(activeFilterPoolIdsByCard || {}));
-    preset.activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(activeFilterPoolIdsByChar || {}));
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
-    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!saveGenerationPresetStore()) return;
@@ -9404,36 +9396,14 @@ function loadPreset(i) {
     if (!p) return;
     const s = getSettings();
     PRESET_KEYS.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
-    // Restore contextual filters if saved in preset
-    if (p.contextualFilters) {
-        contextualFilters = JSON.parse(JSON.stringify(p.contextualFilters));
-    }
-    if (p.filterPools) {
-        filterPools = JSON.parse(JSON.stringify(p.filterPools));
-    }
-    if (p.activeFilterPoolIdsGlobal) {
-        activeFilterPoolIdsGlobal = JSON.parse(JSON.stringify(p.activeFilterPoolIdsGlobal));
-    }
-    if (p.activeFilterPoolIdsByCard) {
-        activeFilterPoolIdsByCard = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByCard));
-    }
-    if (p.activeFilterPoolIdsByChar) {
-        activeFilterPoolIdsByChar = JSON.parse(JSON.stringify(p.activeFilterPoolIdsByChar));
-    }
-    if (Array.isArray(p.promptReplacements)) {
-        migratePromptReplacementsToFilters(p.promptReplacements, {
-            settings: s,
-            persist: false,
-            sourceLabel: `preset \"${p.name || "(unnamed)"}\"`,
-        });
-    }
-    ensureFilterPoolsState({ persist: true });
+    ensureFilterPoolsState();
     renderContextualFilters();
     // Restore ST Style toggle
     if (p.useSTStyle !== undefined) { s.useSTStyle = p.useSTStyle; }
     // Restore inject mode settings
-    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean"];
+    const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    s.paletteMode = normalizePaletteMode(s.paletteMode);
     s.lastLoadedPresetId = p.id || "";
     saveSettingsDebounced();
     refreshAllUI(s);
@@ -9522,6 +9492,7 @@ function refreshAllUI(s) {
         "qig-llm-prefill": "llmPrefill",
         "qig-llm-custom": "llmCustomInstruction",
         "qig-output-mode": "outputMode",
+        "qig-palette-mode": "paletteMode",
         "qig-inject-tag-name": "injectTagName",
         "qig-inject-prompt": "injectPrompt", "qig-inject-regex": "injectRegex",
         "qig-inject-position": "injectPosition", "qig-inject-depth": "injectDepth",
@@ -10670,7 +10641,7 @@ function createUI() {
                             <button id="qig-import-btn" class="menu_button" style="padding:2px 8px;font-size:11px;">Import</button>
                         </div>
                         <div id="qig-presets" style="margin:4px 0;"></div>
-                        <small style="opacity:0.6;font-size:10px;">Profiles save provider config. Presets save prompt, size, inject behavior, contextual filters, and other generation settings.</small>
+                        <small style="opacity:0.6;font-size:10px;">Profiles save provider config. Presets save generation and inject settings. Contextual filters stay managed separately.</small>
 
                         <hr style="margin:8px 0;opacity:0.2;">
                         <label>Negative Prompt</label>
@@ -10819,7 +10790,14 @@ function createUI() {
                     <input id="qig-disable-palette" type="checkbox" ${s.disablePaletteButton ? "checked" : ""}>
                     <span>Hide palette button</span>
                 </label>
-                <small style="opacity:0.6;font-size:10px;">The palette button always runs a normal image generation with the current settings.</small>
+                <div style="display:flex;align-items:center;gap:8px;margin:6px 0;">
+                    <label style="font-size:12px;white-space:nowrap;">Palette button mode</label>
+                    <select id="qig-palette-mode" style="flex:1;">
+                        <option value="direct" ${normalizePaletteMode(s.paletteMode) === "direct" ? "selected" : ""}>Direct (selected scene/manual prompt)</option>
+                        <option value="inject" ${normalizePaletteMode(s.paletteMode) === "inject" ? "selected" : ""}>Inject (image tags)</option>
+                    </select>
+                </div>
+                <small style="opacity:0.6;font-size:10px;">Direct uses the selected scene settings. Inject extracts image tags from the latest tagged AI message, or asks the LLM for one tag from the selected scene.</small>
 
                 <div style="margin:6px 0;padding:8px;border:1px solid #555;border-radius:4px;">
                     <label class="checkbox_label">
@@ -10921,7 +10899,7 @@ function createUI() {
 
     document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", html);
 
-    document.getElementById("qig-generate-btn").onclick = () => generateImage();
+    document.getElementById("qig-generate-btn").onclick = () => runConfiguredPaletteGeneration();
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
@@ -11570,6 +11548,13 @@ function createUI() {
             else addInputButton();
         }
     };
+    const paletteModeEl = document.getElementById("qig-palette-mode");
+    if (paletteModeEl) {
+        paletteModeEl.onchange = (e) => {
+            getSettings().paletteMode = normalizePaletteMode(e.target.value);
+            saveSettingsDebounced();
+        };
+    }
     document.getElementById("qig-confirm-generate").onchange = (e) => {
         getSettings().confirmBeforeGenerate = e.target.checked;
         saveSettingsDebounced();
@@ -11948,6 +11933,12 @@ function bindMessageGenerateActionClicks() {
     });
 }
 
+function runConfiguredPaletteGeneration() {
+    const mode = normalizePaletteMode(getSettings()?.paletteMode);
+    if (mode === "inject") return generateImageInjectPalette();
+    return generateImage();
+}
+
 function addInputButton() {
     if (document.getElementById("qig-input-btn")) return;
     if (getSettings().disablePaletteButton) return;
@@ -11972,7 +11963,7 @@ function addInputButton() {
         }
         paletteGenerateLockUntil = now + PALETTE_GENERATE_LOCK_MS;
         if (_autoGenTimeout) { clearTimeout(_autoGenTimeout); _autoGenTimeout = null; }
-        generateImage();
+        runConfiguredPaletteGeneration();
     };
     btn.oncontextmenu = showPalettePresetMenu;
 
@@ -11980,6 +11971,224 @@ function addInputButton() {
     const leftArea = document.getElementById("leftSendForm") || document.querySelector("#send_form .left_menu_buttons");
     if (leftArea) {
         leftArea.appendChild(btn);
+    }
+}
+
+async function generateImageInjectPalette() {
+    if (isGenerating) return;
+    const s = getSettings();
+    if (s.confirmBeforeGenerate && !confirm("Generate image?")) return;
+
+    const mySerial = ++_paletteInjectSerial;
+    beginGeneration({ disableGenerateButton: true, clearPendingAuto: true });
+    _paletteInjectActive = true;
+    const cancelCheckpoint = getCancelCheckpoint();
+    let sourceInjectMessage = null;
+    let sourceMessageIndex = null;
+    const consumedMessagePrompts = new Set();
+
+    try {
+        checkAborted(cancelCheckpoint);
+        const ctx = getContext();
+        const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+        let regexPattern = getInjectRegexPattern(s);
+        let initialDetection = null;
+        let matches = [];
+
+        const unconsumedCandidate = findLastInjectCandidateMessage(chat, s, { requireMatches: true, includeConsumed: false });
+        if (unconsumedCandidate && !hasUserMessageAfterIndex(chat, unconsumedCandidate.index)) {
+            initialDetection = unconsumedCandidate.detection;
+            matches = [...new Set(unconsumedCandidate.prompts || [])];
+            sourceInjectMessage = unconsumedCandidate.message;
+            sourceMessageIndex = unconsumedCandidate.index;
+        } else {
+            const consumedCandidate = findLastInjectCandidateMessage(chat, s, { requireMatches: true, includeConsumed: true });
+            if (consumedCandidate?.detectedPrompts?.length && !hasUserMessageAfterIndex(chat, consumedCandidate.index)) {
+                initialDetection = consumedCandidate.detection;
+                matches = [...new Set(consumedCandidate.detectedPrompts)];
+                log(`Palette inject: All ${matches.length} detected tag(s) were already consumed; using them for this manual run only`);
+            } else if (unconsumedCandidate || consumedCandidate) {
+                log("Palette inject: Ignoring older image tag because a newer user message exists; using selected scene fallback");
+            }
+        }
+
+        if (matches.length === 0) {
+            log("Palette inject: No image tags found, asking LLM for one tag from the selected scene");
+            showStatus("🔍 No image tags found; asking LLM for one image tag...");
+
+            const sceneContext = getMessages(s, ctx) || resolvePrompt(s.prompt) || "the current scene";
+            const injectInstruction = resolvePrompt(getInjectPromptTemplate(s));
+            const timestamp = Date.now();
+            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate exactly one image tag for the single best visual moment. You must use the exact tag format shown above. Return exactly one tag only. Do not generate multiple tags, lists, moments, or variants.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
+
+            let llmResponse;
+            if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
+                log("Using LLM Override for inject palette");
+                llmResponse = await callOverrideLLM(fullInstruction);
+            } else {
+                llmResponse = await callInternalStandaloneLLM(fullInstruction, {
+                    signal: currentAbortController?.signal,
+                    quietName: `ImageGenInject_${timestamp}`,
+                    label: "palette inject tag generation request",
+                });
+            }
+            checkAborted(cancelCheckpoint);
+
+            log(`Palette inject: LLM response: ${(llmResponse || "").substring(0, 200)}...`);
+            if (llmResponse) {
+                matches = limitInjectFallbackMatches(
+                    extractInjectMatchesFromText(llmResponse, regexPattern),
+                    "Palette inject fallback"
+                );
+            }
+
+            if (matches.length === 0) {
+                const aiSources = initialDetection?.scannedSources?.join(", ") || "none";
+                const aiMsgPreview = initialDetection?.sources?.[0]?.text?.substring(0, 200) || "none";
+                const llmPreview = (llmResponse || "none").substring(0, 200);
+                const regexPreview = regexPattern.substring(0, 100);
+                log(`Palette inject: Regex pattern used: ${regexPattern}`);
+                log(`Palette inject: AI sources scanned: ${aiSources}`);
+                log(`Palette inject: AI message scanned: ${aiMsgPreview}...`);
+                log(`Palette inject: LLM response received: ${llmPreview}...`);
+                log(`Palette inject: Full instruction sent: ${fullInstruction.substring(0, 300)}...`);
+                toastr.warning("No image tags found. Check console for details.", "Image Generation");
+                log(`Palette inject: Diagnostic info - regex ${regexPreview}${regexPattern.length > 100 ? "..." : ""}, sources ${aiSources}`);
+                console.warn("QIG Inject Mode Debug:", {
+                    regexPattern,
+                    aiSources,
+                    aiMessage: initialDetection?.sources?.map(source => ({ label: source.label, text: source.text })),
+                    llmResponse,
+                    instruction: fullInstruction,
+                });
+                return;
+            }
+
+            sourceInjectMessage = null;
+            sourceMessageIndex = null;
+        }
+
+        log(`Palette inject: Found ${matches.length} image tag(s), generating images...`);
+        const baseSceneText = getMessages(s, ctx) || "";
+        for (const extractedPrompt of matches) {
+            checkAborted(cancelCheckpoint);
+            showStatus("🖼️ Generating palette-inject image...");
+
+            const originalSeed = getGenerationSeedValue(s);
+            try {
+                let prompt = await generateLLMPrompt(s, extractedPrompt, currentAbortController?.signal);
+                checkAborted(cancelCheckpoint);
+
+                if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
+                    const editedPrompt = await showPromptEditDialog(prompt);
+                    if (editedPrompt !== null) prompt = editedPrompt;
+                    else continue;
+                }
+                if (sourceInjectMessage) {
+                    consumedMessagePrompts.add(extractedPrompt);
+                }
+
+                let negative = resolvePrompt(s.negativePrompt);
+                prompt = applyStyle(prompt, s);
+
+                if (s.appendQuality && s.qualityTags) {
+                    prompt = `${s.qualityTags}, ${prompt}`;
+                }
+
+                if (s.useSTStyle !== false) {
+                    const stStyle = getSTStyleSettings();
+                    if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
+                    if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
+                    if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
+                    if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+                }
+
+                const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+                    matchText: [baseSceneText, extractedPrompt, prompt].filter(Boolean).join("\n\n"),
+                    llmSceneText: baseSceneText || extractedPrompt,
+                    signal: currentAbortController?.signal,
+                });
+                checkAborted(cancelCheckpoint);
+                prompt = contextualApplied.prompt;
+                negative = contextualApplied.negative;
+
+                lastPrompt = prompt;
+                lastNegative = negative;
+                lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+                lastProxyContextRefImages = [];
+
+                const batchCount = s.batchCount || 1;
+                const results = [];
+                const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
+                const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+                for (let i = 0; i < batchCount; i++) {
+                    checkAborted(cancelCheckpoint);
+                    setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
+                    showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
+                    const expandedPrompt = expandWildcards(prompt);
+                    const expandedNegative = expandWildcards(negative);
+                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, currentAbortController?.signal);
+                    if (result) {
+                        const entry = await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, {
+                            promptWasLLM: lastPromptWasLLM,
+                            sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
+                        });
+                        if (entry) results.push(entry);
+                    }
+                }
+
+                if (results.length > 0) {
+                    if (results.length === 1) {
+                        if (s.autoInsert) {
+                            addToGallery(results[0]);
+                            try {
+                                await autoInsertInjectImage(results[0], {
+                                    messageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
+                                    insertMode: s.insertAsHiddenReply ? "hidden" : s.injectInsertMode,
+                                });
+                            } catch (err) {
+                                log(`Palette inject: Auto-insert failed: ${err.message}`);
+                                displayImage(results[0]);
+                            }
+                        } else {
+                            displayImage(results[0]);
+                        }
+                    } else {
+                        displayBatchResults(results);
+                    }
+                    toastr.success(`Palette inject: ${results.length} image(s) generated`);
+                }
+            } finally {
+                setGenerationSeedValue(s, originalSeed);
+            }
+        }
+    } catch (e) {
+        if (e.name === "AbortError") {
+            log("Palette inject: Generation cancelled by user");
+            toastr.info("Generation cancelled");
+        } else {
+            log(`Palette inject: Error: ${e.message}`);
+            toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true });
+        }
+    } finally {
+        if (sourceInjectMessage && consumedMessagePrompts.size > 0) {
+            try {
+                const persisted = await persistConsumedInjectPrompts(sourceInjectMessage, [...consumedMessagePrompts], s);
+                if (persisted.cleaned) {
+                    log(`Palette inject: Consumed ${consumedMessagePrompts.size} tag(s) and cleaned them from the source message`);
+                } else if (persisted.remembered) {
+                    log(`Palette inject: Marked ${consumedMessagePrompts.size} source tag(s) as consumed`);
+                }
+            } catch (e) {
+                log(`Palette inject: Failed to persist consumed tags: ${e.message}`);
+            }
+        }
+        endGeneration({ disableGenerateButton: true });
+        if (_paletteInjectSerial === mySerial) {
+            _paletteInjectActive = false;
+        }
+        clearStyleCache();
+        log("Palette inject: Cleared caches after generation");
     }
 }
 
@@ -12085,8 +12294,9 @@ async function generateImage() {
     }
 
     const llmSceneText = scenePrompt || basePrompt;
+    const filterMatchText = [llmSceneText, prompt].filter(Boolean).join("\n\n");
     const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-        matchText: prompt,
+        matchText: filterMatchText || prompt,
         llmSceneText,
         signal: currentAbortController?.signal,
     });
@@ -12212,6 +12422,13 @@ function extractInjectMatchesFromText(text, regexPattern) {
         if (match[0] === "") regex.lastIndex++;
     }
     return matches;
+}
+
+function limitInjectFallbackMatches(matches, label = "Inject fallback") {
+    const normalized = [...new Set((matches || []).map(prompt => String(prompt || "").trim()).filter(Boolean))];
+    if (normalized.length <= 1) return normalized;
+    log(`${label}: Helper returned ${normalized.length} image tag(s); using only the first to avoid multi-image bursts`);
+    return normalized.slice(0, 1);
 }
 
 function getInjectCurrentSwipeText(message) {
@@ -12372,7 +12589,7 @@ function extractInjectPromptsFromMessage(message, settings = getSettings()) {
     };
 }
 
-function findLastInjectCandidateMessage(chat) {
+function findLastAssistantMessage(chat) {
     if (!Array.isArray(chat)) return null;
     for (let i = chat.length - 1; i >= 0; i--) {
         const message = chat[i];
@@ -12384,37 +12601,53 @@ function findLastInjectCandidateMessage(chat) {
     return null;
 }
 
+function findLastInjectCandidateMessage(chat, settings = getSettings(), { requireMatches = false, includeConsumed = true } = {}) {
+    if (!Array.isArray(chat)) return null;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const message = chat[i];
+        if (message?.is_user) continue;
+        let detection;
+        try {
+            detection = extractInjectPromptsFromMessage(message, settings);
+        } catch {
+            if (requireMatches) continue;
+            const sources = getInjectMessageSources(message);
+            if (sources.length > 0) return { message, index: i, detection: null, detectedPrompts: [], prompts: [] };
+            continue;
+        }
+        const detectedPrompts = detection.matches.map(match => match.prompt);
+        const prompts = includeConsumed ? detectedPrompts : filterConsumedInjectPrompts(detectedPrompts, message, settings);
+        if (prompts.length > 0 || (!requireMatches && detection.sources.length > 0)) {
+            return { message, index: i, detection, detectedPrompts, prompts };
+        }
+    }
+    return null;
+}
+
+function hasUserMessageAfterIndex(chat, index) {
+    if (!Array.isArray(chat) || !Number.isInteger(index)) return false;
+    for (let i = index + 1; i < chat.length; i++) {
+        if (chat[i]?.is_user) return true;
+    }
+    return false;
+}
+
 function resolveInjectTargetMessage(chat, preferredIndex = null) {
     if (!Array.isArray(chat) || chat.length === 0) return null;
 
-    const latestCandidate = findLastInjectCandidateMessage(chat);
     const explicitIndex = clampChatMessageIndex(preferredIndex, chat.length);
     const explicitMessage = Number.isInteger(explicitIndex) ? chat[explicitIndex] : null;
 
-    if (!latestCandidate) {
-        if (explicitMessage && !explicitMessage.is_user) {
-            return { message: explicitMessage, index: explicitIndex };
-        }
+    if (explicitMessage && !explicitMessage.is_user) {
+        return { message: explicitMessage, index: explicitIndex };
+    }
+    if (Number.isInteger(explicitIndex)) {
         return null;
     }
 
-    if (!explicitMessage || explicitMessage.is_user) {
-        return latestCandidate;
-    }
-
-    const explicitHasSources = getInjectMessageSources(explicitMessage).length > 0;
-    if (explicitIndex === latestCandidate.index) {
-        return { message: explicitMessage, index: explicitIndex };
-    }
-    if (!explicitHasSources) {
-        return latestCandidate;
-    }
-    if (explicitIndex > latestCandidate.index) {
-        return { message: explicitMessage, index: explicitIndex };
-    }
-
-    log(`Inject: MESSAGE_RECEIVED pointed at older message ${explicitIndex}; using latest AI message ${latestCandidate.index} instead`);
-    return latestCandidate;
+    return findLastInjectCandidateMessage(chat, getSettings(), { requireMatches: true, includeConsumed: false })
+        || findLastInjectCandidateMessage(chat, getSettings(), { requireMatches: true, includeConsumed: true })
+        || findLastAssistantMessage(chat);
 }
 
 function cleanInjectTagsFromMessage(message, regexPattern, promptsToRemove = null) {
@@ -12776,7 +13009,7 @@ jQuery(function () {
                 eventSource.on(event_types.MESSAGE_RECEIVED, (messageIndex) => {
                     scheduleRefreshMessageGenerateActions();
                     if (shouldSuppressAutoGenerateFromInternalLLM(messageIndex)) return;
-                    if (_injectProcessingCount > 0) return;
+                    if (_paletteInjectActive || _injectProcessingCount > 0) return;
                     const s = getSettings();
                     if (!s.autoGenerate) return;
                     // Inject mode: extract image tags from AI response/reasoning
@@ -12785,10 +13018,9 @@ jQuery(function () {
                         const ctx = getContext();
                         const chat = ctx?.chat;
                         const preferredIdx = typeof messageIndex === "number" ? messageIndex : (chat ? chat.length - 1 : -1);
-                        const resolvedTarget = resolveInjectTargetMessage(chat, preferredIdx);
-                        const idx = Number.isInteger(resolvedTarget?.index) ? resolvedTarget.index : preferredIdx;
-                        if (idx < 0 || _processedInjectIndices.has(idx)) return;
-                        const msg = resolvedTarget?.message || chat?.[idx];
+                        const idx = clampChatMessageIndex(preferredIdx, Array.isArray(chat) ? chat.length : 0);
+                        if (!Number.isInteger(idx) || idx < 0 || _processedInjectIndices.has(idx)) return;
+                        const msg = chat?.[idx];
                         if (msg && !msg.is_user && !msg.extra?.inline_image) {
                             _processedInjectIndices.add(idx);
                             setTimeout(() => processInjectMessage(msg.mes || "", idx), 300);
