@@ -1,0 +1,36 @@
+name: Notify SillyBunny
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  notify-sillybunny:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check dispatch token
+        id: dispatch-token
+        env:
+          SILLYBUNNY_DISPATCH_TOKEN: ${{ secrets.SILLYBUNNY_DISPATCH_TOKEN }}
+        run: |
+          if [ -n "$SILLYBUNNY_DISPATCH_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "SILLYBUNNY_DISPATCH_TOKEN is not configured; SillyBunny's daily sync will still pick up this update."
+          fi
+
+      - name: Dispatch SillyBunny sync
+        if: steps.dispatch-token.outputs.enabled == 'true'
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
+        with:
+          token: ${{ secrets.SILLYBUNNY_DISPATCH_TOKEN }}
+          repository: platberlitz/SillyBunny
+          event-type: quick-image-gen-update
+          client-payload: '{"ref":"main","source_repository":"${{ github.repository }}","source_sha":"${{ github.sha }}"}'
