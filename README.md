@@ -1,13 +1,15 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern with 14 providers, 40+ styles, LLM prompt generation, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
+One-click image generation for SillyTavern with 16 providers, 40+ styles, LLM prompt generation, configurable auto-generation, slash commands, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
 
 Prompt Replacement Maps and Prompt Templates have been removed. Old prompt replacement data is migrated into Contextual Filters on load when possible.
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
 
-## What's New in v2.0.9
+## What's New in v2.0.10
+- Added Routeway and Navy.ai image providers with model suggestions, custom model IDs, and base64 image responses.
+- Added configurable auto-generation cadence plus QR-friendly `/qig`, `/qig-auto`, and `/qig-cancel` slash commands.
 - Added Reverse Proxy `New-API Chat Image mode` for OpenAI-compatible proxies that generate images through `chat/completions`.
 - Chat Image mode locks routing to `chat/completions` by default, uses a 16k max-token budget, supports a custom system prompt, can optionally append active character/persona context, and avoids editing the source chat message when auto-inserting results.
 - Added a route-permission toggle for proxies that should still use `/images/generations` routing.
@@ -48,6 +50,8 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 - NovelAI
 - GPT Image (OpenAI)
 - ArliAI
+- Routeway
+- Navy.ai
 - NanoGPT
 - Chutes
 - CivitAI
@@ -70,6 +74,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 - ST Style panel integration
 - Contextual Filters with keyword or LLM concept matching
 - Optional per-filter seed overrides
+- Configurable auto-generation cadence
 - Automatic inject mode using AI-written image tags
 
 ### Workflow
@@ -124,8 +129,15 @@ Legacy Prompt Replacement Maps are migrated into Contextual Filters as best-effo
 
 ### Auto Generation
 - `Auto-generate after AI response`: Generate after assistant replies.
+- `Every AI replies`: Generate after every N eligible assistant replies. `1` keeps the old behavior; `3` means every third eligible reply.
+- `Delay (ms)`: Wait this many milliseconds after the triggering assistant reply before generating. Applies to normal and inject auto-generation.
 - `Confirm before generating`: Ask before manual generation.
 - `Auto-insert`: Insert generated images directly into chat.
+- `/qig`: Generate from the current settings. Use `mode=direct`, `mode=palette`, or `mode=inject`; optional trailing text becomes a one-off direct prompt.
+- `/qig-auto`: Show or change auto-generation, for example `/qig-auto state=on every=3 delay=1000`.
+- `/qig-cancel`: Cancel the active generation request.
+
+SillyTavern Quick Replies can run these slash commands, so you can make QR buttons for common QIG actions.
 
 ### Reverse Proxy New-API Chat Image Mode
 
