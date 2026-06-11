@@ -1,251 +1,360 @@
-# Quick Image Gen - SillyTavern Extension
+# Quick Image Gen
 
-## TL;DR
-One-click image generation for SillyTavern with 16 providers, 40+ styles, LLM prompt generation, a two-step chat prompt pipeline, configurable auto-generation, chat background actions, slash commands, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
+Image generation in SillyTavern. 17 backends, 44 style presets, three LLM prompt modes, a two-step chat-scene prompt pipeline, contextual filters, batch generation, and auto-insert.
 
-Prompt Replacement Maps and Prompt Templates have been removed. Old prompt replacement data is migrated into Contextual Filters on load when possible.
+```
+Extensions -> Install from URL -> https://github.com/platberlitz/sillytavern-image-gen
+```
 
-**Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
+Requires SillyTavern 1.12+ (extension manifest v2). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
 
-## What's New in v2.1.0
-- Added an optional two-step prompt pipeline for chat scenes: Text AI first summarizes the selected chat moment into a plain visual description, then converts that description through the selected LLM prompt style before image generation.
-- Added `Set as Background` actions to single-image and batch result popups.
-- Added optional auto-background mode for generated images, with temporary backgrounds or locked-to-chat metadata backgrounds.
+## Providers
 
-## What's New in v2.0.10
-- Added Routeway and Navy.ai image providers with model suggestions, custom model IDs, and base64 image responses.
-- Added configurable auto-generation cadence plus QR-friendly `/qig`, `/qig-auto`, and `/qig-cancel` slash commands.
-- Added Reverse Proxy `New-API Chat Image mode` for OpenAI-compatible proxies that generate images through `chat/completions`.
-- Chat Image mode locks routing to `chat/completions` by default, uses a 16k max-token budget, supports a custom system prompt, can optionally append active character/persona context, and avoids editing the source chat message when auto-inserting results.
-- Added a route-permission toggle for proxies that should still use `/images/generations` routing.
+| ID | Name | API Key |
+| --- | --- | --- |
+| `pollinations` | Pollinations (Free + Paid) | No |
+| `novelai` | NovelAI | Yes |
+| `gptimage` | GPT Image (OpenAI) | Yes |
+| `arliai` | ArliAI | Yes |
+| `routeway` | Routeway | Yes |
+| `navy` | Navy.ai | Yes |
+| `nanogpt` | NanoGPT | Yes |
+| `chutes` | Chutes | Yes |
+| `civitai` | CivitAI | Yes |
+| `nanobanana` | Nanobanana (Gemini) | Yes |
+| `stability` | Stability AI | Yes |
+| `replicate` | Replicate | Yes |
+| `fal` | Fal.ai | Yes |
+| `together` | Together AI | Yes |
+| `zai` | Z.AI | Yes |
+| `local` | Local (A1111 / ComfyUI) | No |
+| `proxy` | Reverse Proxy (OpenAI-compatible) | No |
 
-## Recent v2.0.8 Fixes
-- Added an optional SillyTavern server relay plugin for CivitAI and Replicate users running SillyTavern with `basicAuthMode: true`.
-- CivitAI/Replicate proxy failures caused by basic auth now show a concise setup message instead of SillyTavern's unauthorized HTML page.
+Store keys in SillyTavern's Secrets when available. Provider settings live under Connection Profiles.
 
-## Recent v2.0.6 Fixes
-- Added Nano Banana Pro / Gemini 3 Pro Image workflow controls, including director presets, optional negative guidance, and a one-click ChatGPT + Nano Banana Pro setup.
-- Polished the Quick Image Gen settings UI with collapsible sections, a sticky action bar, clearer provider cards, and improved mobile layout.
+### Provider notes
 
-## Recent v2.0.5 Fixes
-- Added GPT Image as its own provider, defaulting to `gpt-image-2`.
-- GPT Image supports optional reverse proxy URL/key overrides like NovelAI, plus quality, output format, background, and moderation controls.
-
-## Recent v2.0.4 Fixes
-- Reverse Proxy requests now have a configurable `Request Timeout` setting, defaulting to 600 seconds for slower image services like LinkAPI.
-
-## Recent v2.0.3 Fixes
-- Added `Plain Description` generation: type a natural-language image idea and QIG will ask your AI to turn it into an image prompt before generating.
-- Added ComfyUI workflow variable documentation in [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md).
-- Custom ComfyUI workflow placeholders now preserve numeric types when a node input is exactly a placeholder such as `%seed%`, `%width%`, or `%cfg%`.
-- Runtime ComfyUI JSON errors are no longer mislabeled as invalid custom workflow JSON.
-
-## Recent v2.0.2 Fixes
-- Restored the palette button Direct / Inject mode option.
-- Inject palette ignores stale tags from older messages when a newer user message exists.
-- If there is no current image tag, Inject asks the LLM for one from the selected scene instead of targeting old chat content.
-- Contextual filters now match the selected scene again, so global/card filters fire properly.
-- Saved card/character filters can be edited, deleted, toggled, and reordered from the manager without switching to that card/character.
-- Loading generation presets no longer overwrites or moves contextual filters.
-
-## Features
-
-### Providers
-- Pollinations
-- NovelAI
-- GPT Image (OpenAI)
-- ArliAI
-- Routeway
-- Navy.ai
-- NanoGPT
-- Chutes
-- CivitAI
-- Nanobanana/Gemini
-- Stability AI
-- Replicate
-- Fal.ai
-- Together AI
-- Local (A1111 / ComfyUI)
-- Reverse Proxy
-
-### Generation
-- 40+ style presets
-- Manual prompt generation
-- Plain-description-to-prompt generation
-- Optional two-step chat-scene prompt pipeline
-- Message-based scene selection
-- LLM prompt generation with optional prompt editing
-- Prompt wildcards
-- Batch generation with sequential seeds
-- ST Style panel integration
-- Contextual Filters with keyword or LLM concept matching
-- Optional per-filter seed overrides
-- Configurable auto-generation cadence
-- Automatic inject mode using AI-written image tags
-
-### Workflow
-- Connection Profiles
-- Generation Presets
-- Comfy Workflow Presets
-- Character settings
-- Per-character reference images
-- Export / import settings
-
-### Output
-- Gallery
-- Prompt History
-- Auto-insert into chat
-- Set generated images as temporary or chat-locked SillyTavern backgrounds
-- Inline data URL or `image_url` insertion
-- Save to ST server
-- PNG metadata embedding and metadata round-trip
+- **Pollinations**: Free by default (`flux`). Paid models include NanoBanana variants, Grok, Pruna, Nova Canvas, Seedream, Wan, and GPT Image 1/1.5. Some paid models require Pollinations auth.
+- **NovelAI**: Default model `nai-diffusion-4-5-curated`. Resolution presets available. Supports proxy URL/key overrides.
+- **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable.
+- **Nanobanana (Gemini)**: Four models ranging from Gemini 2.0 Flash Exp through Nano Banana Pro (Gemini 3 Pro Image). NBP mode adds optional director presets and negative guidance.
+- **Navy.ai / Routeway**: Model ID suggestions with custom model support. Base64 image responses.
+- **Z.AI**: Default `cogview-4`. HD quality default.
+- **Reverse Proxy**: See [Reverse Proxy](#reverse-proxy) below.
 
 ## Quick Start
 
 1. Open the QIG panel in SillyTavern.
-2. Pick a provider.
-3. Enter a prompt or enable `Use chat message`.
-4. Click `Generate`.
-5. Optionally save the setup as a preset or profile.
+2. Pick a provider and enter credentials if needed.
+3. Type a prompt or enable `Use chat message` to pull context from the current chat.
+4. Click `Generate` (or press `Ctrl+Enter`).
+5. Save the setup as a [preset or profile](#presets-and-profiles) once it works.
 
-## Settings Overview
+## Generation Workflows
 
-### Prompt & Presets
-- `Prompt`: Base prompt with `{{char}}` and `{{user}}` placeholders.
-- `Plain Description`: Type a quick natural-language idea and generate from an AI-converted image prompt without changing the saved prompt field.
-- `Negative Prompt`: What to avoid.
-- `Quality Tags`: Optional tags prepended to prompts.
-- `Use chat message`: Use selected chat messages as scene context.
-- `Use LLM to create image prompt`: Have the chat model rewrite the scene into an image prompt.
-- `Save Preset`: Save the full generation setup.
-- `Export` / `Import`: Move settings between installs.
+### Direct generation
 
-### Contextual Filters
-Contextual Filters are now the only native prompt-transformation system.
+Type a prompt in the prompt field and click Generate. The prompt field supports `{{char}}` and `{{user}}` placeholders.
 
-They support:
-- Keyword matching with `OR` / `AND`
-- LLM concept matching
-- Positive and negative prompt additions
-- Removal of conflicting tokens before append
-- Global, card-only, and character scope
-- Filter pools for bulk enable/disable
-- Seed overrides
+### Plain description
 
-Legacy Prompt Replacement Maps are migrated into Contextual Filters as best-effort removal-plus-append rules.
+Type a natural-language image idea in the Plain Description field. QIG asks your connected Text AI to convert it into an image prompt, then generates from that result. The main prompt field stays untouched.
 
-### Auto Generation
-- `Auto-generate after AI response`: Generate after assistant replies.
-- `Every AI replies`: Generate after every N eligible assistant replies. `1` keeps the old behavior; `3` means every third eligible reply.
-- `Delay (ms)`: Wait this many milliseconds after the triggering assistant reply before generating. Applies to normal and inject auto-generation.
-- `Use two-step prompt pipeline for chat scenes`: For chat-based direct generation, first ask Text AI for a plain visual scene description, then ask Text AI to convert that description into the selected prompt style.
-- `Auto-set generated image as chat background`: Apply the first generated image as the current chat background automatically. Temporary mode only changes the live background; locked mode stores the background in chat metadata.
-- `Confirm before generating`: Ask before manual generation.
-- `Auto-insert`: Insert generated images directly into chat.
-- `/qig`: Generate from the current settings. Use `mode=direct`, `mode=palette`, or `mode=inject`; optional trailing text becomes a one-off direct prompt.
-- `/qig-auto`: Show or change auto-generation, for example `/qig-auto state=on every=3 delay=1000`.
-- `/qig-cancel`: Cancel the active generation request.
+### Chat-scene generation
 
-SillyTavern Quick Replies can run these slash commands, so you can make QR buttons for common QIG actions.
+Enable `Use chat message` to pull text from the current chat as scene context. Then optionally enable `Use LLM to create image prompt` to have your Text AI rewrite that context into a style-appropriate prompt before sending it to the image provider.
 
-### Reverse Proxy New-API Chat Image Mode
+When `Use chat message` and the LLM prompt toggle are both on, and `Use two-step prompt pipeline for chat scenes` is enabled in the Auto Generation section, QIG runs two passes:
 
-Use Reverse Proxy `New-API Chat Image mode` when your OpenAI-compatible endpoint exposes image generation through `chat/completions` instead of the normal `/images/generations` route.
+1. Ask the Text AI for a plain visual scene description drawn from the selected chat range.
+2. Ask the Text AI to convert that description into the selected prompt style.
 
-Recommended setup:
+An optional `Two-step custom instruction` field lets you direct the second pass.
 
-1. Pick `Reverse Proxy` as the provider.
-2. Enter your proxy base URL, for example `https://proxy.example/v1`, and optional API key.
-3. Enter the chat-image model name required by your proxy.
-4. Enable `New-API Chat Image mode`.
-5. Click `Apply Chat Image Defaults` for the simple workflow:
-   - route through `chat/completions`
-   - use OpenAI Strict payload mode
-   - allow inline or URL reference images
-   - disable SSE
-   - use the latest chat message as the image instruction
-   - auto-insert generated images as a new assistant chat message
+### Batch generation
+
+Set batch count (1 through 10) to generate multiple variants from the same prompt. Enable `Sequential seeds` to increment the seed between each image. The batch viewer shows thumbnails, per-image prompt editing, prev/next navigation, and bulk or single insert.
+
+### Auto-generation
+
+Enable `Auto-generate after AI response` to trigger generation automatically after each assistant reply.
+
+- **Every AI replies** (1 to 100, default 1): only fire after every N eligible assistant replies. Set to `1` to fire on every reply.
+- **Delay (ms)** (0 to 60000, default 500): wait this long after the triggering reply before generating.
+
+`Auto-set generated image as chat background` applies the first result as the current chat background. Temporary mode changes the live background only. Locked-to-chat mode stores it in chat metadata.
+
+## Prompt System
+
+### LLM prompt styles
+
+When `Use LLM to create image prompt` is enabled, your Text AI rewrites the chat context into an image prompt using one of three styles:
+
+- **Tags (Danbooru)**: tag-list format (`1girl, long hair, blue eyes, ...`).
+- **Natural (Description)**: prose description.
+- **Custom instruction**: your own system prompt directs the conversion.
+
+### Style presets
+
+44 built-in styles. Each wraps your prompt in a prefix and suffix.
+
+| Style | ID | Style | ID |
+| --- | --- | --- | --- |
+| None | `none` | Ghibli | `ghibli` |
+| Anime | `anime` | Ukiyo-e | `ukiyoe` |
+| Photorealistic | `photorealistic` | Art Nouveau | `artnouveau` |
+| Digital Art | `digitalart` | Art Deco | `artdeco` |
+| Oil Painting | `oilpainting` | Impressionist | `impressionist` |
+| Watercolor | `watercolor` | Surrealist | `surrealist` |
+| Pencil Sketch | `pencilsketch` | Pop Art | `popart` |
+| Ink Drawing | `inkdrawing` | Minimalist | `minimalist` |
+| Pixel Art | `pixelart` | Gothic | `gothic` |
+| 3D Render | `render3d` | Steampunk | `steampunk` |
+| Cyberpunk | `cyberpunk` | Vaporwave | `vaporwave` |
+| Fantasy | `fantasy` | Low Poly | `lowpoly` |
+| Comic Book | `comicbook` | Isometric | `isometric` |
+| Manga | `manga` | Stained Glass | `stainedglass` |
+| Chibi | `chibi` | Graffiti | `graffiti` |
+| Dark Fantasy | `darkfantasy` | Charcoal | `charcoal` |
+| Moe Anime | `moeanime` | Pastel | `pastel` |
+| 90s Anime | `retroanime` | Film Noir | `filmnoir` |
+| Vintage Photo | `vintagephoto` | Polaroid | `polaroid` |
+| Cinematic | `cinematic` | Portrait | `portrait` |
+| Landscape | `landscape` | Macro | `macro` |
+| Abstract | `abstract` | Psychedelic | `psychedelic` |
+
+### Quality tags
+
+Prepended to every prompt when `Append quality tags to prompt` is on. Default: `masterpiece, best quality, highly detailed, sharp focus, 8k`.
+
+### Wildcards
+
+Use `__wildcard_name__` in the prompt field or contextual filter fields. QIG reads matching files from `data/default-user/User Files/wildcards/`. Each file contains one option per line; one line is selected at random on each generation.
+
+### NBP Director (Nanobanana/Gemini only)
+
+When NBP mode is enabled on the Nanobanana provider, QIG prepends director instructions to the prompt. Four presets are available:
+
+- **house** (TLD House Anime): anime-style director prompt covering face, skin, hair, clothing, legwear, feet, toenails, and anatomical accuracy.
+- **preservation** (Reference Preservation): localized edit preset that anchors on the source image and repairs only the requested region.
+- **structural** (Anatomy Repair): corrects visible limb and digit count errors.
+- **custom**: your own director text.
+
+An optional `Scene-specific house direction` field adds per-scene instructions on top of the preset. `Negative guidance` (default on) appends a fixed negative list covering oily skin, extra digits, and other common defects.
+
+## Inject Mode
+
+Inject is auto-only. When `Use AI-written image tags for auto-generation` and `Auto-generate after AI response` are both on:
+
+1. QIG injects instructions asking your Text AI to emit image tags inside chat replies.
+2. QIG extracts those tags from the AI reply.
+3. QIG generates images from the extracted prompts.
+4. Optionally removes the tags from the stored message (`Auto-clean`).
+
+Supported tag formats:
+
+- `<image>prompt text</image>` (tag name configurable, default `image`)
+- `<pic prompt="prompt text">` (legacy)
+
+Inject settings: tag name, inject prompt template, extraction regex, injection position (`afterScenario`), tag handling, auto-clean. `Test Inject Detection` checks current chat messages for extractable tags without generating.
+
+## Local Generation (A1111 / ComfyUI)
+
+### A1111
+
+Select `Local (A1111/ComfyUI)` as provider and set Local Type to `A1111`. Enter your WebUI URL (must be running with `--api` flag and CORS headers).
+
+Extra controls:
+
+- **ADetailer**: two slots (face and hand models, prompt, denoise, weight, pixel perfect, resize mode)
+- **Hires Fix**: upscaler, scale, steps, denoise, sampler, scheduler, prompt, negative prompt, resize mode
+- **IP-Adapter**: FaceID portrait mode, weight, pixel perfect, resize mode, control mode, start/end step
+- **ControlNet**: model, module, weight, resize mode, control mode, pixel perfect, guidance start/end, control image
+- **Other**: VAE, CLIP skip, scheduler, Restore Faces, Tiling, subseed, subseed strength, save to WebUI
+
+### ComfyUI
+
+Set Local Type to `ComfyUI`. Start ComfyUI with CORS enabled and note the API port.
+
+QIG drives ComfyUI through the `/prompt` API with the workflow you paste into `Custom Workflow JSON`. Use ComfyUI's `Save (API Format)` export to produce the JSON.
+
+Workflow variables: see [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder table and typed-value behavior.
+
+Extra controls:
+
+- **CLIP skip**, **denoise**, **scheduler**, **timeout**
+- **Upscale model**
+- **LoRAs** (comma-separated `name:weight` pairs)
+- **Flux support**: skip negative prompt, two CLIP models, VAE model, CLIP type
+- **Workflow presets**: save and load custom workflow JSON configs
+
+## Reverse Proxy
+
+Select `Reverse Proxy (OpenAI-compatible)` as provider. Enter your proxy base URL (for example `https://proxy.example/v1`) and optional API key.
+
+### Endpoint mode
+
+Controls which API path QIG calls:
+
+- **auto** (default): infer from the URL. Use this unless you know your proxy requires a specific endpoint.
+- **chat_completions**: always POST to `chat/completions`.
+- **images_generations**: always POST to `images/generations`.
+
+### Payload mode
+
+- **extended** (default): sends `width`, `height`, `steps`, `cfg_scale`, `sampler`, `seed`, `negative_prompt`, `loras`, and `facefix` alongside the standard OpenAI fields.
+- **openai_strict**: sends only the standard OpenAI image request body.
+
+### Reference images
+
+- **auto** (default): inline non-public URLs to base64 when reachable, otherwise pass URLs directly.
+- **url_only**: only pass public `https://` URLs. Reject local or uploaded images.
+- **inline_or_url**: always inline non-public URLs, accept everything else.
+
+### SSE
+
+- **auto** (default): enabled when payload mode is `extended`, off for `openai_strict`.
+- **on** / **off**: force a specific behavior.
+
+### New-API Chat Image mode
+
+Enable this for proxies that expose image generation through `chat/completions` instead of the normal `/images/generations` route.
+
+`Apply Chat Image Defaults` configures:
+
+- route to `chat/completions`
+- OpenAI Strict payload
+- inline-or-URL reference images
+- SSE off
+- latest chat message as instruction
+- auto-insert as a new assistant message (source message stays unchanged)
 
 Chat Image settings:
 
-- `Personality / System Prompt`: The system prompt sent before the user image instruction. The default tells the model to behave as a visual image generation assistant and return an image in the provider-supported format.
-- `Append active chat character and persona context`: Optional. Leave this off for cleaner, more predictable provider calls. Turn it on when the image model should preserve the current character card, persona, scenario, outfit, or identity details.
-- `Max Tokens`: Defaults to `16384` (16k) because chat-image providers may return verbose image payloads or data URLs. The field accepts values from `1` to `65536`.
-- `Permit /images/generations routing`: Off by default. When off, QIG forces `chat/completions` even if the URL or endpoint selector would otherwise route to `/images/generations`. Turn it on only for proxy stacks where Auto routing should still be allowed to choose `/images/generations`.
+- **Personality / System Prompt**: sent before the user instruction. Default tells the model to behave as a visual image generation assistant.
+- **Append active chat character and persona context**: off by default for cleaner calls. Turn on when the image model should preserve character card, persona, or outfit details.
+- **Max Tokens**: defaults to 16384. Range: 1 to 65536.
+- **Permit /images/generations routing**: off by default. When off, QIG forces `chat/completions`. Turn on only for proxy stacks where `auto` should still choose `/images/generations`.
 
-When Chat Image mode is enabled and `Auto-insert` is on, generated images are inserted as a new assistant message unless `Insert as hidden reply` is enabled. This keeps the original user/source message unchanged.
+## Slash Commands
 
-### Inject
-Inject is now auto-only.
+| Command | Arguments | Description |
+| --- | --- | --- |
+| `/qig` | `mode=direct\|palette\|inject`, trailing text as one-off prompt | Generate from current settings. Trailing text overrides the prompt for this run only. |
+| `/qig-auto` | `state=on\|off\|toggle`, `every=N`, `delay=ms` | Show current auto-gen state or change it. `/qig-auto` alone prints current state. |
+| `/qig-cancel` | (none) | Cancel the active generation request. |
 
-When both `Use AI-written image tags for auto-generation` and `Auto-generate after AI response` are enabled, QIG:
+These work from Quick Replies. Example QR: `/qig mode=direct a close-up portrait`.
 
-1. Injects instructions into chat completion.
-2. Reads paired image tags from AI replies.
-3. Generates images from those extracted prompts.
-4. Optionally removes the tags from stored/displayed messages.
+## Keyboard Shortcuts
 
-Supported tag formats:
-- Custom paired tag, default `<image>...</image>`
-- Legacy `<pic prompt="...">`
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+Enter` | Generate (runs configured palette generation) |
+| `Ctrl+Shift+G` | Open gallery |
+| `Ctrl+Shift+H` | Open prompt history |
 
-Available inject settings:
-- Tag name
-- Inject prompt template
-- Extraction regex
-- Injection position
-- Tag handling
-- Auto-clean
-- Test Inject Detection
+Shortcuts are disabled when focus is on an `input`, `textarea`, `select`, or `contenteditable` element.
 
-The palette button always runs a normal generation now. There is no manual inject palette mode.
+## Contextual Filters
 
-## Presets And Profiles
+The only native prompt-transformation system. Filters match conditions against the current chat scene and modify the prompt before generation.
+
+### Match modes
+
+- **Keyword OR**: any keyword in the list matches.
+- **Keyword AND**: all keywords must match.
+- **LLM concept**: ask the Text AI whether a concept is present in the scene.
+
+### Filter fields
+
+- **Name**: display label.
+- **Keywords**: comma-separated keyword list.
+- **Description**: shown in the filter manager.
+- **Positive**: tokens appended to the prompt on match.
+- **Negative**: tokens appended to the negative prompt on match.
+- **Remove positive / Remove negative**: tokens stripped before append. `remove` mode deletes exact tokens.
+- **Priority**: higher-priority filters run first.
+- **Seed override**: lock the seed when this filter fires.
+
+### Scope
+
+- **global**: applies to all generations.
+- **card**: applies only to the current card (tied to card key).
+- **character**: applies only to a specific character (tied to character ID).
+
+### Filter pools
+
+Group filters into pools, then enable or disable pools separately for global, card, and character scope. Pools support bulk toggle without touching individual filter state.
+
+Import and export are supported from the Contextual Filters manager popup.
+
+**Note**: Legacy Prompt Replacement Maps are migrated into Contextual Filters on load. Old Prompt Templates are ignored and cleaned up.
+
+## Gallery and History
+
+- **Gallery**: stored in `qig_gallery` (localStorage). Grid view, URL import, insert-to-chat.
+- **Prompt History**: stored in `qig_prompt_history` (localStorage). Reuse past prompts. Clear all option.
+- **Logs**: generation and provider diagnostics shown in the QIG panel.
+
+## Backgrounds
+
+Set a generated image as the current chat's SillyTavern background. Two modes:
+
+- **Temporary**: changes the live background for the current view only. Disappears on page reload.
+- **Locked to chat**: stores the background in chat metadata. Persists across sessions for that specific chat.
+
+Trigger backgrounds manually from the batch viewer, or automatically with `Auto-set generated image as chat background` in Auto Generation settings.
+
+## Output Modes
+
+- **inline**: embed the image as a base64 data URL in the chat message.
+- **image_url**: insert the remote URL directly.
+
+Auto-insert target (when `Auto-insert` is on):
+
+- **assistant**: insert into the latest AI/non-user message (default).
+- **user**: insert into the latest user message.
+- **latest**: insert into the most recent chat message regardless of sender.
+
+Manual insert target: same options, applied when using Insert from the result popup.
+
+## Presets and Profiles
 
 ### Connection Profiles
-Profiles store provider-specific connection settings such as API keys, model IDs, URLs, and related provider options.
+
+Store provider connection settings (API keys, model IDs, URLs, provider-specific options). Swap between providers without re-entering credentials.
 
 ### Generation Presets
-Presets store the broader generation setup, including prompt fields, size, provider settings, contextual filters, and inject configuration.
 
-## Migration Notes
+Store the full generation setup: prompt fields, size, steps, CFG, sampler, provider settings, contextual filters, and inject configuration. Save, load, delete, import, and export.
 
-- Old Prompt Replacement Maps are migrated into Contextual Filters on load, preset import, and settings import when possible.
-- Old Prompt Templates are not converted. Their storage is ignored and cleaned up.
-- Exported settings no longer include templates or prompt replacement maps.
+Active preset is highlighted in the preset chip UI.
 
-## Gallery And History
-
-- `Gallery` keeps generated images available across sessions.
-- `Prompts` keeps recent prompt history for reuse and inspection.
-- `Logs` shows generation and provider diagnostics.
-
-## ComfyUI Notes
-
-For ComfyUI:
-- Start ComfyUI with CORS enabled.
-- Use API-format workflow JSON for custom workflows.
-- Use `%reference_image%` in custom workflows when needed.
-- See [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder list and typed-value behavior.
-
-## CivitAI / Replicate Behind SillyTavern Basic Auth
+## Server Plugin
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-Quick Image Gen includes an optional server plugin that relays only the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by this extension.
+The optional `server-plugin/` directory relays only the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by this extension.
 
-Install it if CivitAI or Replicate shows a message about `basicAuthMode` blocking the CORS proxy:
+Setup:
 
-1. Copy this repo's `server-plugin` directory to your SillyTavern install as `plugins/quick-image-gen-relay/`.
+1. Copy `server-plugin/` to your SillyTavern install as `plugins/quick-image-gen-relay/`.
 2. Set `enableServerPlugins: true` in SillyTavern `config.yaml`.
 3. Restart SillyTavern.
-4. While logged in, open `/api/plugins/quick-image-gen-relay/healthz`. A blank response with HTTP 204 means the plugin is loaded.
+4. Open `/api/plugins/quick-image-gen-relay/healthz` while logged in. A blank response with HTTP 204 means the plugin is loaded.
 
-SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs: it only relays the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by Quick Image Gen, and it does not store or log provider API keys.
+SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs and does not store or log provider API keys.
+
+## Migration Notes
+
+- Legacy Prompt Replacement Maps are migrated into Contextual Filters on settings load, preset import, and settings import.
+- Legacy Prompt Templates are ignored and cleaned up.
+- Exported settings no longer include templates or prompt replacement maps.
 
 ## Credits
 
-- Veda - ComfyUI Proxy method
+- Veda: ComfyUI Proxy method
 
 ## License
 
