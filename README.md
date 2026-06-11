@@ -1,11 +1,16 @@
 # Quick Image Gen - SillyTavern Extension
 
 ## TL;DR
-One-click image generation for SillyTavern with 16 providers, 40+ styles, LLM prompt generation, configurable auto-generation, slash commands, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
+One-click image generation for SillyTavern with 16 providers, 40+ styles, LLM prompt generation, a two-step chat prompt pipeline, configurable auto-generation, chat background actions, slash commands, connection profiles, generation presets, contextual filters, auto-insert, gallery, prompt history, PNG metadata, and settings export/import.
 
 Prompt Replacement Maps and Prompt Templates have been removed. Old prompt replacement data is migrated into Contextual Filters on load when possible.
 
 **Install:** Extensions -> Install from URL -> `https://github.com/platberlitz/sillytavern-image-gen`
+
+## What's New in v2.1.0
+- Added an optional two-step prompt pipeline for chat scenes: Text AI first summarizes the selected chat moment into a plain visual description, then converts that description through the selected LLM prompt style before image generation.
+- Added `Set as Background` actions to single-image and batch result popups.
+- Added optional auto-background mode for generated images, with temporary backgrounds or locked-to-chat metadata backgrounds.
 
 ## What's New in v2.0.10
 - Added Routeway and Navy.ai image providers with model suggestions, custom model IDs, and base64 image responses.
@@ -67,6 +72,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 - 40+ style presets
 - Manual prompt generation
 - Plain-description-to-prompt generation
+- Optional two-step chat-scene prompt pipeline
 - Message-based scene selection
 - LLM prompt generation with optional prompt editing
 - Prompt wildcards
@@ -89,6 +95,7 @@ Prompt Replacement Maps and Prompt Templates have been removed. Old prompt repla
 - Gallery
 - Prompt History
 - Auto-insert into chat
+- Set generated images as temporary or chat-locked SillyTavern backgrounds
 - Inline data URL or `image_url` insertion
 - Save to ST server
 - PNG metadata embedding and metadata round-trip
@@ -131,6 +138,8 @@ Legacy Prompt Replacement Maps are migrated into Contextual Filters as best-effo
 - `Auto-generate after AI response`: Generate after assistant replies.
 - `Every AI replies`: Generate after every N eligible assistant replies. `1` keeps the old behavior; `3` means every third eligible reply.
 - `Delay (ms)`: Wait this many milliseconds after the triggering assistant reply before generating. Applies to normal and inject auto-generation.
+- `Use two-step prompt pipeline for chat scenes`: For chat-based direct generation, first ask Text AI for a plain visual scene description, then ask Text AI to convert that description into the selected prompt style.
+- `Auto-set generated image as chat background`: Apply the first generated image as the current chat background automatically. Temporary mode only changes the live background; locked mode stores the background in chat metadata.
 - `Confirm before generating`: Ask before manual generation.
 - `Auto-insert`: Insert generated images directly into chat.
 - `/qig`: Generate from the current settings. Use `mode=direct`, `mode=palette`, or `mode=inject`; optional trailing text becomes a one-off direct prompt.
