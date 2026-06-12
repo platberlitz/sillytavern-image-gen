@@ -3611,7 +3611,7 @@ function resolveChatProfileContext(ctx = getContext()) {
     return {
         isGroup,
         userName: String(ctx.name1 || "").trim() || "user",
-        userDesc: String(ctx.persona || "").trim(),
+        userDesc: String(ctx.persona || ctx.powerUserSettings?.persona_description || "").trim(),
         charIds,
         charNames,
         charNameJoined: charNames.length ? charNames.join(", ") : "character",
