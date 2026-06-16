@@ -7364,7 +7364,7 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null) {
 
         const messageElement = $(`.mes[mesid="${idx}"]`);
         if (messageElement.length) {
-            ctx.appendMediaToMessage(message, messageElement, 'keep');
+            ctx.appendMediaToMessage(message, messageElement, 'replace');
         }
     } else {
         // Legacy fallback for older ST versions
