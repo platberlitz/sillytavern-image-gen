@@ -47,7 +47,7 @@ Store keys in SillyTavern's Secrets when available. Provider settings live under
 1. Open the QIG panel in SillyTavern.
 2. Pick a provider and enter credentials if needed.
 3. Type a prompt or enable `Use chat message` to pull context from the current chat.
-4. Click `Generate` (or press `Ctrl+Enter`).
+4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
 5. Save the setup as a [preset or profile](#presets-and-profiles) once it works.
 
 ## Generation Workflows
@@ -250,7 +250,7 @@ These work from Quick Replies. Example QR: `/qig mode=direct a close-up portrait
 
 | Shortcut | Action |
 | --- | --- |
-| `Ctrl+Enter` | Generate (runs configured palette generation) |
+| `Ctrl+Enter` (default, configurable in settings) | Generate (runs configured palette generation) |
 | `Ctrl+Shift+G` | Open gallery |
 | `Ctrl+Shift+H` | Open prompt history |
 
