@@ -44,11 +44,21 @@ Store keys in SillyTavern's Secrets when available. Provider settings live under
 
 ## Quick Start
 
-1. Open the QIG panel in SillyTavern.
-2. Pick a provider and enter credentials if needed.
-3. Type a prompt or enable `Use chat message` to pull context from the current chat.
+1. Open the QIG panel in SillyTavern. On a fresh install a Quick Setup wizard opens: pick a provider, paste a key if needed, choose a style. Re-open it any time with the `Quick Setup` button.
+2. Fresh installs also get three starter presets (free Pollinations recipes) in the Preset dropdown.
+3. Type a prompt, or set **Prompt source** to `Chat scene` to pull context from the current chat.
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
 5. Save the setup as a [preset or profile](#presets-and-profiles) once it works.
+
+The panel shows the essentials (preset, prompt, prompt source, style) up front; everything else lives under **Setup & Advanced**. A status line in the header summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+
+### Prompt source
+
+One selector controls where prompts come from:
+
+- **Manual**: the prompt box is sent as-is (optional LLM rewrite still applies).
+- **Chat scene**: the selected chat message(s) become the scene; message selection and LLM rewrite options apply.
+- **AI-tagged (auto)**: inject mode. Your Text AI is instructed to emit image tags in replies and QIG generates from them. Selecting this keeps Auto-generate on and switches the palette button to inject mode.
 
 ## Generation Workflows
 
@@ -62,9 +72,9 @@ Type a natural-language image idea in the Plain Description field. QIG asks your
 
 ### Chat-scene generation
 
-Enable `Use chat message` to pull text from the current chat as scene context. Then optionally enable `Use LLM to create image prompt` to have your Text AI rewrite that context into a style-appropriate prompt before sending it to the image provider.
+Set **Prompt source** to `Chat scene` to pull text from the current chat as scene context. Then optionally enable `Use LLM to create image prompt` to have your Text AI rewrite that context into a style-appropriate prompt before sending it to the image provider.
 
-When `Use chat message` and the LLM prompt toggle are both on, and `Use two-step prompt pipeline for chat scenes` is enabled in the Auto Generation section, QIG runs two passes:
+When the Chat scene source and the LLM prompt toggle are both on, and `Use two-step prompt pipeline for chat scenes` is enabled (under the LLM rewrite options), QIG runs two passes:
 
 1. Ask the Text AI for a plain visual scene description drawn from the selected chat range.
 2. Ask the Text AI to convert that description into the selected prompt style.
@@ -144,7 +154,7 @@ An optional `Scene-specific house direction` field adds per-scene instructions o
 
 ## Inject Mode
 
-Inject is auto-only. When `Use AI-written image tags for auto-generation` and `Auto-generate after AI response` are both on:
+Inject is auto-only. It activates when **Prompt source** is set to `AI-tagged (auto)` (which keeps `Auto-generate after AI response` on):
 
 1. QIG injects instructions asking your Text AI to emit image tags inside chat replies.
 2. QIG extracts those tags from the AI reply.
