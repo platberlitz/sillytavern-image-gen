@@ -172,6 +172,7 @@ const QIG_DEFAULT_COLLAPSED_SECTIONS = {
     promptAdvanced: false,
     injectOptions: true,
     advancedSettings: true,
+    setupPanel: true,
 };
 let qigKeyboardShortcutsBound = false;
 
@@ -328,6 +329,145 @@ function setupQigCollapsibleSection(sectionId, buttonId, contentId) {
     };
 }
 
+// === Prompt source modes ===
+// The legacy flags (useLastMessage / injectEnabled) stay the source of truth for all
+// generation logic. The mode selector is a projection over them, so presets, imports,
+// and slash commands written against the old flags keep working unchanged.
+const PROMPT_SOURCE_LABELS = {
+    manual: "Manual prompt",
+    chat: "Chat scene",
+    tags: "AI-tagged (auto)",
+};
+
+const PROMPT_SOURCE_HELP = {
+    manual: "The prompt box above is sent as-is. Optional LLM rewrite still applies if enabled below.",
+    chat: "The selected chat message(s) become the scene. Optionally let your Text AI rewrite them into an image prompt.",
+    tags: "Your Text AI is instructed to emit image tags in replies; QIG extracts them and generates automatically. Auto-generate is kept on for this mode.",
+};
+
+function derivePromptSource(s = getSettings()) {
+    if (s?.injectEnabled) return "tags";
+    if (s?.useLastMessage) return "chat";
+    return "manual";
+}
+
+function getPromptSourceLabel(mode = derivePromptSource()) {
+    return PROMPT_SOURCE_LABELS[mode] || PROMPT_SOURCE_LABELS.manual;
+}
+
+function updatePromptSourceUI(s = getSettings()) {
+    const mode = derivePromptSource(s);
+    document.querySelectorAll('input[name="qig-prompt-source"]').forEach(radio => {
+        radio.checked = radio.value === mode;
+    });
+    const help = document.getElementById("qig-prompt-source-help");
+    if (help) help.textContent = PROMPT_SOURCE_HELP[mode] || "";
+    const chatPanel = document.getElementById("qig-chat-source-panel");
+    if (chatPanel) chatPanel.style.display = mode === "chat" ? "block" : "none";
+    const llmSubsection = document.getElementById("qig-llm-subsection");
+    if (llmSubsection) llmSubsection.style.display = mode === "tags" ? "none" : "block";
+    const injectShell = document.getElementById("qig-inject-shell");
+    if (injectShell) injectShell.style.display = mode === "tags" ? "block" : "none";
+}
+
+function applyPromptSource(mode, { persist = true } = {}) {
+    const s = getSettings();
+    if (!s) return;
+    const normalized = PROMPT_SOURCE_LABELS[mode] ? mode : "manual";
+    s.useLastMessage = normalized === "chat";
+    s.injectEnabled = normalized === "tags";
+    if (normalized === "tags") {
+        if (!s.autoGenerate) setAutoGenerateEnabled(true);
+        s.paletteMode = "inject";
+        setCollapsedSection("injectOptions", false, { persist: false });
+        const injectToggle = document.getElementById("qig-inject-options-toggle");
+        const injectContent = document.getElementById("qig-inject-options");
+        if (injectToggle && injectContent) {
+            injectToggle.setAttribute("aria-expanded", "true");
+            injectContent.hidden = false;
+        }
+    } else {
+        s.paletteMode = "direct";
+    }
+    const paletteModeEl = document.getElementById("qig-palette-mode");
+    if (paletteModeEl) paletteModeEl.value = s.paletteMode;
+    updatePromptSourceUI(s);
+    updateQigStatusLine();
+    if (persist) saveSettingsDebounced();
+}
+
+// === Readiness status line ===
+const PROVIDER_KEY_FIELDS = {
+    novelai: "naiKey",
+    gptimage: "gptImageKey",
+    arliai: "arliKey",
+    routeway: "routewayKey",
+    navy: "navyKey",
+    nanogpt: "nanogptKey",
+    chutes: "chutesKey",
+    civitai: "civitaiKey",
+    nanobanana: "nanobananaKey",
+    stability: "stabilityKey",
+    replicate: "replicateKey",
+    fal: "falKey",
+    together: "togetherKey",
+    zai: "zaiKey",
+    pollinations: "pollinationsKey",
+};
+
+function getProviderKeyValue(s = getSettings(), provider = s?.provider) {
+    const field = PROVIDER_KEY_FIELDS[provider];
+    return field ? String(s?.[field] || "").trim() : "";
+}
+
+function collectQigStatus(s = getSettings()) {
+    const items = [];
+    const warnings = [];
+    if (!s) return { items, warnings };
+    const providerName = PROVIDERS[s.provider]?.name || s.provider || "No provider";
+    items.push(providerName);
+    const model = getProviderModelId(s);
+    if (model) items.push(model);
+    items.push(`${s.width}\u00d7${s.height}`);
+    items.push(getPromptSourceLabel(derivePromptSource(s)));
+    if (s.autoGenerate) {
+        const every = normalizeAutoGenerateEveryMessages(s.autoGenerateEveryMessages);
+        items.push(every > 1 ? `Auto every ${every} replies` : "Auto-generate on");
+    }
+    if (PROVIDERS[s.provider]?.needsKey && !getProviderKeyValue(s)) {
+        warnings.push(`${providerName} needs an API key. Open Setup & Advanced or Quick Setup to add one.`);
+    }
+    if (s.provider === "proxy" && !String(s.proxyUrl || "").trim()) {
+        warnings.push("Reverse proxy URL is not set. Open Setup & Advanced to configure it.");
+    }
+    if (s.provider === "local" && !String(s.localUrl || "").trim()) {
+        warnings.push("Local server URL is not set. Open Setup & Advanced to configure it.");
+    }
+    if (s.injectEnabled && !s.autoGenerate) {
+        warnings.push("AI-tagged source needs Auto-generate on. Tags will not fire until it is re-enabled.");
+    }
+    if (s.twoStepPrompt && !(s.useLLMPrompt && s.useLastMessage)) {
+        warnings.push("Two-step pipeline is inactive. It needs the Chat scene source with LLM prompt rewriting enabled.");
+    }
+    return { items, warnings };
+}
+
+function updateQigStatusLine() {
+    const s = getSettings();
+    if (!s) return;
+    const meta = document.getElementById("qig-status-meta");
+    if (!meta) return;
+    const { items, warnings } = collectQigStatus(s);
+    meta.innerHTML = items.map(item => `<span>${escapeHtml(item)}</span>`).join("");
+    const warnEl = document.getElementById("qig-status-warnings");
+    if (warnEl) {
+        warnEl.innerHTML = warnings.map(w => `<div class="qig-status-warning">${escapeHtml(w)}</div>`).join("");
+        warnEl.style.display = warnings.length ? "" : "none";
+    }
+    const eyebrow = document.getElementById("qig-status-eyebrow");
+    if (eyebrow) eyebrow.textContent = warnings.length ? "Needs attention" : "Ready to generate";
+}
+
 function getNanobananaAspectRatio(settings = getSettings()) {
     const width = Math.max(1, parseIntOr(settings?.width, SIZE_DEFAULT));
     const height = Math.max(1, parseIntOr(settings?.height, SIZE_DEFAULT));
@@ -419,6 +559,8 @@ const defaultSettings = {
     paletteMode: "direct",
     confirmBeforeGenerate: false,
     generateShortcut: GENERATE_SHORTCUT_DEFAULT,
+    setupWizardSeen: false,
+    starterPresetsSeeded: false,
     enableParagraphPicker: false,
     batchCount: 1,
     sequentialSeeds: false,
@@ -2807,6 +2949,11 @@ async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
+    // Existing installs keep their current behavior: no first-run wizard, no starter presets.
+    if (saved && Object.keys(saved).length > 0) {
+        if (saved.setupWizardSeen === undefined) s.setupWizardSeen = true;
+        if (saved.starterPresetsSeeded === undefined) s.starterPresetsSeeded = true;
+    }
     s.paletteMode = normalizePaletteMode(s.paletteMode);
     const savedTagName = getInjectTagName(saved);
     s.injectTagName = savedTagName;
@@ -10910,11 +11057,118 @@ async function clearPresets() {
     }
 }
 
+function seedStarterPresets() {
+    const s = getSettings();
+    if (!s || s.starterPresetsSeeded) return;
+    s.starterPresetsSeeded = true;
+    if (Array.isArray(generationPresets) && generationPresets.length > 0) {
+        saveSettingsDebounced();
+        return;
+    }
+    const base = {
+        provider: "pollinations",
+        prompt: "{{char}} in the current scene",
+        width: 832, height: 1216,
+        steps: 25, cfgScale: 7, sampler: "euler_a", seed: -1,
+        negativePrompt: defaultSettings.negativePrompt,
+        qualityTags: defaultSettings.qualityTags,
+        appendQuality: true,
+        batchCount: 1, sequentialSeeds: false,
+        useLastMessage: false, useLLMPrompt: false, llmPromptStyle: "tags",
+        injectEnabled: false, paletteMode: "direct",
+    };
+    generationPresets.push(
+        { ...base, id: generateUUID(), name: "Quick Anime (free)", style: "anime" },
+        { ...base, id: generateUUID(), name: "Photoreal (free)", style: "photorealistic", width: 896, height: 1152, llmPromptStyle: "natural" },
+        { ...base, id: generateUUID(), name: "Chat Scene (LLM prompt)", style: "anime", useLastMessage: true, useLLMPrompt: true },
+    );
+    saveGenerationPresetStore();
+    renderPresets();
+    saveSettingsDebounced();
+}
+
+function showSetupWizard() {
+    const s = getSettings();
+    if (!s) return;
+    const providerOpts = buildOptions(Object.entries(PROVIDERS), s.provider, v => v.name);
+    const styleOpts = buildOptions(Object.entries(STYLES), s.style, v => v.name);
+    createPopup("qig-setup-wizard", "Quick Image Gen — Quick Setup", `
+        <div class="qig-wizard">
+            <p class="qig-muted">Pick a backend and a style; everything else has working defaults. Pollinations is free and needs no key.</p>
+            <label for="qig-wizard-provider">Provider</label>
+            <select id="qig-wizard-provider">${providerOpts}</select>
+            <div id="qig-wizard-key-wrap">
+                <label id="qig-wizard-key-label" for="qig-wizard-key">API Key</label>
+                <input id="qig-wizard-key" type="password" autocomplete="off" placeholder="Paste your API key">
+            </div>
+            <div id="qig-wizard-extra-note" class="qig-muted" style="display:none;">This provider has more required settings (server URL, models). Finish here, then open Setup &amp; Advanced → Connection.</div>
+            <label for="qig-wizard-style">Style</label>
+            <select id="qig-wizard-style">${styleOpts}</select>
+            <div class="qig-wizard-actions">
+                <button id="qig-wizard-skip" class="menu_button">Skip</button>
+                <button id="qig-wizard-save" class="menu_button">Save &amp; Close</button>
+                <button id="qig-wizard-test" class="menu_button qig-primary-action">Save &amp; Test Generate</button>
+            </div>
+        </div>
+    `, (popup) => {
+        const providerSel = popup.querySelector("#qig-wizard-provider");
+        const keyWrap = popup.querySelector("#qig-wizard-key-wrap");
+        const keyLabel = popup.querySelector("#qig-wizard-key-label");
+        const keyInput = popup.querySelector("#qig-wizard-key");
+        const extraNote = popup.querySelector("#qig-wizard-extra-note");
+        const syncFields = () => {
+            const provider = providerSel.value;
+            const keyField = PROVIDER_KEY_FIELDS[provider];
+            if (keyField) {
+                keyWrap.style.display = "block";
+                keyLabel.textContent = PROVIDERS[provider]?.needsKey ? "API Key" : "API Key (optional)";
+                keyInput.value = String(getSettings()?.[keyField] || "");
+            } else {
+                keyWrap.style.display = "none";
+            }
+            extraNote.style.display = (provider === "local" || provider === "proxy") ? "block" : "none";
+        };
+        providerSel.onchange = syncFields;
+        syncFields();
+        const closeWizard = () => { popup.style.display = "none"; };
+        const applyWizard = () => {
+            const settings = getSettings();
+            const provider = providerSel.value;
+            settings.provider = provider;
+            const keyField = PROVIDER_KEY_FIELDS[provider];
+            if (keyField) settings[keyField] = keyInput.value.trim();
+            settings.style = popup.querySelector("#qig-wizard-style").value;
+            saveSettingsDebounced();
+            createUI();
+        };
+        popup.querySelector("#qig-wizard-skip").onclick = closeWizard;
+        popup.querySelector("#qig-wizard-save").onclick = () => { applyWizard(); closeWizard(); };
+        popup.querySelector("#qig-wizard-test").onclick = () => {
+            applyWizard();
+            closeWizard();
+            runConfiguredPaletteGeneration();
+        };
+    }, { resizable: false, popupClass: "wizard" });
+}
+
+function renderPresetSelect() {
+    const select = document.getElementById("qig-preset-select");
+    if (!select) return;
+    const activePresetId = getActiveGenerationPresetId();
+    const options = [`<option value="">— Current settings —</option>`]
+        .concat(generationPresets.map(p =>
+            `<option value="${escapeHtml(p?.id || "")}" ${p?.id === activePresetId ? "selected" : ""}>${escapeHtml(p?.name || "(unnamed)")}</option>`
+        ));
+    select.innerHTML = options.join("");
+    select.value = activePresetId && generationPresets.some(p => p?.id === activePresetId) ? activePresetId : "";
+}
+
 function renderPresets() {
-    const container = document.getElementById("qig-presets");
-    if (!container) return;
     ensureGenerationPresetIds({ persist: true });
     syncActiveGenerationPresetSetting({ persist: true });
+    renderPresetSelect();
+    const container = document.getElementById("qig-presets");
+    if (!container) return;
     const activePresetId = getActiveGenerationPresetId();
     const html = generationPresets.map((p, i) =>
         `<span style="display:inline-flex;align-items:center;margin:2px;">` +
@@ -10984,11 +11238,11 @@ function refreshAllUI(s) {
         if (el) el.value = s[key] ?? "";
     });
     const checks = {
-        "qig-append-quality": "appendQuality", "qig-use-last": "useLastMessage",
+        "qig-append-quality": "appendQuality",
         "qig-use-llm": "useLLMPrompt", "qig-auto-generate": "autoGenerate",
         "qig-two-step-prompt": "twoStepPrompt", "qig-auto-background": "autoSetBackground",
         "qig-seq-seeds": "sequentialSeeds",
-        "qig-use-st-style": "useSTStyle", "qig-inject-enabled": "injectEnabled",
+        "qig-use-st-style": "useSTStyle",
         "qig-inject-autoclean": "injectAutoClean", "qig-proxy-chat-mode": "proxyChatImageMode",
         "qig-proxy-chat-allow-images": "proxyChatImageAllowImagesEndpoint",
         "qig-proxy-chat-personality": "proxyChatImageIncludePersonality"
@@ -11001,18 +11255,18 @@ function refreshAllUI(s) {
     syncTwoStepPromptControls(s);
     syncBackgroundControls(s);
     syncInjectDefaultFields(s);
+    updatePromptSourceUI(s);
     updateProviderUI();
     refreshProviderInputs(s.provider);
     renderProfileSelect();
     // Update seq seeds visibility
     const seqWrap = document.getElementById("qig-seq-seeds-wrap");
     if (seqWrap) seqWrap.style.display = (s.batchCount || 1) > 1 ? "" : "none";
-    // Update inject mode visibility
-    const injectOpts = document.getElementById("qig-inject-options");
-    if (injectOpts) injectOpts.style.display = s.injectEnabled ? "block" : "none";
+    // Update inject depth visibility (inject panel itself follows the prompt source)
     const injectDepthWrap = document.getElementById("qig-inject-depth-wrap");
     if (injectDepthWrap) injectDepthWrap.style.display = s.injectPosition === "atDepth" ? "block" : "none";
     renderContextualFilters();
+    updateQigStatusLine();
 }
 
 window.loadPreset = loadPreset;
@@ -11327,6 +11581,7 @@ function updateProviderUI() {
         syncNaiResolutionSelect();
         if (changed) saveSettingsDebounced();
     }
+    updateQigStatusLine();
 }
 
 function addProxyRefImage(src, successMessage = "") {
@@ -11487,6 +11742,7 @@ function bind(id, key, isNum = false, isCheckbox = false, onChange = null) {
         }
         if (typeof onChange === "function") onChange(value, e);
         saveSettingsDebounced();
+        updateQigStatusLine();
     };
 }
 
@@ -11501,6 +11757,7 @@ function setAutoGenerateEnabled(checked) {
     normalizeAutoGenerateSettings(s);
     syncAutoGenerateControls(s);
     resetAutoGenerateCadence({ clearTimer: true });
+    updateQigStatusLine();
 }
 
 function syncAutoGenerateControls(settings = getSettings()) {
@@ -11662,6 +11919,9 @@ function createUI() {
     const injectOptionsExpanded = injectOptionsCollapsed ? "false" : "true";
     const advancedSettingsHidden = collapsed.advancedSettings ? "hidden" : "";
     const advancedSettingsExpanded = collapsed.advancedSettings ? "false" : "true";
+    const setupPanelHidden = collapsed.setupPanel ? "hidden" : "";
+    const setupPanelExpanded = collapsed.setupPanel ? "false" : "true";
+    const promptSourceMode = derivePromptSource(s);
     const selectedNaiResolution = getNaiResolutionOptionValue(s.width, s.height);
     const samplerOpts = Object.entries(SAMPLER_GROUPS).map(([group, ids]) =>
         `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
@@ -11697,21 +11957,62 @@ function createUI() {
 
                 <div class="qig-menu-hero">
                     <div class="qig-menu-hero__summary">
-                        <span class="qig-menu-eyebrow">Ready to generate</span>
+                        <span id="qig-status-eyebrow" class="qig-menu-eyebrow">Ready to generate</span>
                         <div class="qig-menu-title">Quick Image Gen</div>
-                        <div class="qig-menu-meta">
+                        <div id="qig-status-meta" class="qig-menu-meta">
                             <span>${esc(activeProviderName)}</span>
                             <span>${esc(activeStyleName)}</span>
                             <span>${esc(activeBatchLabel)}</span>
                         </div>
                     </div>
-                    <div class="qig-hero-note">Set provider and prompt below. Generate stays available while you scroll.</div>
+                    <div id="qig-status-warnings" class="qig-status-warnings" style="display:none;"></div>
+                </div>
+
+                <div class="qig-essentials">
+                    <div class="qig-field">
+                        <label for="qig-preset-select">Preset</label>
+                        <div class="qig-inline-control">
+                            <select id="qig-preset-select" class="qig-inline-control__main"></select>
+                            <button id="qig-preset-save-quick" class="menu_button" title="Save current settings as a new preset"><span class="fa-solid fa-bookmark" aria-hidden="true"></span></button>
+                        </div>
+                        <small>Recipes bundling provider, style, and prompt behavior. Pick one, tweak the prompt, hit Generate.</small>
+                    </div>
+                    <div class="qig-field">
+                        <label for="qig-prompt">Prompt</label>
+                        <textarea id="qig-prompt" rows="3" aria-describedby="qig-prompt-help">${esc(s.prompt)}</textarea>
+                        <small id="qig-prompt-help">Used for manual generation, or as scene context when LLM prompt is enabled.</small>
+                    </div>
+                    <div class="qig-field">
+                        <label id="qig-prompt-source-label">Prompt source</label>
+                        <div class="qig-prompt-source" role="radiogroup" aria-labelledby="qig-prompt-source-label">
+                            <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="manual" ${promptSourceMode === "manual" ? "checked" : ""}><span>Manual</span></label>
+                            <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="chat" ${promptSourceMode === "chat" ? "checked" : ""}><span>Chat scene</span></label>
+                            <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="tags" ${promptSourceMode === "tags" ? "checked" : ""}><span>AI-tagged (auto)</span></label>
+                        </div>
+                        <small id="qig-prompt-source-help">${esc(PROMPT_SOURCE_HELP[promptSourceMode] || "")}</small>
+                    </div>
+                    <div class="qig-field">
+                        <label>Style</label>
+                        <select id="qig-style">${styleOpts}</select>
+                        <small>Visual style preset applied to the prompt.</small>
+                    </div>
                 </div>
 
                 <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
+                    <button id="qig-wizard-btn" class="menu_button" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup</span></button>
                     <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
                     <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                 </div>
+
+                <div class="qig-collapsible qig-setup-shell">
+                    <button id="qig-setup-toggle" type="button" class="qig-collapsible__header" aria-expanded="${setupPanelExpanded}" aria-controls="qig-setup-panel">
+                        <span>
+                            <span class="qig-card-title">Setup &amp; Advanced</span>
+                            <small>Provider credentials, prompt engineering, automation, and output options.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.setupPanel ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-setup-panel" class="qig-collapsible__content" ${setupPanelHidden}>
 
                 <section class="qig-menu-section qig-menu-section--connection" aria-labelledby="qig-connection-heading">
                     <div class="qig-section-header">
@@ -11725,11 +12026,6 @@ function createUI() {
                             <label>Provider</label>
                             <select id="qig-provider">${providerOpts}</select>
                             <small>Image generation service, cloud API or local server.</small>
-                        </div>
-                        <div class="qig-field">
-                            <label>Style</label>
-                            <select id="qig-style">${styleOpts}</select>
-                            <small>Visual style preset applied to the prompt.</small>
                         </div>
                         <div class="qig-field qig-field--full">
                             <label>Connection Profile</label>
@@ -12447,13 +12743,8 @@ function createUI() {
                     <div class="qig-section-header">
                         <div>
                             <span id="qig-prompt-heading" class="qig-section-kicker">Prompt</span>
-                            <p>Write the base idea, save repeatable presets, and decide how chat context is converted.</p>
+                            <p>Save repeatable presets and fine-tune how chat context is converted.</p>
                         </div>
-                    </div>
-                    <div class="qig-field">
-                        <label for="qig-prompt">Prompt</label>
-                        <textarea id="qig-prompt" rows="4" aria-describedby="qig-prompt-help">${esc(s.prompt)}</textarea>
-                        <small id="qig-prompt-help">Used for manual generation, or as scene context when LLM prompt is enabled.</small>
                     </div>
                     <div class="qig-action-strip">
                         <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
@@ -12490,13 +12781,10 @@ function createUI() {
                         <span>Prepend quality tags to prompt</span>
                     </label>
 
-                    <div class="qig-subsection">
-                        <label class="checkbox_label qig-switch-row">
-                            <input id="qig-use-last" type="checkbox" ${s.useLastMessage ? "checked" : ""}>
-                            <span>Use chat message as prompt</span>
-                        </label>
-                        <small class="qig-muted">Feeds the selected chat message to the image generator as scene context.</small>
-                        <div id="qig-msg-index-wrap" class="qig-dependent-panel" style="display:${s.useLastMessage ? "block" : "none"}">
+                    <div id="qig-chat-source-panel" class="qig-subsection" style="display:${promptSourceMode === "chat" ? "block" : "none"}">
+                        <div class="qig-card-title">Chat scene source</div>
+                        <small class="qig-muted">Active because the prompt source is set to Chat scene.</small>
+                        <div id="qig-msg-index-wrap" class="qig-dependent-panel">
                             <label>Message selection</label>
                             <input id="qig-msg-range" type="text" value="${esc(s.messageRange)}" placeholder="-1"
                                    title="-1 (last), 5 (single), 3-7 (range), 3,5,7 (specific), last5 (last N)">
@@ -12508,7 +12796,7 @@ function createUI() {
                         </div>
                     </div>
 
-                    <div class="qig-subsection">
+                    <div id="qig-llm-subsection" class="qig-subsection" style="display:${promptSourceMode === "tags" ? "none" : "block"}">
                         <label class="checkbox_label qig-switch-row">
                             <input id="qig-use-llm" type="checkbox" ${s.useLLMPrompt ? "checked" : ""}>
                             <span>Use LLM to create image prompt</span>
@@ -12546,6 +12834,16 @@ function createUI() {
                             <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                                 <label>Custom LLM Instruction</label>
                                 <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
+                            </div>
+                            <label class="checkbox_label" style="margin-top:8px;">
+                                <input id="qig-two-step-prompt" type="checkbox" ${s.twoStepPrompt ? "checked" : ""}>
+                                <span>Use two-step prompt pipeline for chat scenes</span>
+                            </label>
+                            <div id="qig-two-step-options" class="qig-dependent-panel" style="display:${s.twoStepPrompt ? "block" : "none"};margin-top:6px;">
+                                <small style="opacity:0.6;font-size:10px;">For chat-based direct generation, QIG first asks Text AI for a plain visual scene description, then converts that description through the selected LLM prompt style.</small>
+                                <label>Scene description instruction (optional)</label>
+                                <textarea id="qig-two-step-instruction" rows="3" style="width:100%;resize:vertical;" placeholder="Leave empty for the default visual summary instruction">${esc(s.twoStepInstruction || "")}</textarea>
+                                <small style="opacity:0.6;font-size:10px;">Supports {{scene}}, {{char}}, {{user}}, {{charDesc}}, and {{userDesc}}.</small>
                             </div>
                         </div>
                     </div>
@@ -12595,16 +12893,6 @@ function createUI() {
                     </div>
                     <small class="qig-muted">1 keeps current behavior; 3 means every third eligible AI reply. Delay applies to normal and inject auto-generation.</small>
                     <label class="checkbox_label" style="margin-top:8px;">
-                        <input id="qig-two-step-prompt" type="checkbox" ${s.twoStepPrompt ? "checked" : ""}>
-                        <span>Use two-step prompt pipeline for chat scenes</span>
-                    </label>
-                    <div id="qig-two-step-options" class="qig-dependent-panel" style="display:${s.twoStepPrompt ? "block" : "none"};margin-top:6px;">
-                        <small style="opacity:0.6;font-size:10px;">For chat-based direct generation, QIG first asks Text AI for a plain visual scene description, then converts that description through the selected LLM prompt style.</small>
-                        <label>Scene description instruction (optional)</label>
-                        <textarea id="qig-two-step-instruction" rows="3" style="width:100%;resize:vertical;" placeholder="Leave empty for the default visual summary instruction">${esc(s.twoStepInstruction || "")}</textarea>
-                        <small style="opacity:0.6;font-size:10px;">Supports {{scene}}, {{char}}, {{user}}, {{charDesc}}, and {{userDesc}}.</small>
-                    </div>
-                    <label class="checkbox_label" style="margin-top:8px;">
                         <input id="qig-auto-background" type="checkbox" ${s.autoSetBackground ? "checked" : ""}>
                         <span>Auto-set generated image as chat background</span>
                     </label>
@@ -12630,10 +12918,8 @@ function createUI() {
                         </div>
                         <small style="opacity:0.6;font-size:10px;">Click the field and press a combination. Must include Ctrl or Alt (or be a function key). Esc cancels.</small>
                     </div>
-                    <label class="checkbox_label" style="margin-top:8px;">
-                        <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
-                        <span>Use AI-written image tags for auto-generation</span>
-                    </label>
+                    <div id="qig-inject-shell" style="display:${promptSourceMode === "tags" ? "block" : "none"};margin-top:8px;">
+                    <small class="qig-muted">AI-tagged prompt source is active. QIG injects tag instructions into chat completions and generates from extracted tags.</small>
                     <button id="qig-inject-options-toggle" type="button" class="qig-collapsible__header qig-inline-collapsible qig-inline-collapsible--nested" aria-expanded="${injectOptionsExpanded}" aria-controls="qig-inject-options">
                         <span>
                             <span class="qig-card-title">Inject Configuration</span>
@@ -12674,6 +12960,7 @@ function createUI() {
                             <span>Remove detected image tags from the stored/displayed message</span>
                         </label>
                         <button id="qig-test-inject" class="menu_button qig-inline-action" style="margin-top:8px;">🔍 Test Inject Detection</button>
+                    </div>
                     </div>
                     </div>
 
@@ -12807,6 +13094,8 @@ function createUI() {
                     </div>
                 </div>
                 </section>
+                    </div>
+                </div>
             </div>
         </div>
     </div>`;
@@ -12829,6 +13118,7 @@ function createUI() {
     document.getElementById("qig-save-preset").onclick = savePreset;
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
+    setupQigCollapsibleSection("setupPanel", "qig-setup-toggle", "qig-setup-panel");
     setupQigCollapsibleSection("providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content");
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
@@ -12838,6 +13128,23 @@ function createUI() {
     renderProfileSelect();
     renderComfyWorkflowPresets();
     renderContextualFilters();
+
+    document.getElementById("qig-wizard-btn").onclick = () => showSetupWizard();
+    document.getElementById("qig-preset-save-quick").onclick = savePreset;
+    document.getElementById("qig-preset-select").onchange = (e) => {
+        const presetId = e.target.value;
+        if (!presetId) {
+            setActiveGenerationPresetId("");
+            return;
+        }
+        const index = generationPresets.findIndex(p => p?.id === presetId);
+        if (index >= 0) loadPreset(index);
+    };
+    document.querySelectorAll('input[name="qig-prompt-source"]').forEach(radio => {
+        radio.onchange = (e) => {
+            if (e.target.checked) applyPromptSource(e.target.value);
+        };
+    });
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
@@ -13451,17 +13758,13 @@ function createUI() {
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
     bindCheckbox("qig-append-quality", "appendQuality");
-    document.getElementById("qig-use-last").onchange = (e) => {
-        getSettings().useLastMessage = e.target.checked;
-        document.getElementById("qig-msg-index-wrap").style.display = e.target.checked ? "block" : "none";
-        saveSettingsDebounced();
-    };
     bind("qig-msg-range", "messageRange", false);
     bindCheckbox("qig-paragraph-picker", "enableParagraphPicker");
     document.getElementById("qig-use-llm").onchange = (e) => {
         getSettings().useLLMPrompt = e.target.checked;
         document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced();
+        updateQigStatusLine();
     };
     bind("qig-llm-custom", "llmCustomInstruction");
     bindCheckbox("qig-llm-edit", "llmEditPrompt");
@@ -13484,6 +13787,7 @@ function createUI() {
             s.twoStepPrompt = e.target.checked;
             syncTwoStepPromptControls(s);
             saveSettingsDebounced();
+            updateQigStatusLine();
         };
     }
     bind("qig-two-step-instruction", "twoStepInstruction");
@@ -13613,26 +13917,7 @@ function createUI() {
         };
     }
     bindCheckbox("qig-use-st-style", "useSTStyle");
-    // Inject mode bindings
-    document.getElementById("qig-inject-enabled").onchange = (e) => {
-        getSettings().injectEnabled = e.target.checked;
-        const toggle = document.getElementById("qig-inject-options-toggle");
-        const content = document.getElementById("qig-inject-options");
-        if (e.target.checked) {
-            setCollapsedSection("injectOptions", false);
-            if (toggle && content) {
-                toggle.setAttribute("aria-expanded", "true");
-                content.hidden = false;
-            }
-        } else {
-            setCollapsedSection("injectOptions", true);
-            if (toggle && content) {
-                toggle.setAttribute("aria-expanded", "false");
-                content.hidden = true;
-            }
-        }
-        saveSettingsDebounced();
-    };
+    // Inject mode bindings (inject on/off is driven by the prompt-source selector)
     document.getElementById("qig-inject-tag-name").onchange = (e) => {
         e.target.value = applyInjectTagNameChange(e.target.value);
         saveSettingsDebounced();
@@ -13772,6 +14057,8 @@ function createUI() {
     bind("qig-seed", "seed", true);
 
     updateProviderUI();
+    updatePromptSourceUI(s);
+    updateQigStatusLine();
 
     // Drag and Drop Metadata Listener
     const settingsPanel = document.getElementById("qig-settings");
@@ -15407,6 +15694,7 @@ jQuery(function () {
             }
 
             await loadSettings();
+            seedStarterPresets();
             createUI();
             addInputButton();
             bindMessageGenerateActionClicks();
@@ -15419,6 +15707,11 @@ jQuery(function () {
             if (initSettings.llmOverrideEnabled) {
                 populateConnectionProfiles("qig-llm-override-profile", initSettings.llmOverrideProfileId);
                 populatePresetList("qig-llm-override-preset-select", initSettings.llmOverridePreset);
+            }
+            if (!initSettings.setupWizardSeen) {
+                initSettings.setupWizardSeen = true;
+                saveSettingsDebounced();
+                showSetupWizard();
             }
 
             const { eventSource, event_types } = scriptModule;
