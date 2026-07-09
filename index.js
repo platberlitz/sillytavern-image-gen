@@ -229,20 +229,73 @@ function isEditableShortcutTarget(target) {
     return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 }
 
+const GENERATE_SHORTCUT_DEFAULT = "ctrl+enter";
+
+function normalizeShortcutKeyName(key) {
+    const name = String(key ?? "").toLowerCase();
+    return name === " " ? "space" : name;
+}
+
+function parseGenerateShortcut(value) {
+    const raw = String(value ?? "").trim().toLowerCase();
+    if (!raw) return null;
+    const combo = { ctrl: false, alt: false, shift: false, key: "" };
+    for (const part of raw.split("+").map(p => p.trim()).filter(Boolean)) {
+        if (part === "ctrl" || part === "control" || part === "meta" || part === "cmd") combo.ctrl = true;
+        else if (part === "alt") combo.alt = true;
+        else if (part === "shift") combo.shift = true;
+        else combo.key = normalizeShortcutKeyName(part);
+    }
+    if (!combo.key || ["control", "shift", "alt", "meta", "os"].includes(combo.key)) return null;
+    // Require Ctrl/Alt (or a function key) so plain typing keys can't be hijacked.
+    if (!combo.ctrl && !combo.alt && !/^f([1-9]|1[0-2])$/.test(combo.key)) return null;
+    return combo;
+}
+
+function getGenerateShortcut() {
+    return parseGenerateShortcut(getSettings()?.generateShortcut) || parseGenerateShortcut(GENERATE_SHORTCUT_DEFAULT);
+}
+
+function formatGenerateShortcutLabel(combo = getGenerateShortcut()) {
+    if (!combo) return "";
+    const keyLabel = combo.key.length === 1
+        ? combo.key.toUpperCase()
+        : combo.key.charAt(0).toUpperCase() + combo.key.slice(1);
+    return [combo.ctrl ? "Ctrl" : "", combo.alt ? "Alt" : "", combo.shift ? "Shift" : "", keyLabel]
+        .filter(Boolean).join("+");
+}
+
+function eventMatchesGenerateShortcut(event, combo = getGenerateShortcut()) {
+    if (!combo) return false;
+    return normalizeShortcutKeyName(event.key) === combo.key
+        && (event.ctrlKey || event.metaKey) === combo.ctrl
+        && event.altKey === combo.alt
+        && event.shiftKey === combo.shift;
+}
+
+function updateGenerateShortcutHints() {
+    const label = formatGenerateShortcutLabel();
+    const btn = document.getElementById("qig-generate-btn");
+    if (!btn) return;
+    btn.title = `Generate image with current settings (${label})`;
+    const hint = btn.querySelector(".qig-shortcut-hint");
+    if (hint) hint.textContent = label;
+}
+
 function bindQigKeyboardShortcuts() {
     if (qigKeyboardShortcutsBound) return;
     qigKeyboardShortcutsBound = true;
     document.addEventListener("keydown", (event) => {
-        if (!(event.ctrlKey || event.metaKey) || event.altKey || isEditableShortcutTarget(event.target)) return;
-        const key = String(event.key || "").toLowerCase();
-        if (key === "enter") {
+        if (isEditableShortcutTarget(event.target)) return;
+        if (eventMatchesGenerateShortcut(event)) {
             const generateBtn = document.getElementById("qig-generate-btn");
             if (!generateBtn || generateBtn.disabled || isGenerating) return;
             event.preventDefault();
             runConfiguredPaletteGeneration();
             return;
         }
-        if (!event.shiftKey) return;
+        if (!(event.ctrlKey || event.metaKey) || event.altKey || !event.shiftKey) return;
+        const key = String(event.key || "").toLowerCase();
         if (key === "g") {
             event.preventDefault();
             showGallery();
@@ -365,6 +418,7 @@ const defaultSettings = {
     disablePaletteButton: false,
     paletteMode: "direct",
     confirmBeforeGenerate: false,
+    generateShortcut: GENERATE_SHORTCUT_DEFAULT,
     enableParagraphPicker: false,
     batchCount: 1,
     sequentialSeeds: false,
@@ -2537,7 +2591,7 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
     } else {
         btn.disabled = false;
         btn.removeAttribute("aria-busy");
-        btn.innerHTML = '<span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span><span>Generate</span><span class="qig-shortcut-hint">Ctrl+Enter</span>';
+        btn.innerHTML = `<span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span><span>Generate</span><span class="qig-shortcut-hint">${escapeHtml(formatGenerateShortcutLabel())}</span>`;
     }
 }
 
@@ -11632,10 +11686,10 @@ function createUI() {
             </div>
             <div class="inline-drawer-content">
                 <nav class="qig-action-bar" aria-label="Quick Image Gen primary actions">
-                    <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (Ctrl+Enter)" aria-label="Generate image with current settings">
+                    <button id="qig-generate-btn" class="menu_button qig-primary-action" title="Generate image with current settings (${esc(formatGenerateShortcutLabel())})" aria-label="Generate image with current settings">
                         <span class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></span>
                         <span>Generate</span>
-                        <span class="qig-shortcut-hint">Ctrl+Enter</span>
+                        <span class="qig-shortcut-hint">${esc(formatGenerateShortcutLabel())}</span>
                     </button>
                     <button id="qig-gallery-settings-btn" class="menu_button qig-action-bar__secondary" title="Browse generated images (Ctrl+Shift+G)" aria-label="Open generated image gallery"><span class="fa-solid fa-images" aria-hidden="true"></span><span>Gallery</span></button>
                     <button id="qig-prompt-history-btn" class="menu_button qig-action-bar__secondary" title="View prompt history (Ctrl+Shift+H)" aria-label="Open prompt history"><span class="fa-solid fa-clock-rotate-left" aria-hidden="true"></span><span>Prompts</span></button>
@@ -12568,6 +12622,14 @@ function createUI() {
                         <input id="qig-confirm-generate" type="checkbox" ${s.confirmBeforeGenerate ? "checked" : ""}>
                         <span>Confirm before generating</span>
                     </label>
+                    <div class="qig-field" style="margin-top:8px;">
+                        <label for="qig-generate-shortcut">Generate keyboard shortcut</label>
+                        <div style="display:flex;gap:6px;align-items:center;">
+                            <input id="qig-generate-shortcut" type="text" readonly value="${esc(formatGenerateShortcutLabel())}" placeholder="Press keys..." style="flex:1;cursor:pointer;" title="Click, then press the new key combination">
+                            <button id="qig-generate-shortcut-reset" type="button" class="menu_button" title="Reset to Ctrl+Enter">Reset</button>
+                        </div>
+                        <small style="opacity:0.6;font-size:10px;">Click the field and press a combination. Must include Ctrl or Alt (or be a function key). Esc cancels.</small>
+                    </div>
                     <label class="checkbox_label" style="margin-top:8px;">
                         <input id="qig-inject-enabled" type="checkbox" ${s.injectEnabled ? "checked" : ""}>
                         <span>Use AI-written image tags for auto-generation</span>
@@ -13513,6 +13575,43 @@ function createUI() {
         getSettings().confirmBeforeGenerate = e.target.checked;
         saveSettingsDebounced();
     };
+    const shortcutInput = document.getElementById("qig-generate-shortcut");
+    if (shortcutInput) {
+        shortcutInput.onfocus = () => { shortcutInput.value = "Press keys..."; };
+        shortcutInput.onblur = () => { shortcutInput.value = formatGenerateShortcutLabel(); };
+        shortcutInput.onkeydown = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === "Escape") { shortcutInput.blur(); return; }
+            const keyName = normalizeShortcutKeyName(e.key);
+            if (["control", "shift", "alt", "meta", "os"].includes(keyName)) return;
+            const combo = {
+                ctrl: e.ctrlKey || e.metaKey,
+                alt: e.altKey,
+                shift: e.shiftKey,
+                key: keyName,
+            };
+            const value = [combo.ctrl ? "ctrl" : "", combo.alt ? "alt" : "", combo.shift ? "shift" : "", combo.key]
+                .filter(Boolean).join("+");
+            if (!parseGenerateShortcut(value)) {
+                shortcutInput.value = "Needs Ctrl/Alt or F-key";
+                return;
+            }
+            getSettings().generateShortcut = value;
+            saveSettingsDebounced();
+            shortcutInput.blur();
+            updateGenerateShortcutHints();
+        };
+    }
+    const shortcutReset = document.getElementById("qig-generate-shortcut-reset");
+    if (shortcutReset) {
+        shortcutReset.onclick = () => {
+            getSettings().generateShortcut = GENERATE_SHORTCUT_DEFAULT;
+            saveSettingsDebounced();
+            if (shortcutInput) shortcutInput.value = formatGenerateShortcutLabel();
+            updateGenerateShortcutHints();
+        };
+    }
     bindCheckbox("qig-use-st-style", "useSTStyle");
     // Inject mode bindings
     document.getElementById("qig-inject-enabled").onchange = (e) => {
