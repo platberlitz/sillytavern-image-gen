@@ -6,7 +6,7 @@ Image generation in SillyTavern. 17 backends, 44 style presets, three LLM prompt
 Extensions -> Install from URL -> https://github.com/platberlitz/sillytavern-image-gen
 ```
 
-Requires SillyTavern 1.12+ (extension manifest v2). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
+Requires SillyTavern 1.12+ (extension manifest v3). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
 
 ## Providers
 
@@ -30,7 +30,7 @@ Requires SillyTavern 1.12+ (extension manifest v2). Browser-only for most provid
 | `local` | Local (A1111 / ComfyUI) | No |
 | `proxy` | Reverse Proxy (OpenAI-compatible) | No |
 
-Store keys in SillyTavern's Secrets when available. Provider settings live under Connection Profiles.
+Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
 
 ### Provider notes
 
@@ -139,7 +139,7 @@ Prepended to every prompt when `Append quality tags to prompt` is on. Default: `
 
 ### Wildcards
 
-Use `__wildcard_name__` in the prompt field or contextual filter fields. QIG reads matching files from `data/default-user/User Files/wildcards/`. Each file contains one option per line; one line is selected at random on each generation.
+Use inline choices such as `{day|night|sunset}` in prompt and negative-prompt fields. One option is selected at random for each generated image. File-based `__wildcard_name__` expansion is not currently supported by QIG.
 
 ### NBP Director (Nanobanana/Gemini only)
 
@@ -303,7 +303,7 @@ Import and export are supported from the Contextual Filters manager popup.
 
 ## Gallery and History
 
-- **Gallery**: stored in `qig_gallery` (localStorage). Grid view, URL import, insert-to-chat.
+- **Gallery**: image blobs are stored in IndexedDB; localStorage contains only a compact versioned manifest. Legacy `qig_gallery` data is migrated only after all image bytes are durable. Failed persistence is shown as session-only instead of silently deleting entries.
 - **Prompt History**: stored in `qig_prompt_history` (localStorage). Reuse past prompts. Clear all option.
 - **Logs**: generation and provider diagnostics shown in the QIG panel.
 
@@ -337,7 +337,7 @@ Store provider connection settings (API keys, model IDs, URLs, provider-specific
 
 ### Generation Presets
 
-Store the full generation setup: prompt fields, size, steps, CFG, sampler, provider settings, contextual filters, and inject configuration. Save, load, delete, import, and export.
+Store the core generation setup: prompt fields, size, steps, CFG, sampler, selected provider, and inject configuration. Connection credentials stay in Connection Profiles, while contextual filters are managed separately. Save, load, delete, import, and export are supported.
 
 Active preset is highlighted in the preset chip UI.
 
@@ -361,6 +361,20 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 - Legacy Prompt Replacement Maps are migrated into Contextual Filters on settings load, preset import, and settings import.
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
+- Settings exports use schema v6 and omit credentials and private/reference images. Schema v5 imports remain supported and retain local credentials.
+- Legacy localStorage gallery entries migrate transactionally to IndexedDB. Legacy data is retained if any asset cannot be migrated.
+
+## Development
+
+Requires Node.js 20 or newer.
+
+```bash
+npm ci
+npm run verify
+npm audit --audit-level=high
+```
+
+CI runs syntax checks, the Node test suite, and a high-severity dependency audit for pull requests and pushes to `main` or `staging`.
 
 ## Credits
 

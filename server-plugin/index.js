@@ -1,6 +1,7 @@
 const PLUGIN_ID = "quick-image-gen-relay";
 const REQUEST_TIMEOUT_MS = 60_000;
 const express = require("express");
+const { readResponseTextWithLimit } = require("./response-limit");
 
 function sendJson(res, status, body) {
     res.status(status).type("application/json").send(JSON.stringify(body));
@@ -24,11 +25,20 @@ function withTimeout(signal) {
         else signal.addEventListener("abort", () => controller.abort(), { once: true });
     }
 
-    return { signal: controller.signal, done: () => clearTimeout(timeout) };
+    return {
+        signal: controller.signal,
+        abort: () => controller.abort(),
+        done: () => clearTimeout(timeout),
+    };
 }
 
-async function relayJson(res, url, authHeader, init = {}) {
+async function relayJson(req, res, url, authHeader, init = {}) {
     const timeout = withTimeout();
+    const abortOnDisconnect = () => {
+        if (!res.writableEnded) timeout.abort();
+    };
+    req.once("aborted", abortOnDisconnect);
+    res.once("close", abortOnDisconnect);
     try {
         const upstream = await fetch(url, {
             method: init.method || "GET",
@@ -39,9 +49,10 @@ async function relayJson(res, url, authHeader, init = {}) {
             },
             body: init.body === undefined ? undefined : JSON.stringify(init.body),
             signal: timeout.signal,
+            redirect: "error",
         });
 
-        const text = await upstream.text();
+        const text = await readResponseTextWithLimit(upstream);
         res.status(upstream.status);
         res.set("Content-Type", upstream.headers.get("content-type") || "application/json");
         res.send(text);
@@ -53,6 +64,8 @@ async function relayJson(res, url, authHeader, init = {}) {
         sendJson(res, 502, { error: error?.message || "Quick Image Gen relay request failed" });
     } finally {
         timeout.done();
+        req.removeListener("aborted", abortOnDisconnect);
+        res.removeListener("close", abortOnDisconnect);
     }
 }
 
@@ -62,7 +75,7 @@ async function handleCivitai(req, res) {
         const apiKey = requireString(req.body?.apiKey, "apiKey");
 
         if (action === "createJob") {
-            return relayJson(res, "https://civitai.com/api/v1/consumer/jobs", `Bearer ${apiKey}`, {
+            return relayJson(req, res, "https://civitai.com/api/v1/consumer/jobs", `Bearer ${apiKey}`, {
                 method: "POST",
                 body: req.body?.body,
             });
@@ -72,7 +85,7 @@ async function handleCivitai(req, res) {
             const token = requireString(req.body?.token, "token");
             const url = new URL("https://civitai.com/api/v1/consumer/jobs");
             url.searchParams.set("token", token);
-            return relayJson(res, url.toString(), `Bearer ${apiKey}`);
+            return relayJson(req, res, url.toString(), `Bearer ${apiKey}`);
         }
 
         sendJson(res, 400, { error: `Unsupported CivitAI action: ${action}` });
@@ -87,7 +100,7 @@ async function handleReplicate(req, res) {
         const apiKey = requireString(req.body?.apiKey, "apiKey");
 
         if (action === "createPrediction") {
-            return relayJson(res, "https://api.replicate.com/v1/predictions", `Token ${apiKey}`, {
+            return relayJson(req, res, "https://api.replicate.com/v1/predictions", `Token ${apiKey}`, {
                 method: "POST",
                 body: req.body?.body,
             });
@@ -99,7 +112,7 @@ async function handleReplicate(req, res) {
                 sendJson(res, 400, { error: "Invalid Replicate prediction id" });
                 return;
             }
-            return relayJson(res, `https://api.replicate.com/v1/predictions/${encodeURIComponent(id)}`, `Token ${apiKey}`);
+            return relayJson(req, res, `https://api.replicate.com/v1/predictions/${encodeURIComponent(id)}`, `Token ${apiKey}`);
         }
 
         sendJson(res, 400, { error: `Unsupported Replicate action: ${action}` });

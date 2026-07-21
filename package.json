@@ -1,0 +1,21 @@
+{
+  "name": "sillytavern-quick-image-gen",
+  "version": "2.4.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "node --check index.js && node --check server-plugin/index.js",
+    "lint": "eslint index.js lib tests server-plugin",
+    "test": "node --test --test-reporter=spec",
+    "verify": "npm run check && npm run lint && npm test"
+  },
+  "devDependencies": {
+    "eslint": "^10.7.0",
+    "fake-indexeddb": "^6.2.5",
+    "globals": "^17.7.0",
+    "jsdom": "29.1.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
