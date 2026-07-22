@@ -37,6 +37,7 @@ import {
 } from "./lib/inject-regex.js";
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
+import { getGeminiCandidateFailure, isEffectivelyBlankPixels } from "./lib/generated-image.js";
 import {
     buildContextMediaCandidates,
     canDeleteContextMediaPath,
@@ -6794,11 +6795,11 @@ async function genNanobanana(prompt, negative, s, signal) {
     if (imageSize) generationConfig.imageConfig.imageSize = imageSize;
 
     const safetySettings = [
-        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "OFF" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "OFF" },
+        { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "OFF" },
     ];
 
     const apiKey = s.nanobananaProxyKey || s.nanobananaKey;
@@ -6825,14 +6826,19 @@ async function genNanobanana(prompt, negative, s, signal) {
     }
     const data = await readResponseJson(res);
 
+    if (data.promptFeedback?.blockReason) {
+        throw new Error(`Gemini blocked prompt due to policy (${data.promptFeedback.blockReason})`);
+    }
+
     const candidates = data.candidates || [];
-    let safetyBlocked = false;
-    let blockedReason = "";
+    const candidateFailures = [];
+    const textResponses = [];
 
     for (const candidate of candidates) {
-        if (candidate.finishReason === "SAFETY" || candidate.finishReason === "RECITATION" || candidate.finishReason === "BLOCKLIST") {
-            safetyBlocked = true;
-            blockedReason = candidate.finishReason;
+        const failure = getGeminiCandidateFailure(candidate);
+        if (failure) {
+            candidateFailures.push(failure);
+            continue;
         }
         for (const part of candidate.content?.parts || []) {
             if (part.inlineData?.data) {
@@ -6858,6 +6864,7 @@ async function genNanobanana(prompt, negative, s, signal) {
                 };
             }
             if (part.text) {
+                textResponses.push(part.text.trim());
                 const imgMatch = part.text.match(/!\[.*?\]\((https?:\/\/[^\s\)]+|data:image\/[^;]+;base64,[^\s\)]+)\)/i)
                     || part.text.match(/(https?:\/\/[^\s\)]+\.(?:png|jpe?g|webp|gif|avif))/i)
                     || part.text.match(/(data:image\/[^;]+;base64,[A-Za-z0-9+/=_]+)/i);
@@ -6887,12 +6894,8 @@ async function genNanobanana(prompt, negative, s, signal) {
         }
     }
 
-    if (safetyBlocked) {
-        throw new Error(`Gemini blocked image generation due to safety policy (${blockedReason})`);
-    }
-    if (data.promptFeedback?.blockReason) {
-        throw new Error(`Gemini blocked prompt due to policy (${data.promptFeedback.blockReason})`);
-    }
+    if (candidateFailures.length) throw new Error(candidateFailures[0]);
+    if (textResponses.length) throw new Error(`Gemini returned text instead of an image: ${textResponses.join(" ").slice(0, 300)}`);
     throw new Error("No image in response");
 }
 
@@ -10513,16 +10516,36 @@ async function verifyRenderableImage(url) {
             }
             timer = setTimeout(() => {
                 cleanup();
-                resolve(true);
+                reject(new Error("Generated image timed out while loading"));
             }, 6000);
 
             img.onload = () => {
                 cleanup();
                 if (img.naturalWidth <= 1 || img.naturalHeight <= 1) {
                     reject(new Error("Provider returned a blank or unrenderable image"));
-                } else {
-                    resolve(true);
+                    return;
                 }
+
+                try {
+                    const canvas = document.createElement("canvas");
+                    canvas.width = Math.min(32, img.naturalWidth);
+                    canvas.height = Math.min(32, img.naturalHeight);
+                    const context = canvas.getContext("2d", { willReadFrequently: true });
+                    if (context) {
+                        context.drawImage(img, 0, 0, canvas.width, canvas.height);
+                        const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+                        if (isEffectivelyBlankPixels(pixels)) {
+                            reject(new Error("Provider returned a blank placeholder image"));
+                            return;
+                        }
+                    }
+                } catch (error) {
+                    if (error?.name !== "SecurityError") {
+                        reject(new Error(`Generated image could not be inspected: ${error?.message || "unknown error"}`));
+                        return;
+                    }
+                }
+                resolve(true);
             };
             img.onerror = () => {
                 cleanup();
