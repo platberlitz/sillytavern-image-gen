@@ -412,6 +412,132 @@ function setupQigCollapsibleSection(sectionId, buttonId, contentId) {
     };
 }
 
+function setupSettingsSearch() {
+    const searchInput = document.getElementById("qig-settings-search");
+    const clearBtn = document.getElementById("qig-settings-search-clear");
+    const statusEl = document.getElementById("qig-settings-search-status");
+    const setupPanel = document.getElementById("qig-setup-panel");
+    if (!searchInput || !setupPanel) return;
+
+    const restoreCollapsibles = () => {
+        const s = getSettings();
+        const collapsed = s?.collapsedSections || {};
+        const pairs = [
+            ["setupPanel", "qig-setup-toggle", "qig-setup-panel"],
+            ["sectionProvider", "qig-section-provider-toggle", "qig-section-provider-content"],
+            ["sectionCreate", "qig-section-create-toggle", "qig-section-create-content"],
+            ["sectionContext", "qig-section-context-toggle", "qig-section-context-content"],
+            ["sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content"],
+            ["sectionGeneration", "qig-section-generation-toggle", "qig-section-generation-content"],
+            ["providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content"],
+            ["promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content"],
+            ["injectOptions", "qig-inject-options-toggle", "qig-inject-options"],
+            ["advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings"],
+        ];
+        pairs.forEach(([key, btnId, contentId]) => {
+            const button = document.getElementById(btnId);
+            const content = document.getElementById(contentId);
+            if (!button || !content) return;
+            const isCollapsed = Boolean(collapsed[key]);
+            button.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+            content.hidden = isCollapsed;
+            content.classList.toggle("qig-collapsible__content--collapsed", isCollapsed);
+            const icon = button.querySelector(".qig-collapsible__icon");
+            if (icon) {
+                icon.classList.toggle("fa-chevron-right", isCollapsed);
+                icon.classList.toggle("fa-chevron-down", !isCollapsed);
+            }
+        });
+    };
+
+    const handleSearch = () => {
+        const query = String(searchInput.value || "").trim().toLowerCase();
+        if (clearBtn) {
+            clearBtn.classList.toggle("hidden", query.length === 0);
+        }
+
+        if (!query) {
+            setupPanel.querySelectorAll(".qig-search-hidden").forEach(el => el.classList.remove("qig-search-hidden"));
+            if (statusEl) statusEl.textContent = "";
+            restoreCollapsibles();
+            return;
+        }
+
+        const sections = setupPanel.querySelectorAll(".qig-menu-section");
+        let totalMatches = 0;
+
+        sections.forEach(section => {
+            const items = section.querySelectorAll(".qig-field, .qig-provider-card, .qig-dependent-panel, fieldset, .qig-inline-collapsible");
+            let sectionMatches = 0;
+
+            items.forEach(item => {
+                const textParts = [];
+                item.querySelectorAll("label, legend, small, button, span, option, p, h4, h5").forEach(el => {
+                    textParts.push(el.textContent || "");
+                });
+                item.querySelectorAll("input, select, textarea").forEach(el => {
+                    if (el.placeholder) textParts.push(el.placeholder);
+                    if (el.title) textParts.push(el.title);
+                });
+                const combinedText = textParts.join(" ").toLowerCase();
+
+                if (combinedText.includes(query)) {
+                    item.classList.remove("qig-search-hidden");
+                    sectionMatches++;
+                } else {
+                    item.classList.add("qig-search-hidden");
+                }
+            });
+
+            const kickerText = (section.querySelector(".qig-section-kicker")?.textContent || "").toLowerCase();
+            const subtitleText = (section.querySelector(".qig-section-subtitle")?.textContent || "").toLowerCase();
+            const sectionHeaderMatch = kickerText.includes(query) || subtitleText.includes(query);
+
+            if (sectionHeaderMatch) {
+                items.forEach(item => item.classList.remove("qig-search-hidden"));
+                sectionMatches = Math.max(sectionMatches, items.length || 1);
+            }
+
+            if (sectionMatches > 0) {
+                section.classList.remove("qig-search-hidden");
+                totalMatches += sectionMatches;
+
+                const content = section.querySelector(".qig-collapsible__content");
+                if (content) {
+                    content.hidden = false;
+                    content.classList.remove("qig-collapsible__content--collapsed");
+                    const toggleBtn = section.querySelector(".qig-section-header-toggle, .qig-collapsible__header");
+                    if (toggleBtn) {
+                        toggleBtn.setAttribute("aria-expanded", "true");
+                        const icon = toggleBtn.querySelector(".qig-collapsible__icon");
+                        if (icon) {
+                            icon.classList.remove("fa-chevron-right");
+                            icon.classList.add("fa-chevron-down");
+                        }
+                    }
+                }
+            } else {
+                section.classList.add("qig-search-hidden");
+            }
+        });
+
+        if (statusEl) {
+            statusEl.textContent = totalMatches > 0
+                ? `Found ${totalMatches} matching setting${totalMatches === 1 ? "" : "s"}`
+                : `No settings matching "${query}"`;
+        }
+    };
+
+    searchInput.oninput = handleSearch;
+    if (clearBtn) {
+        clearBtn.onclick = () => {
+            searchInput.value = "";
+            handleSearch();
+            searchInput.focus();
+        };
+    }
+}
+
 // === Prompt source modes ===
 // The legacy flags (useLastMessage / injectEnabled) stay the source of truth for all
 // generation logic. The mode selector is a projection over them, so presets, imports,
@@ -14153,6 +14279,17 @@ function createUI() {
                     </button>
                     <div id="qig-setup-panel" class="qig-collapsible__content" ${setupPanelHidden}>
 
+                        <div class="qig-settings-search-shell">
+                            <div class="qig-settings-search-input-wrap">
+                                <span class="fa-solid fa-magnifying-glass qig-settings-search-icon" aria-hidden="true"></span>
+                                <input type="search" id="qig-settings-search" placeholder="Search settings (e.g. resolution, key, negative)..." aria-label="Search settings" autocomplete="off" />
+                                <button type="button" id="qig-settings-search-clear" class="qig-settings-search-clear hidden" title="Clear search" aria-label="Clear search">
+                                    <span class="fa-solid fa-xmark" aria-hidden="true"></span>
+                                </button>
+                            </div>
+                            <span id="qig-settings-search-status" class="qig-settings-search-status" aria-live="polite"></span>
+                        </div>
+
                 <section class="qig-menu-section qig-menu-section--connection qig-menu-section--collapsible qig-flow-provider" aria-labelledby="qig-connection-heading">
                     <button id="qig-section-provider-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionProviderExpanded}" aria-controls="qig-section-provider-content">
                         <span class="qig-section-header-text">
@@ -15409,6 +15546,7 @@ function createUI() {
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
     setupQigCollapsibleSection("advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings");
+    setupSettingsSearch();
     bindQigKeyboardShortcuts();
     renderPresets();
     renderProfileSelect();
