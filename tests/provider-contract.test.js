@@ -57,12 +57,12 @@ test("Nanobanana records the aspect ratio and tier sent instead of configured di
         width: 2048,
         height: 1024,
     }, {
-        model: "gemini-3-pro-image-preview",
+        model: "gemini-3-pro-image",
         parameters: { aspectRatio: "2:1", imageSize: "2K" },
     });
 
     assert.deepEqual(request.parameters, {
-        model: "gemini-3-pro-image-preview",
+        model: "gemini-3-pro-image",
         aspectRatio: "2:1",
         imageSize: "2K",
     });

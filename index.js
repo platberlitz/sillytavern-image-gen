@@ -194,8 +194,8 @@ function normalizePaletteMode(value) {
 }
 
 const NANOBANANA_MODEL_OPTIONS = [
-    { id: "gemini-3-pro-image-preview", name: "Nano Banana Pro (Gemini 3 Pro Image)" },
-    { id: "gemini-3.1-flash-image-preview", name: "Nano Banana 2 (Gemini 3.1 Flash Image)" },
+    { id: "gemini-3-pro-image", name: "Nano Banana Pro (Gemini 3 Pro Image)" },
+    { id: "gemini-3.1-flash-image", name: "Nano Banana 2 (Gemini 3.1 Flash Image)" },
     { id: "gemini-2.5-flash-image", name: "Nano Banana (Gemini 2.5 Flash Image)" },
     { id: "gemini-2.0-flash-exp", name: "Gemini 2.0 Flash Exp" },
 ];
@@ -595,7 +595,7 @@ function applyChatGptNbpWorkflowPreset({ persist = true, notify = true } = {}) {
     const s = getSettings();
     Object.assign(s, {
         provider: "nanobanana",
-        nanobananaModel: "gemini-3-pro-image-preview",
+        nanobananaModel: "gemini-3-pro-image",
         nanobananaNbpMode: true,
         nanobananaNbpPreset: "house",
         nanobananaNbpUseNegative: true,
@@ -754,7 +754,7 @@ const defaultSettings = {
     nanobananaKey: "",
     nanobananaProxyUrl: "",
     nanobananaProxyKey: "",
-    nanobananaModel: "gemini-3-pro-image-preview",
+    nanobananaModel: "gemini-3-pro-image",
     nanobananaNbpMode: true,
     nanobananaNbpPreset: "house",
     nanobananaNbpUseNegative: true,
@@ -6601,7 +6601,7 @@ async function genCivitAI(prompt, negative, s, signal) {
     throw new Error(`CivitAI job timeout. Last error: ${lastError || 'Still processing'}`);
 }
 
-function getNanobananaApiUrl(proxyUrl = "", model = "gemini-3-pro-image-preview", apiKey = "") {
+function getNanobananaApiUrl(proxyUrl = "", model = "gemini-3-pro-image", apiKey = "") {
     const trimmedProxy = String(proxyUrl || "").trim().replace(/\/$/, "");
     if (!trimmedProxy) {
         return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
