@@ -38,6 +38,82 @@ test("settings exports include active state but omit secrets and private images"
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles/);
 });
 
+test("Context Media exports retain taxonomy but omit all local media details", () => {
+    const exported = createSettingsExport({
+        contextMedia: {
+            chatMap: { "Character - 2026-07-22": "locations" },
+            taxonomy: [{
+                id: "locations",
+                label: "Locations",
+                description: "Reusable scene locations",
+                type: "image/png",
+                serverPath: "/data/users/private/taxonomy.json",
+                previewUrl: "https://private.example/preview.png",
+                localMediaRef: "private-ref",
+                binaryData: "binary-taxonomy-canary",
+                media: [{ id: "local-1", serverPath: "/data/users/private/castle.png" }],
+            }],
+            media: [{
+                id: "local-1",
+                url: "https://private.example/castle.png",
+                mimeType: "image/png",
+                localMediaRef: "private-ref",
+                data: "binary-canary",
+            }],
+        },
+    });
+
+    assert.equal(exported.version, 7);
+    assert.deepEqual(exported.contextMedia, {
+        chatMap: {},
+        taxonomy: [{
+            id: "locations",
+            label: "Locations",
+            description: "Reusable scene locations",
+            media: [],
+        }],
+        media: [],
+    });
+    assert.doesNotMatch(JSON.stringify(exported.contextMedia), /private|castle\.png|image\/png|binary-canary/);
+});
+
+test("Context Media imports accept portable taxonomy and discard injected media details", () => {
+    const imported = parseSettingsImport(JSON.stringify({
+        version: 7,
+        contextMedia: {
+            taxonomy: [{
+                id: "poses",
+                label: "Poses",
+                description: "Reusable pose references",
+                format: "image/webp",
+                serverPath: "/private/taxonomy.json",
+                previewUrl: "https://private.example/preview.webp",
+                localMediaRef: "private-ref",
+                payload: "binary-taxonomy-canary",
+                media: [{ id: "local-2", src: "blob:private-preview" }],
+            }],
+            media: [{
+                id: "local-2",
+                filePath: "C:\\private\\pose.webp",
+                href: "https://private.example/pose.webp",
+                contentType: "image/webp",
+                mediaId: "local-2",
+                bytes: [1, 2, 3],
+            }],
+        },
+    }));
+
+    assert.deepEqual(imported.contextMedia, {
+        taxonomy: [{
+            id: "poses",
+            label: "Poses",
+            description: "Reusable pose references",
+            media: [],
+        }],
+        media: [],
+    });
+});
+
 test("custom API trust and executable mappings never cross settings exports", () => {
     const exported = createSettingsExport({
         activeSettings: {
@@ -131,7 +207,7 @@ test("version 6 imports cannot restore private reference-image stores", () => {
 });
 
 test("imports reject unsupported versions, prototype keys, bad IDs, and oversized files", () => {
-    assert.throws(() => parseSettingsImport('{"version":7}'), /Unsupported settings version/);
+    assert.throws(() => parseSettingsImport('{"version":8}'), /Unsupported settings version/);
     assert.throws(() => parseSettingsImport('{"version":6,"activeSettings":{"__proto__":{}}}'), /forbidden field/);
     assert.throws(() => parseSettingsImport(JSON.stringify({
         version: 6,
