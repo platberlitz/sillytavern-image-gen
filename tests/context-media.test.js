@@ -12,6 +12,7 @@ import {
     selectContextMedia,
     SUPPORTED_CONTEXT_MEDIA_FORMATS,
     validateContextMediaFile,
+    validateContextMediaRemoteUrl,
 } from "../lib/context-media.js";
 
 function libraryFixture() {
@@ -219,6 +220,63 @@ test("rejects unsupported, mismatched, malformed, and oversized media", () => {
     assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 11 }, { maxBytes: 10 }).errors.join(" "), /10 byte limit/);
     assert.throws(() => validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 1 }, { maxBytes: -1 }), /maxBytes/);
     assert.equal(DEFAULT_CONTEXT_MEDIA_MAX_BYTES, 50 * 1024 * 1024);
+});
+
+test("accepts credential-free public HTTPS media URLs", () => {
+    assert.deepEqual(validateContextMediaRemoteUrl("https://cdn.example.com/path/scene.WEBM"), {
+        valid: true,
+        errors: [],
+        url: "https://cdn.example.com/path/scene.WEBM",
+        format: { extension: ".webm", mimeType: "video/webm", type: "video" },
+    });
+    assert.equal(validateContextMediaRemoteUrl("https://images.example.org/picture.gif").format.type, "image");
+});
+
+test("rejects unsafe or non-direct remote media URLs", () => {
+    assert.match(validateContextMediaRemoteUrl("http://cdn.example.com/picture.png").errors.join(" "), /HTTPS/);
+    assert.match(validateContextMediaRemoteUrl("https://user:pass@cdn.example.com/picture.png").errors.join(" "), /credentials/);
+    assert.match(validateContextMediaRemoteUrl("https://cdn.example.com/picture.png?cache=1").errors.join(" "), /query/);
+    assert.match(validateContextMediaRemoteUrl("https://cdn.example.com/picture.png#token%3Dsecret").errors.join(" "), /fragments/);
+    assert.match(validateContextMediaRemoteUrl("https://127.0.0.1/picture.png").errors.join(" "), /private/);
+    assert.match(validateContextMediaRemoteUrl("https://localhost/picture.png").errors.join(" "), /private/);
+    assert.match(validateContextMediaRemoteUrl("https://printer/picture.png").errors.join(" "), /private/);
+    assert.match(validateContextMediaRemoteUrl("https://gallery.home/picture.png").errors.join(" "), /private/);
+    assert.match(validateContextMediaRemoteUrl("https://[::1]/picture.png").errors.join(" "), /private/);
+    assert.match(validateContextMediaRemoteUrl("https://cdn.example.com/view?id=1").errors.join(" "), /extension/);
+    assert.match(validateContextMediaRemoteUrl("data:image/png;base64,AAAA").errors.join(" "), /absolute HTTPS|HTTPS/);
+});
+
+test("normalization preserves valid remote sources and drops invalid ones", () => {
+    const normalized = normalizeContextMediaLibrary({
+        profiles: [{
+            id: "remote",
+            folders: [{
+                id: "links",
+                media: [{
+                    id: "valid",
+                    label: "Valid",
+                    path: "https://cdn.example.com/image.webp",
+                    source: "remote",
+                    mimeType: "wrong/type",
+                }, {
+                    id: "invalid",
+                    path: "http://cdn.example.com/image.webp",
+                    source: "remote",
+                }],
+            }],
+        }],
+    });
+
+    assert.deepEqual(normalized.profiles[0].folders[0].media, [{
+        id: "valid",
+        label: "Valid",
+        path: "https://cdn.example.com/image.webp",
+        source: "remote",
+        mimeType: "image/webp",
+        type: "image",
+        size: null,
+        verifiedAt: "",
+    }]);
 });
 
 test("counts normalized media path references", () => {

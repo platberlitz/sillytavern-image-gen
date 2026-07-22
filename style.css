@@ -718,10 +718,32 @@
     font-size: 11px;
 }
 
-.qig-context-media-item > span:nth-child(2) {
+.qig-context-media-item > span[title]:not(.fa-solid) {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.qig-context-media-remote {
+    color: var(--qig-accent);
+}
+
+.qig-context-media-url-dialog textarea {
+    width: 100%;
+    resize: vertical;
+}
+
+.qig-context-media-privacy-consent {
+    align-items: flex-start;
+    margin-top: 12px;
+    line-height: 1.45;
+}
+
+.qig-context-media-url-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 14px;
 }
 
 .qig-context-media-item button {

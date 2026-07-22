@@ -44,6 +44,7 @@ import {
     parseContextMediaClassifierResponse,
     selectContextMedia,
     validateContextMediaFile,
+    validateContextMediaRemoteUrl,
 } from "./lib/context-media.js";
 
 // Artist lists for random selection
@@ -8097,16 +8098,135 @@ function normalizeContextMediaUrl(value) {
     }
 }
 
+function normalizeRemoteContextMediaUrl(value) {
+    const validation = validateContextMediaRemoteUrl(value);
+    return validation.valid ? validation.url : "";
+}
+
 function createContextMediaAttachment(media) {
-    const url = normalizeContextMediaUrl(media?.path);
+    const remote = media?.source === "remote";
+    const url = remote ? normalizeRemoteContextMediaUrl(media?.path) : normalizeContextMediaUrl(media?.path);
     const type = media?.type === "video" ? "video" : "image";
-    if (!url) throw new Error("Context Media item has no valid server path");
-    return {
+    if (!url) throw new Error(`Context Media item has no valid ${remote ? "remote URL" : "server path"}`);
+    const attachment = {
         url,
         type,
         title: String(media?.label || (type === "video" ? "Context Video" : "Context Image")),
         source: "context-media",
     };
+    if (remote) {
+        attachment.qig_remote = true;
+        attachment.referrerPolicy = "no-referrer";
+    }
+    return attachment;
+}
+
+function isRemoteContextMediaAttachment(attachment) {
+    if (attachment?.source !== "context-media") return false;
+    return attachment.qig_remote === true
+        || attachment.referrerPolicy === "no-referrer"
+        || validateContextMediaRemoteUrl(attachment.url).valid;
+}
+
+function applyRemoteContextMediaPrivacy(messageElement, ctx = getContext?.()) {
+    const root = messageElement instanceof Element ? messageElement : messageElement?.get?.(0);
+    if (!root) return;
+    const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
+    const messageIndex = clampChatMessageIndex(root.getAttribute("mesid"), chat.length);
+    const attachments = chat[messageIndex]?.extra?.media;
+    if (!Number.isInteger(messageIndex) || !Array.isArray(attachments)) return;
+    for (const container of root.querySelectorAll(".mes_media_wrapper [data-index]")) {
+        const mediaIndex = Number.parseInt(container.getAttribute("data-index"), 10);
+        if (!isRemoteContextMediaAttachment(attachments[mediaIndex])) continue;
+        const mediaElement = container.matches("img, video") ? container : container.querySelector("img, video");
+        if (mediaElement) mediaElement.referrerPolicy = "no-referrer";
+    }
+}
+
+function probeContextMediaRemoteUrl(url, type, timeoutMs = 10000) {
+    return new Promise((resolve, reject) => {
+        const element = document.createElement(type === "video" ? "video" : "img");
+        const timer = setTimeout(() => finish(new Error("Media URL did not load within 10 seconds")), timeoutMs);
+        const finish = (error) => {
+            clearTimeout(timer);
+            element.onload = null;
+            element.onerror = null;
+            element.onloadedmetadata = null;
+            element.removeAttribute("src");
+            if (error) reject(error);
+            else resolve();
+        };
+        element.referrerPolicy = "no-referrer";
+        if (type === "video") {
+            element.preload = "metadata";
+            element.onloadedmetadata = () => finish();
+        } else {
+            element.onload = () => finish();
+        }
+        element.onerror = () => finish(new Error("Media URL could not be loaded as its declared type"));
+        element.src = url;
+    });
+}
+
+async function addContextMediaRemoteUrls(rawValue, target) {
+    const submitted = String(rawValue || "").split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+    const values = submitted.slice(0, 20);
+    const accepted = [];
+    const rejected = [];
+    if (submitted.length > values.length) rejected.push(`${submitted.length - values.length} additional link(s): maximum batch size is 20`);
+    const knownPaths = new Set(contextMediaLibrary.profiles.flatMap((profile) => profile.folders.flatMap((folder) =>
+        folder.media.concat(folder.subfolders.flatMap((subfolder) => subfolder.media))
+    )).map((media) => media.path));
+    for (const value of values) {
+        const validation = validateContextMediaRemoteUrl(value);
+        if (!validation.valid) {
+            rejected.push(`${value}: ${validation.errors[0]}`);
+            continue;
+        }
+        if (knownPaths.has(validation.url)) {
+            rejected.push(`${validation.url}: already in the library`);
+            continue;
+        }
+        try {
+            await probeContextMediaRemoteUrl(validation.url, validation.format.type);
+            const pathname = new URL(validation.url).pathname;
+            const encodedName = pathname.split("/").pop() || "Remote media";
+            let fileName = encodedName;
+            try {
+                fileName = decodeURIComponent(encodedName);
+            } catch {
+                // Keep the encoded basename when a valid URL contains malformed percent escapes.
+            }
+            accepted.push({
+                id: generateUUID(),
+                label: fileName.replace(/\.[^.]+$/, "") || "Remote media",
+                path: validation.url,
+                source: "remote",
+                mimeType: validation.format.mimeType,
+                type: validation.format.type,
+                size: null,
+                verifiedAt: new Date().toISOString(),
+            });
+            knownPaths.add(validation.url);
+        } catch (error) {
+            rejected.push(`${validation.url}: ${error.message}`);
+        }
+    }
+    let inserted = [];
+    if (accepted.length) await queueContextMediaMutation(async () => {
+        const owner = findContextMediaOwner(target.id);
+        if (!owner) throw new Error("The destination category was removed while links were being checked");
+        const currentPaths = new Set(contextMediaLibrary.profiles.flatMap((profile) => profile.folders.flatMap((folder) =>
+            folder.media.concat(folder.subfolders.flatMap((subfolder) => subfolder.media))
+        )).map((media) => media.path));
+        inserted = accepted.filter((media) => !currentPaths.has(media.path));
+        if (!inserted.length) return;
+        const previous = snapshotGenerationSettings(contextMediaLibrary);
+        owner.media.push(...inserted);
+        if (!await commitContextMediaMutation(previous)) throw new Error("Remote media links could not be saved");
+    });
+    if (rejected.length) toastr?.warning?.(`${rejected.length} link(s) were skipped. ${rejected[0]}`, "Context Media", { escapeHtml: true });
+    return inserted;
 }
 
 async function insertContextMedia(media, { messageIndex, insertMode = "replace", commitGuard } = {}) {
@@ -8131,7 +8251,11 @@ async function insertContextMedia(media, { messageIndex, insertMode = "replace",
         message.extra.media_index = message.extra.media.length - 1;
         if (typeof ctx.appendMediaToMessage === "function") {
             const messageElement = $(`.mes[mesid="${idx}"]`);
-            if (messageElement.length) ctx.appendMediaToMessage(message, messageElement, "replace");
+            if (messageElement.length) {
+                ctx.appendMediaToMessage(message, messageElement, "replace");
+                applyRemoteContextMediaPrivacy(messageElement, ctx);
+                scheduleRefreshMessageGenerateActions();
+            }
         } else if (attachment.type === "image") {
             message.extra.image = attachment.url;
             message.extra.title = attachment.title;
@@ -8152,7 +8276,11 @@ async function insertContextMedia(media, { messageIndex, insertMode = "replace",
             },
         };
         chat.push(message);
-        if (typeof ctx.addOneMessage === "function") ctx.addOneMessage(message);
+        if (typeof ctx.addOneMessage === "function") {
+            ctx.addOneMessage(message);
+            applyRemoteContextMediaPrivacy($(`.mes[mesid="${chat.length - 1}"]`), ctx);
+            scheduleRefreshMessageGenerateActions();
+        }
     }
     await ctx.saveChat();
 }
@@ -8327,6 +8455,51 @@ async function deleteContextMediaItem(media, owner) {
     });
 }
 
+function showContextMediaUrlDialog() {
+    return new Promise((resolve) => {
+        const popup = createPopup("qig-context-media-url-dialog", "Add Direct Media Links", `
+            <div class="qig-context-media-url-dialog">
+                <p>Paste up to 20 direct HTTPS links, one per line. Supported: JPG, PNG, GIF, WebP, MP4, and WebM.</p>
+                <p class="qig-muted">Use only direct links from sources you trust. Links remain third-party hosted, are saved in the media library and inserted chats, and may follow DNS or redirects that QIG cannot inspect in the browser.</p>
+                <textarea id="qig-context-media-url-input" rows="8" spellcheck="false" placeholder="https://cdn.example.com/image.webp\nhttps://cdn.example.com/video.mp4"></textarea>
+                <label class="checkbox_label qig-context-media-privacy-consent">
+                    <input id="qig-context-media-url-consent" type="checkbox">
+                    <span>I understand that checking and displaying these links contacts each third-party server and may disclose my IP address, browser details, and the SillyTavern page address. QIG requests no-referrer loading, but the host may start a request before applying it.</span>
+                </label>
+                <div class="qig-context-media-url-actions">
+                    <button id="qig-context-media-url-cancel" class="menu_button" type="button">Cancel</button>
+                    <button id="qig-context-media-url-add" class="menu_button" type="button" disabled>Check and add</button>
+                </div>
+            </div>
+        `, (popupElement) => {
+            let settled = false;
+            const input = popupElement.querySelector("#qig-context-media-url-input");
+            const consent = popupElement.querySelector("#qig-context-media-url-consent");
+            const add = popupElement.querySelector("#qig-context-media-url-add");
+            const settle = (value) => {
+                if (settled) return;
+                settled = true;
+                hidePopup(popupElement);
+                resolve(value);
+            };
+            const sync = () => { add.disabled = !consent.checked || !input.value.trim(); };
+            input.oninput = sync;
+            consent.oninput = sync;
+            add.onclick = () => settle(input.value);
+            popupElement.querySelector("#qig-context-media-url-cancel").onclick = () => settle(null);
+            bindPopupDismiss(popupElement, () => settle(null));
+        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
+        return popup;
+    });
+}
+
+async function probeStoredContextMediaRemoteItem(media) {
+    const validation = validateContextMediaRemoteUrl(media?.path);
+    if (!validation.valid) throw new Error(validation.errors[0]);
+    await probeContextMediaRemoteUrl(validation.url, validation.format.type);
+    return { path: validation.url, verifiedAt: new Date().toISOString() };
+}
+
 function renderContextMediaSummary() {
     const root = document.getElementById("qig-context-media-summary");
     if (!root) return;
@@ -8373,7 +8546,7 @@ function showContextMediaManager() {
             selectedProfileId = selectedProfile?.id || "";
             const chatId = getContextMediaChatId();
             popupElement.querySelector("#qig-context-media-chat-status").textContent = chatId
-                ? `This chat uses ${activeProfile?.label || "the first available profile"}. Media stays on the SillyTavern server.`
+                ? `This chat uses ${activeProfile?.label || "the first available profile"}. Uploads stay on SillyTavern; direct links remain third-party hosted.`
                 : "Open a chat to assign a profile.";
             const libraryRoot = popupElement.querySelector("#qig-context-media-library");
             if (!selectedProfile) {
@@ -8388,11 +8561,11 @@ function showContextMediaManager() {
                 <div class="qig-context-media-tree">
                     ${selectedProfile.folders.map((folder) => `
                         <section class="qig-context-media-folder" data-folder-id="${escapeHtml(folder.id)}">
-                            <div class="qig-context-media-node-head"><div><strong>${escapeHtml(folder.label)}</strong><small>${escapeHtml(folder.description || "Generic category")}</small></div><div class="qig-context-media-actions"><button data-action="upload" data-node-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Add media</button><button data-action="add-subfolder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Add context</button><button data-action="edit-folder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Edit</button><button data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Delete</button></div></div>
+                            <div class="qig-context-media-node-head"><div><strong>${escapeHtml(folder.label)}</strong><small>${escapeHtml(folder.description || "Generic category")}</small></div><div class="qig-context-media-actions"><button data-action="upload" data-node-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Upload</button><button data-action="add-url" data-node-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Add links</button><button data-action="add-subfolder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Add context</button><button data-action="edit-folder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Edit</button><button data-action="delete-folder" data-folder-id="${escapeHtml(folder.id)}" class="menu_button" type="button">Delete</button></div></div>
                             <div class="qig-context-media-items">${renderContextMediaItems(folder)}</div>
                             ${(folder.subfolders || []).map((subfolder) => `
                                 <div class="qig-context-media-subfolder">
-                                    <div class="qig-context-media-node-head"><div><strong>${escapeHtml(subfolder.label)}</strong><small>${escapeHtml(subfolder.description || "Contextual category")}</small></div><div class="qig-context-media-actions"><button data-action="upload" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Add media</button><button data-action="edit-subfolder" data-folder-id="${escapeHtml(folder.id)}" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Edit</button><button data-action="delete-subfolder" data-folder-id="${escapeHtml(folder.id)}" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Delete</button></div></div>
+                                    <div class="qig-context-media-node-head"><div><strong>${escapeHtml(subfolder.label)}</strong><small>${escapeHtml(subfolder.description || "Contextual category")}</small></div><div class="qig-context-media-actions"><button data-action="upload" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Upload</button><button data-action="add-url" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Add links</button><button data-action="edit-subfolder" data-folder-id="${escapeHtml(folder.id)}" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Edit</button><button data-action="delete-subfolder" data-folder-id="${escapeHtml(folder.id)}" data-node-id="${escapeHtml(subfolder.id)}" class="menu_button" type="button">Delete</button></div></div>
                                     <div class="qig-context-media-items">${renderContextMediaItems(subfolder)}</div>
                                 </div>`).join("")}
                         </section>`).join("")}
@@ -8466,9 +8639,48 @@ function showContextMediaManager() {
                     };
                     input.click();
                     return;
+                } else if (action === "add-url" && owner) {
+                    const rawLinks = await showContextMediaUrlDialog();
+                    if (!rawLinks) return;
+                    button.disabled = true;
+                    try {
+                        const accepted = await addContextMediaRemoteUrls(rawLinks, owner);
+                        if (accepted.length) toastr?.success?.(`Added ${accepted.length} remote Context Media link(s)`);
+                        render();
+                        renderContextMediaSummary();
+                    } catch (error) {
+                        log(`Context Media link add failed: ${error.message}`);
+                        toastr?.error?.(error.message, "Context Media", { escapeHtml: true });
+                        button.disabled = false;
+                    }
+                    return;
+                } else if (action === "recheck-media" && owner) {
+                    const media = owner.media.find((item) => item.id === button.dataset.mediaId && item.source === "remote");
+                    if (!media) return;
+                    const ownerId = owner.id;
+                    const mediaId = media.id;
+                    button.disabled = true;
+                    try {
+                        const result = await probeStoredContextMediaRemoteItem(media);
+                        await queueContextMediaMutation(async () => {
+                            const currentOwner = findContextMediaOwner(ownerId);
+                            const currentMedia = currentOwner?.media.find((item) => item.id === mediaId && item.source === "remote");
+                            if (!currentMedia || currentMedia.path !== result.path) throw new Error("The link changed or was removed while it was being checked");
+                            const previous = snapshotGenerationSettings(contextMediaLibrary);
+                            currentMedia.verifiedAt = result.verifiedAt;
+                            if (!await commitContextMediaMutation(previous)) throw new Error("The link recheck result could not be saved");
+                        });
+                        toastr?.success?.("Remote media link is available.");
+                        render();
+                    } catch (error) {
+                        toastr?.error?.(error.message, "Context Media link", { escapeHtml: true });
+                        button.disabled = false;
+                    }
+                    return;
                 } else if (action === "delete-media" && owner) {
                     const media = owner.media.find((item) => item.id === button.dataset.mediaId);
-                    if (!media || !confirm(`Delete "${media.label}" from the library and server when unshared?`)) return;
+                    const cleanup = media?.source === "remote" ? "library? The third-party file will not be changed." : "library and server when unshared?";
+                    if (!media || !confirm(`Delete "${media.label}" from the ${cleanup}`)) return;
                     try {
                         await deleteContextMediaItem(media, owner);
                         render();
@@ -8566,7 +8778,9 @@ function renderContextMediaItems(owner) {
     return owner.media.map((media) => `
         <span class="qig-context-media-item">
             <span class="fa-solid ${media.type === "video" ? "fa-film" : "fa-image"}" aria-hidden="true"></span>
+            ${media.source === "remote" ? '<span class="fa-solid fa-link qig-context-media-remote" title="Third-party link" aria-label="Third-party link"></span>' : ""}
             <span title="${escapeHtml(media.label)}">${escapeHtml(media.label)}</span>
+            ${media.source === "remote" ? `<button data-action="recheck-media" data-node-id="${escapeHtml(owner.id)}" data-media-id="${escapeHtml(media.id)}" type="button" title="Recheck link" aria-label="Recheck ${escapeHtml(media.label)}"><span class="fa-solid fa-rotate" aria-hidden="true"></span></button>` : ""}
             <button data-action="delete-media" data-node-id="${escapeHtml(owner.id)}" data-media-id="${escapeHtml(media.id)}" type="button" aria-label="Delete ${escapeHtml(media.label)}">&times;</button>
         </span>`).join("");
 }
@@ -16249,6 +16463,7 @@ function getMessageElementsWithin(root = document) {
 
 function ensureMessageGenerateAction(messageElement, ctx = getContext?.()) {
     if (!(messageElement instanceof Element)) return;
+    applyRemoteContextMediaPrivacy(messageElement, ctx);
     if (messageElement.querySelector(`.${QIG_MESSAGE_ACTION_CLASS}`)) return;
 
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
