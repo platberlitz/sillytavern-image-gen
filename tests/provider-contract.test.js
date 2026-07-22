@@ -25,6 +25,32 @@ test("reproducible settings omit credentials and private images", () => {
     assert.doesNotMatch(JSON.stringify(sanitized), /canary|base64/);
 });
 
+test("custom API snapshots omit local trust fields and unused parameters", () => {
+    const settings = {
+        provider: "custom",
+        customApiUrl: "https://images.example.test/generate",
+        customApiPollUrl: "https://images.example.test/jobs/{{jobId}}",
+        customApiKey: "custom-secret",
+        customApiRefImages: ["data:image/png;base64,private"],
+        customApiModel: "portrait-v2",
+        customApiRequestTemplate: '{"prompt":"{{prompt}}","seed":"{{seed}}"}',
+        width: 1024,
+        height: 768,
+        steps: 30,
+        cfgScale: 6,
+        sampler: "Euler",
+        seed: 12,
+    };
+    const request = createEffectiveRequest(settings, { model: settings.customApiModel });
+
+    assert.deepEqual(request.parameters, { seed: 12 });
+    assert.equal(request.settings.customApiUrl, undefined);
+    assert.equal(request.settings.customApiPollUrl, undefined);
+    assert.equal(request.settings.customApiKey, undefined);
+    assert.equal(request.settings.customApiRefImages, undefined);
+    assert.equal(request.settings.customApiRequestTemplate, undefined);
+});
+
 test("Nanobanana records the aspect ratio and tier sent instead of configured dimensions", () => {
     const request = createEffectiveRequest({
         provider: "nanobanana",

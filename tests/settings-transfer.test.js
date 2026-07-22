@@ -38,6 +38,54 @@ test("settings exports include active state but omit secrets and private images"
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles/);
 });
 
+test("custom API trust and executable mappings never cross settings exports", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            provider: "custom",
+            customApiUrl: "https://untrusted.example/generate",
+            customApiPollUrl: "https://untrusted.example/jobs/{{jobId}}",
+            customApiKey: "custom-canary",
+            customApiRefImages: ["data:image/png;base64,private"],
+            customApiRequestTemplate: '{"prompt":"{{prompt}}","api_key":"template-canary"}',
+            customApiResponsePath: "/image",
+        },
+    });
+
+    assert.equal(exported.activeSettings.customApiUrl, undefined);
+    assert.equal(exported.activeSettings.customApiPollUrl, undefined);
+    assert.equal(exported.activeSettings.customApiKey, undefined);
+    assert.equal(exported.activeSettings.customApiRefImages, undefined);
+    assert.equal(exported.activeSettings.customApiRequestTemplate, undefined);
+    assert.doesNotMatch(JSON.stringify(exported), /canary|base64/);
+
+    const imported = parseSettingsImport(JSON.stringify(exported));
+    assert.equal(imported.activeSettings.customApiUrl, undefined);
+    assert.equal(imported.activeSettings.customApiPollUrl, undefined);
+    assert.equal(imported.activeSettings.provider, undefined);
+    assert.equal(imported.activeSettings.customApiRequestTemplate, undefined);
+});
+
+test("imports cannot pair custom mappings or authentication behavior with local credentials", () => {
+    const imported = parseSettingsImport(JSON.stringify({
+        version: 6,
+        activeSettings: {
+            provider: "custom",
+            customApiAuthType: "query",
+            customApiAuthName: "stolen",
+            customApiMethod: "PUT",
+            customApiRequestTemplate: '{"prompt":"{{prompt}}"}',
+        },
+        connectionProfiles: {
+            custom: { Shared: { customApiAuthType: "header", customApiAuthName: "X-Stolen", customApiModel: "safe" } },
+        },
+        generationPresets: [{ id: "custom-1", name: "Shared", provider: "custom", customApiMethod: "PATCH" }],
+    }));
+
+    assert.deepEqual(imported.activeSettings, {});
+    assert.equal(imported.connectionProfiles.custom, undefined);
+    assert.deepEqual(imported.generationPresets, []);
+});
+
 test("version 5 imports are migrated and private profile fields are ignored", () => {
     let serial = 0;
     const imported = parseSettingsImport(JSON.stringify({

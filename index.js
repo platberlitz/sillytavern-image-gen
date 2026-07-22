@@ -36,6 +36,7 @@ import {
     MAX_INJECT_MATCHES,
 } from "./lib/inject-regex.js";
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
+import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
 
 // Artist lists for random selection
 const ARTISTS_NATURAL = ["a1 (initial-g)", "abubu", "afrobull", "aiue oka", "akairiot", "akamatsu ken", "alex ahad", "alzi xiaomi", "amazuyu tatsuki", "aoi nagisa (metalder)", "ask (askzy)", "atdan", "awa", "ayami kojima", "azasuke", "azto dio", "bkub", "blade (galaxist)", "boris (noborhys)", "bow (bhp)", "butcha-u", "chouzuki maryou", "ciloranko", "circle anco", "crote", "dagasi", "dairi", "dino (dinoartforame)", "dishwasher1910", "drawfag", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hammer (sunset beach)", "hana kazari", "hara (harayutaka)", "haruyama kazunori", "hews", "hiroki (yyqw7151)", "hiten", "hoshi (snacherubi)", "inoino", "itomugi-kun", "ixy", "kagami hirotaka", "kanon (kurogane knights)", "kantoku", "kawacy", "ke-ta", "kou hiyoyo", "kouji (campus life)", "kuavera", "kuon (kwonchan)", "lack", "lm7", "lolita channel", "m-da s-tarou", "matsunaga kouyou", "mika pikazo", "mikeinel", "mizuki hitoshi", "mizumizuni", "morikura en", "naga u", "nardack", "neco", "nel-zel formula", "neocoill", "nian", "nixeu", "nyamota", "nyantcha", "ojipon", "onikobe rin", "piromizu", "pochi (pochi-goya)", "qp:flapper", "rebecca (keinelove)", "redjuice", "rei (sanbonzakura)", "rurudo", "ruu (tksymkw)", "shirataki", "sincos", "sky-freedom", "tofuubear", "tony taka", "tukiwani", "wanke", "yaegashi nan", "yamakaze", "yoko juusuke", "yoshiaki", "yuuki tatsuya"];
@@ -478,6 +479,7 @@ const PROVIDER_KEY_FIELDS = {
     together: "togetherKey",
     zai: "zaiKey",
     pollinations: "pollinationsKey",
+    custom: "customApiKey",
 };
 
 function getProviderKeyValue(s = getSettings(), provider = s?.provider) {
@@ -504,6 +506,12 @@ function collectQigStatus(s = getSettings()) {
     }
     if (s.provider === "proxy" && !String(s.proxyUrl || "").trim()) {
         warnings.push("Reverse proxy URL is not set. Open More settings → Provider Setup to configure it.");
+    }
+    if (s.provider === "custom" && !String(s.customApiUrl || "").trim()) {
+        warnings.push("Custom API request URL is not set. Open More settings → Provider Setup to configure it.");
+    }
+    if (s.provider === "custom" && s.customApiAuthType !== "none" && !String(s.customApiKey || "").trim()) {
+        warnings.push("Custom API authentication is enabled but its credential is empty.");
     }
     if (s.provider === "local" && !String(s.localUrl || "").trim()) {
         warnings.push("Local server URL is not set. Open More settings → Provider Setup to configure it.");
@@ -653,6 +661,27 @@ const defaultSettings = {
     proxyComfyWorkflow: "",
     // New-API / chat-completions image workflow
     ...PROXY_CHAT_IMAGE_DEFAULTS,
+    // Custom API
+    customApiUrl: "",
+    customApiKey: "",
+    customApiAuthType: "bearer",
+    customApiAuthName: "X-API-Key",
+    customApiModel: "",
+    customApiPollUrl: "",
+    customApiRefImages: [],
+    customApiMode: "json",
+    customApiMethod: "POST",
+    customApiRequestType: "json",
+    customApiRequestTemplate: '{\n  "model": "{{model}}",\n  "prompt": "{{prompt}}",\n  "size": "{{size}}",\n  "n": 1\n}',
+    customApiResponsePath: "",
+    customApiResponseType: "auto",
+    customApiTimeout: 120,
+    customApiJobIdPath: "/id",
+    customApiPollMethod: "GET",
+    customApiStatusPath: "/status",
+    customApiSuccessValues: "succeeded,completed,success",
+    customApiFailureValues: "failed,error,cancelled,canceled",
+    customApiPollInterval: 1000,
     // NovelAI
     naiKey: "",
     naiModel: "nai-diffusion-4-5-curated",
@@ -1530,6 +1559,13 @@ const PROXY_RECIPE_KEYS = [
     "proxyChatImageIncludePersonality", "proxyChatImageMaxTokens",
 ];
 
+const CUSTOM_API_RECIPE_KEYS = [
+    "customApiMode", "customApiMethod", "customApiRequestType", "customApiRequestTemplate",
+    "customApiResponsePath", "customApiResponseType", "customApiTimeout", "customApiJobIdPath",
+    "customApiPollMethod", "customApiStatusPath", "customApiSuccessValues",
+    "customApiFailureValues", "customApiPollInterval",
+];
+
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsKey", "pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
@@ -1547,7 +1583,8 @@ const PROVIDER_KEYS = {
     together: ["togetherKey", "togetherModel"],
     zai: ["zaiKey", "zaiModel", "zaiQuality"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxyExtraInstructions", "proxyRefImages", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxyExtraInstructions", "proxyRefImages", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"],
+    custom: ["customApiUrl", "customApiKey", "customApiAuthType", "customApiAuthName", "customApiModel", "customApiPollUrl", "customApiRefImages"]
 };
 
 const PROVIDERS = {
@@ -1567,7 +1604,8 @@ const PROVIDERS = {
     together: { name: "Together AI", needsKey: true },
     zai: { name: "Z.AI", needsKey: true },
     local: { name: "Local (A1111/ComfyUI)", needsKey: false },
-    proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false }
+    proxy: { name: "Reverse Proxy (OpenAI-compatible)", needsKey: false },
+    custom: { name: "Custom API", needsKey: false }
 };
 
 const NAI_RESOLUTIONS = [
@@ -7334,6 +7372,47 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
     throw new Error("No image in response");
 }
 
+async function genCustomApi(prompt, negative, s, signal) {
+    const seed = resolveRandomSeed(s.seed, s);
+    const result = await executeCustomBackend({
+        mode: s.customApiMode,
+        url: s.customApiUrl,
+        method: s.customApiMethod,
+        requestType: s.customApiRequestType,
+        authType: s.customApiAuthType,
+        authName: s.customApiAuthName,
+        apiKey: s.customApiKey,
+        requestTemplate: s.customApiRequestTemplate,
+        responsePath: s.customApiResponsePath,
+        responseType: s.customApiResponseType,
+        timeoutMs: Number(s.customApiTimeout) * 1000,
+        jobIdPath: s.customApiJobIdPath,
+        pollUrl: s.customApiPollUrl,
+        pollMethod: s.customApiPollMethod,
+        statusPath: s.customApiStatusPath,
+        successValues: s.customApiSuccessValues,
+        failureValues: s.customApiFailureValues,
+        pollIntervalMs: s.customApiPollInterval,
+    }, {
+        prompt,
+        negative,
+        model: s.customApiModel,
+        width: s.width,
+        height: s.height,
+        steps: s.steps,
+        cfgScale: s.cfgScale,
+        sampler: s.sampler,
+        seed,
+        referenceImages: s.customApiRefImages || [],
+    }, { signal });
+    const url = createTransientImageObjectUrl(result.buffer);
+    const capabilities = getCustomBackendCapabilities(s.customApiRequestTemplate);
+    return {
+        url,
+        effectiveRequest: { parameters: capabilities.seed ? { seed } : {} },
+    };
+}
+
 let resizeAbortController = null;
 
 function initResizeHandle(popup) {
@@ -7582,6 +7661,28 @@ async function useImageAsReference(source, popup) {
     const s = getSettings();
     if (s.provider === "proxy") {
         if (addProxyRefImage(persistedSource, "Image added to reference images")) hidePopup(popup);
+        return;
+    }
+
+    if (s.provider === "custom") {
+        if (!Array.isArray(s.customApiRefImages)) s.customApiRefImages = [];
+        if (s.customApiRefImages.length >= 15) {
+            toastr.warning("Maximum 15 reference images reached");
+            return;
+        }
+        const inlineBytes = [...s.customApiRefImages, persistedSource].reduce((total, value) => {
+            const encoded = String(value).match(/^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/i)?.[1];
+            return total + (encoded ? Math.floor(encoded.length * 3 / 4) : 0);
+        }, 0);
+        if (inlineBytes > MAX_IMAGE_BYTES) {
+            toastr.warning("Custom API references are limited to 25 MiB total");
+            return;
+        }
+        s.customApiRefImages.push(persistedSource);
+        saveSettingsDebounced();
+        renderCustomApiRefImages();
+        hidePopup(popup);
+        toastr.success("Image added to Custom API references");
         return;
     }
 
@@ -9280,7 +9381,8 @@ const providerGenerators = {
     zai: genZai,
     local: genLocal,
     comfyui: genLocal,
-    proxy: genProxy
+    proxy: genProxy,
+    custom: genCustomApi,
 };
 
 async function generateForProvider(prompt, negative, settings, signal, options = {}) {
@@ -9295,6 +9397,8 @@ async function generateForProvider(prompt, negative, settings, signal, options =
     const trustedLocalBackend = settings.provider === "local" || settings.provider === "comfyui";
     const trustedBaseUrl = settings.provider === "proxy"
         ? settings.proxyUrl
+        : settings.provider === "custom"
+            ? settings.customApiUrl
         : settings.provider === "novelai"
             ? settings.naiProxyUrl
             : settings.provider === "gptimage"
@@ -9330,6 +9434,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
     const settingsWithoutCurrentReferences = {
         ...liveSettings,
         proxyRefImages: [],
+        customApiRefImages: [],
         nanobananaRefImages: [],
         nanogptRefImages: [],
         localRefImage: "",
@@ -10815,6 +10920,7 @@ let charSettingsStateInitialized = false;
 
 function getCurrentRefImages(s) {
     if (s.provider === "proxy") return s.proxyRefImages || [];
+    if (s.provider === "custom") return s.customApiRefImages || [];
     if (s.provider === "nanobanana") return s.nanobananaRefImages || [];
     if (s.provider === "nanogpt") return s.nanogptRefImages || [];
     return [];
@@ -10828,6 +10934,7 @@ function cloneCharScopedState(s = getSettings()) {
         width: s.width,
         height: s.height,
         proxyRefImages: [...(s.proxyRefImages || [])],
+        customApiRefImages: [...(s.customApiRefImages || [])],
         nanobananaRefImages: [...(s.nanobananaRefImages || [])],
         nanogptRefImages: [...(s.nanogptRefImages || [])],
     };
@@ -10857,6 +10964,7 @@ function applyCharScopedState(state, s = getSettings()) {
     s.width = state.width ?? defaultSettings.width;
     s.height = state.height ?? defaultSettings.height;
     s.proxyRefImages = [...(state.proxyRefImages || [])];
+    s.customApiRefImages = [...(state.customApiRefImages || [])];
     s.nanobananaRefImages = [...(state.nanobananaRefImages || [])];
     s.nanogptRefImages = [...(state.nanogptRefImages || [])];
 
@@ -10881,6 +10989,7 @@ function applyCharScopedState(state, s = getSettings()) {
     }
     syncSizeInputs(s.width, s.height);
     renderRefImages();
+    renderCustomApiRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
 }
@@ -11328,11 +11437,14 @@ function loadCharSettings() {
     syncSizeInputs(s.width, s.height);
 
     s.proxyRefImages = [];
+    s.customApiRefImages = [];
     s.nanobananaRefImages = [];
     s.nanogptRefImages = [];
     if (hasRefs) {
         if (s.provider === "proxy") {
             s.proxyRefImages = [...refs];
+        } else if (s.provider === "custom") {
+            s.customApiRefImages = [...refs];
         } else if (s.provider === "nanobanana") {
             s.nanobananaRefImages = [...refs];
         } else if (s.provider === "nanogpt") {
@@ -11340,6 +11452,7 @@ function loadCharSettings() {
         }
     }
     renderRefImages();
+    renderCustomApiRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
     charSettingsOverrideApplied = true;
@@ -11558,7 +11671,9 @@ async function deleteSelectedComfyWorkflowPreset() {
 const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength"];
 
 function getGenerationPresetKeys(presetOrSettings) {
-    return presetOrSettings?.provider === "proxy" ? [...PRESET_KEYS, ...PROXY_RECIPE_KEYS] : PRESET_KEYS;
+    if (presetOrSettings?.provider === "proxy") return [...PRESET_KEYS, ...PROXY_RECIPE_KEYS];
+    if (presetOrSettings?.provider === "custom") return [...PRESET_KEYS, ...CUSTOM_API_RECIPE_KEYS];
+    return PRESET_KEYS;
 }
 
 function saveGenerationPresetStore(errorMessage = "Failed to save preset. Browser storage may be full.") {
@@ -11833,7 +11948,7 @@ function showSetupWizard() {
             } else {
                 keyWrap.style.display = "none";
             }
-            extraNote.style.display = (provider === "local" || provider === "proxy") ? "block" : "none";
+            extraNote.style.display = (provider === "local" || provider === "proxy" || provider === "custom") ? "block" : "none";
         };
         providerSel.onchange = syncFields;
         syncFields();
@@ -12328,7 +12443,19 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
             ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
             ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
-        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-timeout", "proxyTimeout"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-chat-mode", "proxyChatImageMode"], ["qig-proxy-chat-allow-images", "proxyChatImageAllowImagesEndpoint"], ["qig-proxy-chat-system", "proxyChatImageSystemPrompt"], ["qig-proxy-chat-personality", "proxyChatImageIncludePersonality"], ["qig-proxy-chat-max-tokens", "proxyChatImageMaxTokens"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-timeout", "proxyTimeout"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-chat-mode", "proxyChatImageMode"], ["qig-proxy-chat-allow-images", "proxyChatImageAllowImagesEndpoint"], ["qig-proxy-chat-system", "proxyChatImageSystemPrompt"], ["qig-proxy-chat-personality", "proxyChatImageIncludePersonality"], ["qig-proxy-chat-max-tokens", "proxyChatImageMaxTokens"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]],
+        custom: [
+            ["qig-custom-url", "customApiUrl"], ["qig-custom-key", "customApiKey"],
+            ["qig-custom-auth-type", "customApiAuthType"], ["qig-custom-auth-name", "customApiAuthName"],
+            ["qig-custom-model", "customApiModel"], ["qig-custom-poll-url", "customApiPollUrl"],
+            ["qig-custom-mode", "customApiMode"], ["qig-custom-method", "customApiMethod"],
+            ["qig-custom-request-type", "customApiRequestType"], ["qig-custom-template", "customApiRequestTemplate"],
+            ["qig-custom-response-path", "customApiResponsePath"], ["qig-custom-response-type", "customApiResponseType"],
+            ["qig-custom-timeout", "customApiTimeout"], ["qig-custom-job-path", "customApiJobIdPath"],
+            ["qig-custom-poll-method", "customApiPollMethod"], ["qig-custom-status-path", "customApiStatusPath"],
+            ["qig-custom-success-values", "customApiSuccessValues"], ["qig-custom-failure-values", "customApiFailureValues"],
+            ["qig-custom-poll-interval", "customApiPollInterval"],
+        ]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -12376,6 +12503,10 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
     }
     if (provider === "nanobanana") renderNanobananaRefImages();
     if (provider === "nanogpt") renderNanogptRefImages();
+    if (provider === "custom") {
+        renderCustomApiRefImages();
+        updateCustomApiUI();
+    }
     syncGenerationSettingsControls(s);
     if (updateProviderVisibility) updateProviderUI();
 }
@@ -12402,6 +12533,7 @@ function updateProviderUI() {
         if (changed) saveSettingsDebounced();
     }
     syncGenerationSettingsControls(s);
+    updateGenerationCapabilitiesUI(s);
     updateQigStatusLine();
 }
 
@@ -12492,6 +12624,111 @@ function updateProxyCompatibilityUI() {
     }
 }
 
+const CUSTOM_API_STARTERS = Object.freeze({
+    openai: {
+        label: "OpenAI-compatible images",
+        values: {
+            customApiMode: "json",
+            customApiMethod: "POST",
+            customApiRequestType: "json",
+            customApiRequestTemplate: '{\n  "model": "{{model}}",\n  "prompt": "{{prompt}}",\n  "size": "{{size}}",\n  "n": 1\n}',
+            customApiResponsePath: "/data/0",
+            customApiResponseType: "auto",
+        },
+    },
+    json: {
+        label: "Simple JSON REST",
+        values: {
+            customApiMode: "json",
+            customApiMethod: "POST",
+            customApiRequestType: "json",
+            customApiRequestTemplate: '{\n  "prompt": "{{prompt}}",\n  "negative_prompt": "{{negative}}",\n  "width": "{{width}}",\n  "height": "{{height}}",\n  "steps": "{{steps}}",\n  "cfg_scale": "{{cfgScale}}",\n  "sampler": "{{sampler}}",\n  "seed": "{{seed}}"\n}',
+            customApiResponsePath: "/image",
+            customApiResponseType: "auto",
+        },
+    },
+    async: {
+        label: "Async job API",
+        values: {
+            customApiMode: "async",
+            customApiMethod: "POST",
+            customApiRequestType: "json",
+            customApiRequestTemplate: '{\n  "model": "{{model}}",\n  "prompt": "{{prompt}}",\n  "width": "{{width}}",\n  "height": "{{height}}",\n  "seed": "{{seed}}"\n}',
+            customApiJobIdPath: "/id",
+            customApiPollMethod: "GET",
+            customApiStatusPath: "/status",
+            customApiResponsePath: "/output/0",
+            customApiResponseType: "auto",
+        },
+    },
+    multipart: {
+        label: "Multipart upload",
+        values: {
+            customApiMode: "json",
+            customApiMethod: "POST",
+            customApiRequestType: "multipart",
+            customApiRequestTemplate: '{\n  "model": "{{model}}",\n  "prompt": "{{prompt}}",\n  "negative_prompt": "{{negative}}",\n  "image": "{{firstReferenceImage}}",\n  "seed": "{{seed}}"\n}',
+            customApiResponsePath: "/image",
+            customApiResponseType: "auto",
+        },
+    },
+});
+
+function applyCustomApiStarter(starterId) {
+    const starter = CUSTOM_API_STARTERS[starterId];
+    if (!starter) return;
+    Object.assign(getSettings(), starter.values);
+    saveSettingsDebounced();
+    refreshProviderInputs("custom", { updateProviderVisibility: false });
+    updateCustomApiUI();
+    syncGenerationPresetIndicators();
+    toastr.success(`Applied ${starter.label} request mapping`);
+}
+
+function updateCustomApiUI() {
+    const s = getSettings();
+    const asyncPanel = getOrCacheElement("qig-custom-async-options");
+    const authNameWrap = getOrCacheElement("qig-custom-auth-name-wrap");
+    const authHint = getOrCacheElement("qig-custom-auth-hint");
+    if (asyncPanel) asyncPanel.style.display = s.customApiMode === "async" ? "block" : "none";
+    if (authNameWrap) authNameWrap.style.display = ["header", "query"].includes(s.customApiAuthType) ? "block" : "none";
+    if (authHint) {
+        authHint.textContent = s.customApiAuthType === "basic"
+            ? "Enter username:password in the credential field."
+            : "Credentials and trusted URLs stay local and are omitted when importing shared settings.";
+    }
+    updateGenerationCapabilitiesUI(s);
+}
+
+function updateGenerationCapabilitiesUI(settings = getSettings()) {
+    const capabilityById = {
+        "qig-steps": "steps",
+        "qig-cfg": "cfgScale",
+        "qig-sampler": "sampler",
+        "qig-seed": "seed",
+    };
+    let capabilities = null;
+    if (settings.provider === "custom") {
+        try {
+            capabilities = getCustomBackendCapabilities(settings.customApiRequestTemplate);
+        } catch {
+            // Keep controls visible while an incomplete template is being edited.
+        }
+    }
+    for (const [id, capability] of Object.entries(capabilityById)) {
+        const field = document.getElementById(id)?.closest(".qig-field");
+        if (field) field.style.display = capabilities && !capabilities[capability] ? "none" : "";
+    }
+    const sizeField = document.getElementById("qig-size-fieldset");
+    if (sizeField) sizeField.style.display = capabilities && !capabilities.size ? "none" : "";
+    const refsField = document.getElementById("qig-custom-reference-fields");
+    if (refsField) refsField.style.display = capabilities && !capabilities.referenceImages ? "none" : "";
+    const seqSeeds = document.getElementById("qig-seq-seeds-wrap");
+    if (seqSeeds) seqSeeds.style.display = capabilities && !capabilities.seed
+        ? "none"
+        : ((settings.batchCount || 1) > 1 ? "" : "none");
+}
+
 function renderRefImages() {
     const container = getOrCacheElement("qig-proxy-refs");
     if (!container) return;
@@ -12501,6 +12738,20 @@ function renderRefImages() {
         wrapper.title = summarizeProxyRefImage(src || "");
         if (isUrlOnly && !isHttpUrl(src || "")) wrapper.classList.add("qig-reference-image--invalid");
     });
+}
+
+function renderCustomApiRefImages() {
+    const container = getOrCacheElement("qig-custom-refs");
+    if (!container) return;
+    renderReferenceImageList(container, getSettings().customApiRefImages || [], removeCustomApiRefImage);
+}
+
+function removeCustomApiRefImage(idx) {
+    const s = getSettings();
+    if (!s.customApiRefImages) s.customApiRefImages = [];
+    s.customApiRefImages.splice(idx, 1);
+    saveSettingsDebounced();
+    renderCustomApiRefImages();
 }
 
 function removeRefImage(idx) {
@@ -13583,6 +13834,90 @@ function createUI() {
                     </div>
                     </div>
                 </div>
+
+                <div id="qig-custom-settings" class="qig-provider-section">
+                    <div class="qig-provider-ready">
+                        <div>
+                            <strong>Custom API</strong>
+                            <small>Browser-direct JSON or multipart requests with optional bounded polling. No executable scripts or server relay.</small>
+                        </div>
+                    </div>
+                    <div class="qig-card-title">Connection</div>
+                    <label>Request URL</label>
+                    <input id="qig-custom-url" type="url" value="${esc(s.customApiUrl)}" placeholder="https://api.example.com/v1/images/generations">
+                    <label>Model <small>(optional)</small></label>
+                    <input id="qig-custom-model" type="text" value="${esc(s.customApiModel)}" placeholder="model-id">
+                    <div class="qig-row">
+                        <div>
+                            <label>Authentication</label>
+                            <select id="qig-custom-auth-type">
+                                <option value="none" ${s.customApiAuthType === "none" ? "selected" : ""}>None</option>
+                                <option value="bearer" ${s.customApiAuthType === "bearer" ? "selected" : ""}>Bearer token</option>
+                                <option value="header" ${s.customApiAuthType === "header" ? "selected" : ""}>Custom header</option>
+                                <option value="query" ${s.customApiAuthType === "query" ? "selected" : ""}>Query parameter</option>
+                                <option value="basic" ${s.customApiAuthType === "basic" ? "selected" : ""}>Basic auth</option>
+                            </select>
+                        </div>
+                        <div id="qig-custom-auth-name-wrap" style="display:${["header", "query"].includes(s.customApiAuthType) ? "block" : "none"}">
+                            <label>Header / parameter name</label>
+                            <input id="qig-custom-auth-name" type="text" value="${esc(s.customApiAuthName)}" placeholder="X-API-Key">
+                        </div>
+                    </div>
+                    <label>Credential</label>
+                    <input id="qig-custom-key" type="password" value="${esc(s.customApiKey)}" autocomplete="off">
+                    <small id="qig-custom-auth-hint" class="qig-muted">Credentials and trusted URLs stay local and are omitted when importing shared settings.</small>
+
+                    <div class="qig-card-title" style="margin-top:12px;">Request mapping <small>(saved in generation recipes)</small></div>
+                    <div class="qig-row">
+                        <div>
+                            <label>Starter</label>
+                            <select id="qig-custom-starter">
+                                <option value="">Choose a starting point...</option>
+                                ${Object.entries(CUSTOM_API_STARTERS).map(([id, starter]) => `<option value="${esc(id)}">${esc(starter.label)}</option>`).join("")}
+                            </select>
+                        </div>
+                        <div>
+                            <label>Response flow</label>
+                            <select id="qig-custom-mode">
+                                <option value="json" ${s.customApiMode === "json" ? "selected" : ""}>Immediate response</option>
+                                <option value="async" ${s.customApiMode === "async" ? "selected" : ""}>Async job + polling</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="qig-row">
+                        <div><label>Method</label><select id="qig-custom-method"><option value="POST" ${s.customApiMethod === "POST" ? "selected" : ""}>POST</option><option value="PUT" ${s.customApiMethod === "PUT" ? "selected" : ""}>PUT</option><option value="PATCH" ${s.customApiMethod === "PATCH" ? "selected" : ""}>PATCH</option></select></div>
+                        <div><label>Body type</label><select id="qig-custom-request-type"><option value="json" ${s.customApiRequestType === "json" ? "selected" : ""}>JSON</option><option value="multipart" ${s.customApiRequestType === "multipart" ? "selected" : ""}>Multipart form</option></select></div>
+                    </div>
+                    <label>Request JSON template</label>
+                    <textarea id="qig-custom-template" rows="10" spellcheck="false" placeholder='{"prompt":"{{prompt}}"}'>${esc(s.customApiRequestTemplate)}</textarea>
+                    <small class="qig-muted">Allowed tokens: <code>{{prompt}}</code>, <code>{{negative}}</code>, <code>{{model}}</code>, <code>{{width}}</code>, <code>{{height}}</code>, <code>{{size}}</code>, <code>{{steps}}</code>, <code>{{cfgScale}}</code>, <code>{{sampler}}</code>, <code>{{seed}}</code>, <code>{{referenceImages}}</code>, <code>{{firstReferenceImage}}</code>. Exact-token values retain their number or array type.</small>
+                    <div class="qig-row">
+                        <div><label>Image JSON Pointer</label><input id="qig-custom-response-path" type="text" value="${esc(s.customApiResponsePath)}" placeholder="/data/0/url"></div>
+                        <div><label>Image value</label><select id="qig-custom-response-type"><option value="auto" ${s.customApiResponseType === "auto" ? "selected" : ""}>Auto detect</option><option value="url" ${s.customApiResponseType === "url" ? "selected" : ""}>URL</option><option value="base64" ${s.customApiResponseType === "base64" ? "selected" : ""}>Base64</option></select></div>
+                    </div>
+                    <label>Request timeout (seconds)</label>
+                    <input id="qig-custom-timeout" type="number" value="${esc(s.customApiTimeout)}" min="1" max="1800">
+                    <div id="qig-custom-async-options" class="qig-dependent-panel" style="display:${s.customApiMode === "async" ? "block" : "none"}">
+                        <label>Job ID JSON Pointer</label><input id="qig-custom-job-path" type="text" value="${esc(s.customApiJobIdPath)}" placeholder="/id">
+                        <label>Polling URL</label><input id="qig-custom-poll-url" type="url" value="${esc(s.customApiPollUrl)}" placeholder="https://api.example.com/jobs/{{jobId}}">
+                        <div class="qig-row">
+                            <div><label>Polling method</label><select id="qig-custom-poll-method"><option value="GET" ${s.customApiPollMethod === "GET" ? "selected" : ""}>GET</option><option value="POST" ${s.customApiPollMethod === "POST" ? "selected" : ""}>POST</option></select></div>
+                            <div><label>Poll every (ms)</label><input id="qig-custom-poll-interval" type="number" value="${esc(s.customApiPollInterval)}" min="250" max="60000" step="250"></div>
+                        </div>
+                        <label>Status JSON Pointer</label><input id="qig-custom-status-path" type="text" value="${esc(s.customApiStatusPath)}" placeholder="/status">
+                        <div class="qig-row">
+                            <div><label>Success values</label><input id="qig-custom-success-values" type="text" value="${esc(s.customApiSuccessValues)}"></div>
+                            <div><label>Failure values</label><input id="qig-custom-failure-values" type="text" value="${esc(s.customApiFailureValues)}"></div>
+                        </div>
+                    </div>
+                    <div id="qig-custom-reference-fields">
+                        <label>Reference images</label>
+                        <div id="qig-custom-refs" style="display:flex;flex-wrap:wrap;gap:4px;margin:4px 0;"></div>
+                        <input type="file" id="qig-custom-ref-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none">
+                        <button id="qig-custom-ref-btn" type="button" class="menu_button"><span class="fa-solid fa-paperclip"></span><span>Add image files</span></button>
+                        <small class="qig-muted">Use reference tokens in the template. Multipart mode converts inline images to uploaded file parts; JSON mode sends data URLs.</small>
+                    </div>
+                </div>
                         </div>
                     </div>
                 </section>
@@ -13898,7 +14233,7 @@ function createUI() {
                 </div>
 
                 <div class="qig-control-grid qig-generation-grid">
-                    <fieldset class="qig-field qig-field--full qig-size-fieldset">
+                    <fieldset id="qig-size-fieldset" class="qig-field qig-field--full qig-size-fieldset">
                         <legend>Image size</legend>
                         <small id="qig-size-help">Output resolution in pixels. Larger images are slower and use more VRAM.</small>
                         <div id="qig-size-custom" class="qig-row qig-size-row">
@@ -14023,8 +14358,20 @@ function createUI() {
 
     document.getElementById("qig-provider").onchange = (e) => {
         getSettings().provider = e.target.value;
+        if (charSettingsOverrideApplied) {
+            const charId = getCurrentCharId();
+            const legacyKey = getLegacyCurrentCharStorageKey();
+            const refs = charRefImages[charId] || (legacyKey ? charRefImages[legacyKey] : null) || [];
+            const refKey = {
+                proxy: "proxyRefImages",
+                custom: "customApiRefImages",
+                nanobanana: "nanobananaRefImages",
+                nanogpt: "nanogptRefImages",
+            }[getSettings().provider];
+            if (refKey) getSettings()[refKey] = [...refs];
+        }
         saveSettingsDebounced();
-        updateProviderUI();
+        refreshProviderInputs(getSettings().provider);
         renderProfileSelect();
         syncGenerationPresetIndicators();
     };
@@ -14096,6 +14443,43 @@ function createUI() {
     bind("qig-zai-key", "zaiKey");
     bind("qig-zai-model", "zaiModel");
     bind("qig-zai-quality", "zaiQuality");
+    bind("qig-custom-url", "customApiUrl");
+    bind("qig-custom-key", "customApiKey");
+    bind("qig-custom-auth-name", "customApiAuthName");
+    bind("qig-custom-model", "customApiModel");
+    bind("qig-custom-poll-url", "customApiPollUrl");
+    bind("qig-custom-method", "customApiMethod");
+    bind("qig-custom-request-type", "customApiRequestType");
+    bind("qig-custom-template", "customApiRequestTemplate");
+    getOrCacheElement("qig-custom-template")?.addEventListener("input", () => updateGenerationCapabilitiesUI());
+    bind("qig-custom-response-path", "customApiResponsePath");
+    bind("qig-custom-response-type", "customApiResponseType");
+    bind("qig-custom-timeout", "customApiTimeout", true);
+    bind("qig-custom-job-path", "customApiJobIdPath");
+    bind("qig-custom-poll-method", "customApiPollMethod");
+    bind("qig-custom-status-path", "customApiStatusPath");
+    bind("qig-custom-success-values", "customApiSuccessValues");
+    bind("qig-custom-failure-values", "customApiFailureValues");
+    bind("qig-custom-poll-interval", "customApiPollInterval", true);
+    const customAuthType = getOrCacheElement("qig-custom-auth-type");
+    if (customAuthType) customAuthType.onchange = (event) => {
+        getSettings().customApiAuthType = event.target.value;
+        saveSettingsDebounced();
+        updateCustomApiUI();
+        updateQigStatusLine();
+    };
+    const customMode = getOrCacheElement("qig-custom-mode");
+    if (customMode) customMode.onchange = (event) => {
+        getSettings().customApiMode = event.target.value;
+        saveSettingsDebounced();
+        updateCustomApiUI();
+        syncGenerationPresetIndicators();
+    };
+    const customStarter = getOrCacheElement("qig-custom-starter");
+    if (customStarter) customStarter.onchange = (event) => {
+        applyCustomApiStarter(event.target.value);
+        event.target.value = "";
+    };
     bind("qig-local-url", "localUrl");
     bind("qig-local-model", "localModel");
     document.getElementById("qig-local-model").addEventListener("change", (e) => {
@@ -14542,6 +14926,46 @@ function createUI() {
     };
     renderRefImages();
     updateProxyCompatibilityUI();
+
+    const customRefInput = getOrCacheElement("qig-custom-ref-input");
+    const customRefButton = getOrCacheElement("qig-custom-ref-btn");
+    if (customRefButton) customRefButton.onclick = () => customRefInput?.click();
+    if (customRefInput) customRefInput.onchange = async (event) => {
+        const s = getSettings();
+        if (!s.customApiRefImages) s.customApiRefImages = [];
+        const remaining = 15 - s.customApiRefImages.length;
+        const files = Array.from(event.target.files || []).slice(0, remaining);
+        let availableBytes = MAX_IMAGE_BYTES;
+        for (const source of s.customApiRefImages) {
+            const encoded = String(source).match(/^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/i)?.[1];
+            if (encoded) availableBytes -= Math.floor(encoded.length * 3 / 4);
+        }
+        const oversized = files.filter(file => file.size > MAX_IMAGE_BYTES);
+        if (oversized.length) {
+            toastr.warning(`${oversized.length} reference image(s) exceeded the ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MiB limit and were skipped.`);
+        }
+        const accepted = [];
+        for (const file of files) {
+            if (file.size > MAX_IMAGE_BYTES || !file.type.startsWith("image/") || file.size > availableBytes) continue;
+            accepted.push(file);
+            availableBytes -= file.size;
+        }
+        if (accepted.length < files.length - oversized.length) {
+            toastr.warning("Some references were skipped because the Custom API request is limited to 25 MiB total.");
+        }
+        const results = await Promise.all(accepted.map(file => new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result);
+            reader.onerror = () => reject(reader.error || new Error(`Failed to read ${file.name}`));
+            reader.readAsDataURL(file);
+        })));
+        s.customApiRefImages.push(...results);
+        saveSettingsDebounced();
+        renderCustomApiRefImages();
+        customRefInput.value = "";
+    };
+    renderCustomApiRefImages();
+    updateCustomApiUI();
 
     // Nanobanana reference images handling
     const nanoRefInput = getOrCacheElement("qig-nanobanana-ref-input");
@@ -16732,6 +17156,7 @@ function getProviderModelId(settings, provider = settings?.provider) {
         case "zai": return settings?.zaiModel || "cogview-4-250304";
         case "local": return settings?.localType === "a1111" ? (settings?.a1111Model || settings?.localModel || null) : (settings?.localModel || null);
         case "proxy": return settings?.proxyModel || null;
+        case "custom": return settings?.customApiModel || null;
         default: return null;
     }
 }
@@ -17060,6 +17485,7 @@ async function handleMetadataDrop(e) {
                         }
                         break;
                     case "proxy": s.proxyModel = params.model; break;
+                    case "custom": s.customApiModel = params.model; break;
                 }
             }
 

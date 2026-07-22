@@ -1,6 +1,6 @@
 # Quick Image Gen
 
-Image generation in SillyTavern. 17 backends, 44 style presets, three LLM prompt modes, a two-step chat-scene prompt pipeline, contextual filters, batch generation, and auto-insert.
+Image generation in SillyTavern. 18 backends plus configurable custom APIs, 44 style presets, three LLM prompt modes, a two-step chat-scene prompt pipeline, contextual filters, batch generation, and auto-insert.
 
 ```
 Extensions -> Install from URL -> https://github.com/platberlitz/sillytavern-image-gen
@@ -29,6 +29,7 @@ Requires SillyTavern 1.12+ (extension manifest v3). Browser-only for most provid
 | `zai` | Z.AI | Yes |
 | `local` | Local (A1111 / ComfyUI) | No |
 | `proxy` | Reverse Proxy (OpenAI-compatible) | No |
+| `custom` | Custom API (JSON, multipart, async polling) | Optional |
 
 Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
 
@@ -41,6 +42,7 @@ Image-provider keys are stored in QIG extension settings and Connection Profiles
 - **Navy.ai / Routeway**: Model ID suggestions with custom model support. Base64 image responses.
 - **Z.AI**: Default `cogview-4`. HD quality default.
 - **Reverse Proxy**: See [Reverse Proxy](#reverse-proxy) below.
+- **Custom API**: Browser-direct declarative requests for OpenAI-compatible endpoints, simple JSON REST, multipart uploads, and bounded async jobs. See [Custom API](#custom-api).
 
 ## Quick Start
 
@@ -246,6 +248,29 @@ Chat Image settings:
 - **Max Tokens**: defaults to 16384. Range: 1 to 65536.
 - **Permit /images/generations routing**: off by default. When off, QIG forces `chat/completions`. Turn on only for proxy stacks where `auto` should still choose `/images/generations`.
 
+## Custom API
+
+Select `Custom API` when an image service is not covered by a built-in provider or Reverse Proxy. It supports four starter mappings:
+
+- **OpenAI-compatible images**: JSON request with `model`, `prompt`, `negative_prompt`, `size`, and `n`; reads the first item under `/data/0`.
+- **Simple JSON REST**: maps prompt, negative prompt, dimensions, steps, guidance, sampler, and seed to ordinary JSON fields.
+- **Async job API**: submits a JSON job, reads its ID, then polls a URL containing `{{jobId}}` until a configured success or failure status.
+- **Multipart upload**: sends scalar fields and an optional reference image as multipart form data.
+
+Connection Profiles store the trusted request/poll URLs, authentication mode and credential, model, and reference images. Generation Presets store the request template, response pointers, timeout, and polling behavior. This lets multiple named backends share one provider without adding code for each API.
+
+### Request templates
+
+Templates are JSON objects, not scripts. Values may use these tokens: `{{prompt}}`, `{{negative}}`, `{{model}}`, `{{width}}`, `{{height}}`, `{{size}}`, `{{steps}}`, `{{cfgScale}}`, `{{sampler}}`, `{{seed}}`, `{{referenceImages}}`, and `{{firstReferenceImage}}`. When a value is exactly one token, numbers and arrays retain their JSON type. Inline tokens become strings.
+
+Use RFC 6901 JSON Pointers such as `/data/0/url` for the image, job ID, and job status fields. Image results may be an HTTPS or same-origin URL, base64 value, common image object, or a direct `image/*` response. Async polling intervals are limited to 250 ms through 60 seconds and total requests to 1 second through 30 minutes.
+
+### Authentication and safety
+
+Authentication is limited to no auth, Bearer, a named header, a named query parameter, or Basic auth (`username:password`). Credentials cannot be embedded in request templates. Custom requests run directly in the browser, reject redirects, enforce bounded JSON/image responses, and never use a generic SillyTavern server relay. The endpoint must allow your SillyTavern origin through CORS.
+
+All Custom API fields stay local, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are omitted from settings exports, reproducible image metadata, and imported presets so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions locally.
+
 ## Slash Commands
 
 | Command | Arguments | Description |
@@ -346,7 +371,7 @@ Store provider connection settings (API keys, model IDs, URLs, provider-specific
 
 ### Generation Presets
 
-Store the core generation recipe: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a recipe.
+Store the core generation recipe: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Custom API presets store the declarative request/response and polling mapping, while the connection profile keeps URLs, auth, model, and reference images local. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a recipe.
 
 An active preset is highlighted only while the covered settings still match it. Editing a covered value returns the selector to **Current settings**.
 
@@ -370,7 +395,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 - Legacy Prompt Replacement Maps are migrated into Contextual Filters on settings load, preset import, and settings import.
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
-- Settings exports use schema v6 and omit credentials and private/reference images. Schema v5 imports remain supported and retain local credentials.
+- Settings exports use schema v6 and omit credentials, private/reference images, and all Custom API trust or request-definition fields. Schema v5 imports remain supported and retain local credentials.
 - Legacy localStorage gallery entries migrate transactionally to IndexedDB. Legacy data is retained if any asset cannot be migrated.
 
 ## Development
