@@ -272,9 +272,10 @@
     pointer-events: none;
 }
 
-#qig-settings-search {
+#qig-settings input#qig-settings-search {
     width: 100%;
-    padding: 7px 32px 7px 32px;
+    margin-top: 0;
+    padding: 7px 32px 7px 32px !important;
     border: 1px solid var(--qig-line-strong);
     border-radius: var(--qig-radius);
     background: var(--SmartThemeBlurTintColor);

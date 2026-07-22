@@ -10468,6 +10468,71 @@ const providerGenerators = {
     custom: genCustomApi,
 };
 
+async function verifyRenderableImage(url) {
+    if (!url || typeof url !== "string") {
+        throw new Error("Provider returned an empty or invalid image URL");
+    }
+
+    if (url.startsWith("data:")) {
+        const match = url.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=_\-\s]+)$/i);
+        if (!match) {
+            throw new Error("Provider returned malformed image data URL");
+        }
+        const cleanB64 = match[2].replace(/[\s\r\n]+/g, "");
+        const rawBytes = Math.floor(cleanB64.length * 3 / 4);
+        if (rawBytes < 32) {
+            throw new Error("Provider returned empty or incomplete image payload");
+        }
+
+        try {
+            const normalizedB64 = cleanB64.replace(/-/g, "+").replace(/_/g, "/");
+            const binaryStr = typeof globalThis.atob === "function"
+                ? globalThis.atob(normalizedB64)
+                : (typeof globalThis.Buffer !== "undefined" ? globalThis.Buffer.from(normalizedB64, "base64").toString("binary") : "");
+            if (binaryStr) {
+                const bytes = new Uint8Array(binaryStr.length);
+                for (let i = 0; i < binaryStr.length; i++) bytes[i] = binaryStr.charCodeAt(i);
+                const fmt = detectImageFormat(bytes);
+                if (!fmt) {
+                    throw new Error("Provider returned image with unknown or corrupted file format");
+                }
+            }
+        } catch (e) {
+            if (e.message?.includes("format") || e.message?.includes("corrupted") || e.message?.includes("empty")) throw e;
+        }
+    }
+
+    if (typeof globalThis.Image === "function" && typeof globalThis.document !== "undefined") {
+        await new Promise((resolve, reject) => {
+            const img = new Image();
+            let timer = null;
+            function cleanup() {
+                if (timer) clearTimeout(timer);
+                img.onload = null;
+                img.onerror = null;
+            }
+            timer = setTimeout(() => {
+                cleanup();
+                resolve(true);
+            }, 6000);
+
+            img.onload = () => {
+                cleanup();
+                if (img.naturalWidth <= 1 || img.naturalHeight <= 1) {
+                    reject(new Error("Provider returned a blank or unrenderable image"));
+                } else {
+                    resolve(true);
+                }
+            };
+            img.onerror = () => {
+                cleanup();
+                reject(new Error("Generated image failed to load or render"));
+            };
+            img.src = url;
+        });
+    }
+}
+
 async function generateForProvider(prompt, negative, settings, signal, options = {}) {
     const generator = providerGenerators[settings.provider];
     if (!generator) throw new Error(`Unknown provider: ${settings.provider}`);
@@ -10491,6 +10556,7 @@ async function generateForProvider(prompt, negative, settings, signal, options =
                     : "";
     const safeUrl = normalizeProviderImageSource(normalized.url, { trustedLocalBackend, trustedBaseUrl });
     if (!safeUrl) throw new Error("Provider returned an unsafe or unsupported image URL");
+    await verifyRenderableImage(safeUrl);
     return { ...normalized, url: safeUrl };
 }
 
