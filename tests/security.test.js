@@ -24,6 +24,8 @@ test('normalizeImageSource accepts bounded raster data URLs', () => {
   assert.equal(normalizeImageSource(value), value);
   assert.equal(normalizeImageSource(value, { maxInlineBytes: 2 }), null);
   assert.equal(normalizeImageSource('data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='), null);
+  assert.equal(normalizeImageSource('data:image/jpg;base64,iVBORw0KGgo='), 'data:image/jpeg;base64,iVBORw0KGgo=');
+  assert.equal(normalizeImageSource('data:image/png;base64,iVBORw0KGgo-\r\n'), 'data:image/png;base64,iVBORw0KGgo+');
 });
 
 test('normalizeImageSource can reject private provider destinations', () => {

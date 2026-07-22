@@ -6667,6 +6667,14 @@ async function genNanobanana(prompt, negative, s, signal) {
     };
     if (imageSize) generationConfig.imageConfig.imageSize = imageSize;
 
+    const safetySettings = [
+        { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+        { category: "HARM_CATEGORY_CIVIC_INTEGRITY", threshold: "BLOCK_NONE" },
+    ];
+
     const apiKey = s.nanobananaProxyKey || s.nanobananaKey;
     const url = getNanobananaApiUrl(s.nanobananaProxyUrl, s.nanobananaModel, apiKey);
     const headers = { "Content-Type": "application/json" };
@@ -6680,7 +6688,8 @@ async function genNanobanana(prompt, negative, s, signal) {
         headers,
         body: JSON.stringify({
             contents: [{ role: "user", parts }],
-            generationConfig
+            generationConfig,
+            safetySettings,
         }),
         signal
     });
@@ -6690,7 +6699,15 @@ async function genNanobanana(prompt, negative, s, signal) {
     }
     const data = await readResponseJson(res);
 
-    for (const candidate of data.candidates || []) {
+    const candidates = data.candidates || [];
+    let safetyBlocked = false;
+    let blockedReason = "";
+
+    for (const candidate of candidates) {
+        if (candidate.finishReason === "SAFETY" || candidate.finishReason === "RECITATION" || candidate.finishReason === "BLOCKLIST") {
+            safetyBlocked = true;
+            blockedReason = candidate.finishReason;
+        }
         for (const part of candidate.content?.parts || []) {
             if (part.inlineData?.data) {
                 return {
@@ -6703,7 +6720,52 @@ async function genNanobanana(prompt, negative, s, signal) {
                     },
                 };
             }
+            if (part.fileData?.fileUri) {
+                return {
+                    url: part.fileData.fileUri,
+                    effectiveRequest: {
+                        parameters: {
+                            aspectRatio: generationConfig.imageConfig.aspectRatio,
+                            imageSize: generationConfig.imageConfig.imageSize,
+                        },
+                    },
+                };
+            }
+            if (part.text) {
+                const imgMatch = part.text.match(/!\[.*?\]\((https?:\/\/[^\s\)]+|data:image\/[^;]+;base64,[^\s\)]+)\)/i)
+                    || part.text.match(/(https?:\/\/[^\s\)]+\.(?:png|jpe?g|webp|gif|avif))/i)
+                    || part.text.match(/(data:image\/[^;]+;base64,[A-Za-z0-9+/=_]+)/i);
+                if (imgMatch) {
+                    return {
+                        url: imgMatch[1],
+                        effectiveRequest: {
+                            parameters: {
+                                aspectRatio: generationConfig.imageConfig.aspectRatio,
+                                imageSize: generationConfig.imageConfig.imageSize,
+                            },
+                        },
+                    };
+                }
+            }
         }
+        if (candidate.b64_json) {
+            return {
+                url: `data:image/png;base64,${candidate.b64_json}`,
+                effectiveRequest: {
+                    parameters: {
+                        aspectRatio: generationConfig.imageConfig.aspectRatio,
+                        imageSize: generationConfig.imageConfig.imageSize,
+                    },
+                },
+            };
+        }
+    }
+
+    if (safetyBlocked) {
+        throw new Error(`Gemini blocked image generation due to safety policy (${blockedReason})`);
+    }
+    if (data.promptFeedback?.blockReason) {
+        throw new Error(`Gemini blocked prompt due to policy (${data.promptFeedback.blockReason})`);
     }
     throw new Error("No image in response");
 }
