@@ -48,9 +48,9 @@ Image-provider keys are stored in QIG extension settings and Connection Profiles
 2. Fresh installs also get three starter presets (free Pollinations recipes) in the Preset dropdown.
 3. Type a prompt, or set **Prompt source** to `Chat scene` to pull context from the current chat.
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
-5. Save the setup as a [preset or profile](#presets-and-profiles) once it works.
+5. Save the generation recipe as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
 
-The panel shows the essentials (preset, prompt, prompt source, style) up front; everything else lives under **Setup & Advanced**. A status line in the header summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Create, Generation, Context, Automation & Delivery, then Provider Setup. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
 
 ### Prompt source
 
@@ -89,8 +89,8 @@ Set batch count (1 through 10) to generate multiple variants from the same promp
 
 Enable `Auto-generate after AI response` to trigger generation automatically after each assistant reply.
 
-- **Every AI replies** (1 to 100, default 1): only fire after every N eligible assistant replies. Set to `1` to fire on every reply.
-- **Delay (ms)** (0 to 60000, default 500): wait this long after the triggering reply before generating.
+- **Generate every N AI replies** (1 to 100, default 1): only fire after every N eligible assistant replies. Set to `1` to fire on every reply.
+- **Delay (seconds)** (0 to 60, default 0.5): wait this long after the triggering reply before generating.
 
 `Auto-set generated image as chat background` applies the first result as the current chat background. Temporary mode changes the live background only. Locked-to-chat mode stores it in chat metadata.
 
@@ -301,6 +301,15 @@ Import and export are supported from the Contextual Filters manager popup.
 
 **Note**: Legacy Prompt Replacement Maps are migrated into Contextual Filters on load. Old Prompt Templates are ignored and cleaned up.
 
+## Character Context
+
+QIG combines two independent character systems and shows their status in **Context**:
+
+- **SillyTavern Style prefixes** are inherited prompt fragments from SillyTavern's native Image Generation Style panel. QIG reads the common prefix plus the current character's avatar-keyed prefix. Character-specific prefixes are excluded in group chats; common prefixes still apply. Shareable `sd_character_prompt` card data is used when the local character entry is empty.
+- **QIG character overrides** save the complete current QIG prompt, negative prompt, style, image size, and supported reference images for one character. Use **Save for [character]** to create or update one and **Reset override** to return to global QIG settings.
+
+SillyTavern Style composition follows SillyTavern's order: common prefix, character prefix, then the generated QIG prompt. A literal `{prompt}` in the prefix controls insertion position. The negative prompt is the QIG negative followed by common and character-specific negative prefixes.
+
 ## Gallery and History
 
 - **Gallery**: image blobs are stored in IndexedDB; localStorage contains only a compact versioned manifest. Legacy `qig_gallery` data is migrated only after all image bytes are durable. Failed persistence is shown as session-only instead of silently deleting entries.
@@ -333,13 +342,13 @@ Manual insert target: same options, applied when using Insert from the result po
 
 ### Connection Profiles
 
-Store provider connection settings (API keys, model IDs, URLs, provider-specific options). Swap between providers without re-entering credentials.
+Store provider connection settings (API keys, model IDs, URLs, provider-specific options). Profiles belong to one provider and do not change the active provider. Select the provider first, then load one of its profiles without re-entering credentials.
 
 ### Generation Presets
 
-Store the core generation setup: prompt fields, size, steps, CFG, sampler, selected provider, and inject configuration. Connection credentials stay in Connection Profiles, while contextual filters are managed separately. Save, load, delete, import, and export are supported.
+Store the core generation recipe: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a recipe.
 
-Active preset is highlighted in the preset chip UI.
+An active preset is highlighted only while the covered settings still match it. Editing a covered value returns the selector to **Current settings**.
 
 ## Server Plugin
 

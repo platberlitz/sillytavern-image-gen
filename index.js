@@ -35,6 +35,7 @@ import {
     compileInjectRegex,
     MAX_INJECT_MATCHES,
 } from "./lib/inject-regex.js";
+import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
 
 // Artist lists for random selection
 const ARTISTS_NATURAL = ["a1 (initial-g)", "abubu", "afrobull", "aiue oka", "akairiot", "akamatsu ken", "alex ahad", "alzi xiaomi", "amazuyu tatsuki", "aoi nagisa (metalder)", "ask (askzy)", "atdan", "awa", "ayami kojima", "azasuke", "azto dio", "bkub", "blade (galaxist)", "boris (noborhys)", "bow (bhp)", "butcha-u", "chouzuki maryou", "ciloranko", "circle anco", "crote", "dagasi", "dairi", "dino (dinoartforame)", "dishwasher1910", "drawfag", "dsmile", "ebifurya", "eroquis", "fkey", "fuzichoco", "gomennasai", "hammer (sunset beach)", "hana kazari", "hara (harayutaka)", "haruyama kazunori", "hews", "hiroki (yyqw7151)", "hiten", "hoshi (snacherubi)", "inoino", "itomugi-kun", "ixy", "kagami hirotaka", "kanon (kurogane knights)", "kantoku", "kawacy", "ke-ta", "kou hiyoyo", "kouji (campus life)", "kuavera", "kuon (kwonchan)", "lack", "lm7", "lolita channel", "m-da s-tarou", "matsunaga kouyou", "mika pikazo", "mikeinel", "mizuki hitoshi", "mizumizuni", "morikura en", "naga u", "nardack", "neco", "nel-zel formula", "neocoill", "nian", "nixeu", "nyamota", "nyantcha", "ojipon", "onikobe rin", "piromizu", "pochi (pochi-goya)", "qp:flapper", "rebecca (keinelove)", "redjuice", "rei (sanbonzakura)", "rurudo", "ruu (tksymkw)", "shirataki", "sincos", "sky-freedom", "tofuubear", "tony taka", "tukiwani", "wanke", "yaegashi nan", "yamakaze", "yoko juusuke", "yoshiaki", "yuuki tatsuya"];
@@ -47,7 +48,7 @@ function getRandomArtist(useTagFormat = false) {
 }
 
 const extensionName = "quick-image-gen";
-let extension_settings, getContext, saveSettingsDebounced, saveSettings, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, secret_state, rotateSecret, getRequestHeaders;
+let extension_settings, getContext, saveSettingsDebounced, saveSettings, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, substituteParams, secret_state, rotateSecret, getRequestHeaders;
 let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 
@@ -230,8 +231,8 @@ const NBP_NEGATIVE_GUIDANCE = "Avoid wet-looking skin, oily shine, greasy gloss,
 const NANOBANANA_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const NANOBANANA_FLASH31_EXTRA_RATIOS = ["1:4", "1:8", "4:1", "8:1"];
 const QIG_DEFAULT_COLLAPSED_SECTIONS = {
-    providerSettings: false,
-    promptAdvanced: false,
+    providerSettings: true,
+    promptAdvanced: true,
     injectOptions: true,
     advancedSettings: true,
     setupPanel: true,
@@ -456,6 +457,7 @@ function applyPromptSource(mode, { persist = true } = {}) {
     if (paletteModeEl) paletteModeEl.value = s.paletteMode;
     updatePromptSourceUI(s);
     updateQigStatusLine();
+    syncGenerationPresetIndicators();
     if (persist) saveSettingsDebounced();
 }
 
@@ -498,13 +500,13 @@ function collectQigStatus(s = getSettings()) {
         items.push(every > 1 ? `Auto every ${every} replies` : "Auto-generate on");
     }
     if (PROVIDERS[s.provider]?.needsKey && !getProviderKeyValue(s)) {
-        warnings.push(`${providerName} needs an API key. Open Setup & Advanced or Quick Setup to add one.`);
+        warnings.push(`${providerName} needs an API key. Open More settings → Provider Setup or Quick Setup to add one.`);
     }
     if (s.provider === "proxy" && !String(s.proxyUrl || "").trim()) {
-        warnings.push("Reverse proxy URL is not set. Open Setup & Advanced to configure it.");
+        warnings.push("Reverse proxy URL is not set. Open More settings → Provider Setup to configure it.");
     }
     if (s.provider === "local" && !String(s.localUrl || "").trim()) {
-        warnings.push("Local server URL is not set. Open Setup & Advanced to configure it.");
+        warnings.push("Local server URL is not set. Open More settings → Provider Setup to configure it.");
     }
     if (s.injectEnabled && !s.autoGenerate) {
         warnings.push("AI-tagged source needs Auto-generate on. Tags will not fire until it is re-enabled.");
@@ -816,6 +818,7 @@ const defaultSettings = {
     comfyFluxClipType: "flux",
     _replacementMapsMigrated: false,
     _legacyTemplatesIgnored: false,
+    _charSettingsBaseState: null,
     // Backups of localStorage stores (survive browser storage wipes)
     _backupCharSettings: null,
     _backupProfiles: null,
@@ -1520,6 +1523,13 @@ function customInstructionHasMacro(template, macroName) {
     return new RegExp(`\\{\\{\\s*${escaped}\\s*\\}\\}`, "i").test(source);
 }
 
+const PROXY_RECIPE_KEYS = [
+    "proxySteps", "proxyCfg", "proxySampler", "proxySeed",
+    "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse",
+    "proxyChatImageMode", "proxyChatImageAllowImagesEndpoint", "proxyChatImageSystemPrompt",
+    "proxyChatImageIncludePersonality", "proxyChatImageMaxTokens",
+];
+
 const PROVIDER_KEYS = {
     pollinations: ["pollinationsKey", "pollinationsModel"],
     novelai: ["naiKey", "naiModel", "naiProxyUrl", "naiProxyKey"],
@@ -1537,7 +1547,7 @@ const PROVIDER_KEYS = {
     together: ["togetherKey", "togetherModel"],
     zai: ["zaiKey", "zaiModel", "zaiQuality"],
     local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
-    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxySteps", "proxyCfg", "proxySampler", "proxySeed", "proxyExtraInstructions", "proxyRefImages", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow", "proxyChatImageMode", "proxyChatImageAllowImagesEndpoint", "proxyChatImageSystemPrompt", "proxyChatImageIncludePersonality", "proxyChatImageMaxTokens"]
+    proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxyExtraInstructions", "proxyRefImages", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"]
 };
 
 const PROVIDERS = {
@@ -2393,6 +2403,14 @@ const SAMPLER_DISPLAY_NAMES = {
     "lcm": "LCM", "deis": "DEIS", "restart": "Restart",
     "er_sde": "ER SDE"
 };
+
+function getSamplerControlValue(value) {
+    const normalized = String(value || "").trim();
+    if (!normalized) return "";
+    if (Object.prototype.hasOwnProperty.call(SAMPLER_DISPLAY_NAMES, normalized)) return normalized;
+    return Object.entries(SAMPLER_DISPLAY_NAMES)
+        .find(([, displayName]) => displayName.toLowerCase() === normalized.toLowerCase())?.[0] || normalized;
+}
 
 // Sampler grouping for <optgroup> display
 const SAMPLER_GROUPS = {
@@ -4268,40 +4286,24 @@ function expandWildcards(text) {
 }
 
 let _stStyleLogged = false;
-function getSTStyleSettings() {
-    const result = { prefix: "", negative: "", charPositive: "", charNegative: "" };
+function getSTStyleSettings(context = getContext?.()) {
     try {
         const sd = extension_settings?.sd || extension_settings?.["stable-diffusion"];
-        if (!sd) return result;
+        if (!sd) return resolveSTStyleSettings(null, context);
         if (!_stStyleLogged) {
             log("ST Style: Found SD extension settings, keys: " + Object.keys(sd).filter(k => typeof sd[k] === "string" && sd[k]).join(", "));
             _stStyleLogged = true;
         }
-        // Common prefix/negative from ST's style settings
-        if (sd.prompt_prefix) result.prefix = sd.prompt_prefix.trim();
-        if (sd.negative_prompt) result.negative = sd.negative_prompt.trim();
-        // Character-specific overrides
-        const ctx = getContext();
-        const charName = ctx?.name2;
-        if (charName && sd.character_prompts) {
-            const charPrompt = sd.character_prompts[charName];
-            if (typeof charPrompt === "string" && charPrompt) {
-                result.charPositive = charPrompt.trim();
-            } else if (charPrompt && typeof charPrompt === "object") {
-                if (charPrompt.positive) result.charPositive = charPrompt.positive.trim();
-                if (charPrompt.negative) result.charNegative = charPrompt.negative.trim();
-            }
-        }
-        if (charName && sd.character_negative_prompts) {
-            const charNeg = sd.character_negative_prompts[charName];
-            if (typeof charNeg === "string" && charNeg) {
-                result.charNegative = charNeg.trim();
-            }
-        }
+        return resolveSTStyleSettings(sd, context);
     } catch (e) {
         log("ST Style: Error reading settings: " + e.message);
+        return resolveSTStyleSettings(null, context);
     }
-    return result;
+}
+
+function applySTStylePrompts(prompt, negative, context) {
+    const resolveMacros = typeof substituteParams === "function" ? substituteParams : resolvePrompt;
+    return mergeSTStylePrompts(prompt, negative, getSTStyleSettings(context), resolveMacros);
 }
 
 function parseMessageRange(rangeStr, chatLength) {
@@ -7414,8 +7416,16 @@ function bindPopupDismiss(popup, onClose, { closeOnBackdrop = true } = {}) {
     }
 }
 
+function hidePopup(popup, { restoreFocus = true } = {}) {
+    if (!popup) return;
+    popup.style.display = "none";
+    if (restoreFocus && popup._qigReturnFocus?.isConnected) {
+        popup._qigReturnFocus.focus?.();
+    }
+}
+
 function createPopup(id, title, content, onShow, options = {}) {
-    const previouslyFocused = document.activeElement;
+    const previouslyFocused = options.returnFocusElement || document.activeElement;
     let popup = document.getElementById(id);
     if (!popup) {
         popup = document.createElement("div");
@@ -7433,6 +7443,7 @@ function createPopup(id, title, content, onShow, options = {}) {
     popup.setAttribute("aria-modal", "true");
     popup.setAttribute("aria-labelledby", titleId);
     popup.tabIndex = -1;
+    popup._qigReturnFocus = previouslyFocused;
     // ALWAYS update innerHTML to ensure fresh content each time
     popup.innerHTML = `
         <div class="qig-popup-content${contentClass}">
@@ -7447,8 +7458,7 @@ function createPopup(id, title, content, onShow, options = {}) {
         e?.preventDefault?.();
         e?.stopPropagation?.();
         setTimeout(() => {
-            popup.style.display = "none";
-            if (previouslyFocused?.isConnected) previouslyFocused.focus?.();
+            hidePopup(popup);
         }, 0);
     };
     bindPopupDismiss(popup, closePopup, { closeOnBackdrop: options.closeOnBackdrop !== false });
@@ -7476,8 +7486,8 @@ function createPopup(id, title, content, onShow, options = {}) {
             first.focus();
         }
     };
-    if (onShow) onShow(popup);
     popup.style.display = "flex";
+    if (onShow) onShow(popup);
     queueMicrotask(() => {
         if (!popup.contains(document.activeElement)) {
             popup.querySelector('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')?.focus?.();
@@ -7496,18 +7506,18 @@ function showPromptHistory() {
     createPopup("qig-prompt-history-popup", "Prompt History", `<div id="qig-prompt-history-content"></div>`, (popup) => {
         const container = document.getElementById("qig-prompt-history-content");
         if (!promptHistory.length) {
-            container.innerHTML = '<p style="color:#888;">No prompts yet</p>';
+            container.innerHTML = '<p class="qig-muted">No prompts yet</p>';
             return;
         }
         container.innerHTML = `<div style="text-align:right;margin-bottom:8px;"><button id="qig-clear-history" class="menu_button" style="padding:2px 8px;font-size:11px;">Clear History</button></div>` +
         promptHistory.map((entry, i) => `
-            <div style="background:#1a1a2e;border:1px solid #333;border-radius:8px;padding:12px;margin-bottom:8px;">
+            <div class="qig-history-entry">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-                    <span style="color:#e94560;font-size:12px;">#${promptHistory.length - i} - ${entry.time}</span>
-                    <button class="qig-copy-prompt" data-index="${i}" style="background:#333;border:none;color:#fff;padding:2px 8px;border-radius:4px;cursor:pointer;font-size:11px;">Copy</button>
+                    <span class="qig-history-entry__meta">#${promptHistory.length - i} - ${entry.time}</span>
+                    <button class="qig-copy-prompt menu_button" data-index="${i}">Copy</button>
                 </div>
-                <pre style="white-space:pre-wrap;word-break:break-word;color:#ddd;margin:0;font-size:13px;">${escapeHtml(entry.prompt)}</pre>
-                ${entry.negative ? `<pre style="white-space:pre-wrap;word-break:break-word;color:#888;margin:6px 0 0;font-size:12px;">Negative: ${escapeHtml(entry.negative)}</pre>` : ''}
+                <pre class="qig-history-entry__prompt">${escapeHtml(entry.prompt)}</pre>
+                ${entry.negative ? `<pre class="qig-history-entry__negative">Negative: ${escapeHtml(entry.negative)}</pre>` : ''}
             </div>
         `).join('');
         container.querySelectorAll(".qig-copy-prompt").forEach((btn) => {
@@ -7529,7 +7539,7 @@ function showPromptHistory() {
             if (confirm("Clear all prompt history?")) {
                 promptHistory = [];
                 localStorage.removeItem("qig_prompt_history");
-                container.innerHTML = '<p style="color:#888;">No prompts yet</p>';
+                container.innerHTML = '<p class="qig-muted">No prompts yet</p>';
             }
         };
     });
@@ -7571,7 +7581,7 @@ async function useImageAsReference(source, popup) {
     const persistedSource = await persistReferenceImageSource(source);
     const s = getSettings();
     if (s.provider === "proxy") {
-        if (addProxyRefImage(persistedSource, "Image added to reference images")) popup.style.display = "none";
+        if (addProxyRefImage(persistedSource, "Image added to reference images")) hidePopup(popup);
         return;
     }
 
@@ -7586,7 +7596,7 @@ async function useImageAsReference(source, popup) {
         saveSettingsDebounced();
         if (s.provider === "nanobanana") renderNanobananaRefImages();
         else renderNanogptRefImages();
-        popup.style.display = "none";
+        hidePopup(popup);
         toastr.success("Image added to reference images");
         return;
     }
@@ -7599,7 +7609,7 @@ async function useImageAsReference(source, popup) {
     if (clearBtn) clearBtn.style.display = "block";
     const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
     if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
-    popup.style.display = "none";
+    hidePopup(popup);
     toastr.success("Image set as reference for img2img");
 }
 
@@ -8251,7 +8261,7 @@ function savePromptHistory() {
     }
 }
 
-function displayImage(entryOrUrl, skipGallery) {
+function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
     const entry = normalizeGenerationEntry(entryOrUrl);
     if (!entry.url) return;
     if (!skipGallery) void addToGallery(entry);
@@ -8265,16 +8275,16 @@ function displayImage(entryOrUrl, skipGallery) {
     const imageMetadataSettings = cloneMetadataSettings(entry.metadataSettings || {});
 
     const popup = createPopup("qig-popup", "Generated Image", `
-        <img id="qig-result-img" src="">
-        <button id="qig-toggle-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
+        <img id="qig-result-img" src="" alt="Generated image result">
+        <button id="qig-toggle-prompt-editor" type="button" aria-expanded="false" aria-controls="qig-result-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
             ✏️ Edit Prompt
         </button>
-        <div class="qig-prompt-editor" style="display:none;">
+        <div id="qig-result-prompt-editor" class="qig-prompt-editor" style="display:none;">
             <div style="padding: 8px 16px;">
-                <span id="qig-prompt-source-label" style="font-size: 10px; opacity: 0.7; display: block; margin-bottom: 4px;"></span>
-                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
+                <span id="qig-result-prompt-source-label" style="font-size: 10px; opacity: 0.7; display: block; margin-bottom: 4px;"></span>
+                <label for="qig-preview-prompt" style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
                 <textarea id="qig-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
-                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
+                <label for="qig-preview-negative" style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
                 <textarea id="qig-preview-negative" style="width: 100%; height: 60px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
                 <div style="display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end;">
                     <button id="qig-reset-prompt" class="menu_button" style="padding: 4px 10px; font-size: 11px;">Reset to Original</button>
@@ -8286,7 +8296,7 @@ function displayImage(entryOrUrl, skipGallery) {
             <button id="qig-use-as-ref" title="Use this image as reference for img2img">🖼 Use as Reference</button>
             <button id="qig-insert-btn" title="Insert this image into the chat">📌 Insert</button>
             <button id="qig-background-btn" title="Set this image as the current chat background">🖼 Background</button>
-            <button id="qig-gallery-btn" title="Save to gallery">🖼️ Gallery</button>
+            <button id="qig-gallery-btn" title="Open Gallery">🖼️ Open Gallery</button>
             <button id="qig-download-btn" title="Download image with metadata">💾 Download</button>
             <button id="qig-close-popup" title="Close without inserting">Close</button>
         </div>`, (popup) => {
@@ -8309,13 +8319,14 @@ function displayImage(entryOrUrl, skipGallery) {
         const editorDiv = popup.querySelector(".qig-prompt-editor");
         if (promptTextarea) promptTextarea.value = imagePrompt;
         if (negativeTextarea) negativeTextarea.value = imageNegative;
-        const sourceLabel = document.getElementById("qig-prompt-source-label");
+        const sourceLabel = popup.querySelector("#qig-result-prompt-source-label");
         if (sourceLabel) sourceLabel.textContent = imagePromptWasLLM ? "🤖 AI-Enhanced Prompt" : "📝 Direct Prompt";
         toggleBtn.onclick = (e) => {
             e.stopPropagation();
             const isVisible = editorDiv.style.display !== "none";
             editorDiv.style.display = isVisible ? "none" : "block";
             toggleBtn.textContent = isVisible ? "✏️ Edit Prompt" : "▲ Hide Prompt";
+            toggleBtn.setAttribute("aria-expanded", isVisible ? "false" : "true");
         };
         resetBtn.onclick = (e) => {
             e.stopPropagation();
@@ -8350,12 +8361,15 @@ function displayImage(entryOrUrl, skipGallery) {
                 toastr.error("Prompt cannot be empty");
                 return;
             }
-            popup.style.display = "none";
-            regenerateImage(lastEffectiveRequest);
+            const returnFocus = popup._qigReturnFocus;
+            hidePopup(popup, { restoreFocus: false });
+            regenerateImage(lastEffectiveRequest, returnFocus);
         };
         document.getElementById("qig-gallery-btn").onclick = (e) => {
             e.stopPropagation();
-            showGallery();
+            const returnFocusElement = popup._qigReturnFocus;
+            hidePopup(popup, { restoreFocus: false });
+            void showGallery(returnFocusElement);
         };
         document.getElementById("qig-insert-btn").onclick = async (e) => {
             e.stopPropagation();
@@ -8392,11 +8406,11 @@ function displayImage(entryOrUrl, skipGallery) {
                 toastr.error("Failed to save image as a reference");
             }
         };
-        document.getElementById("qig-close-popup").onclick = () => popup.style.display = "none";
-    });
+        document.getElementById("qig-close-popup").onclick = (e) => popup._qigDismiss?.(e);
+    }, { returnFocusElement });
 }
 
-function displayBatchResults(results) {
+function displayBatchResults(results, returnFocusElement = null) {
     const batchFallbackSourceMessageIndex = Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : null;
     const entries = results.map(result => normalizeGenerationEntry(result, {
         sourceMessageIndex: batchFallbackSourceMessageIndex,
@@ -8407,26 +8421,26 @@ function displayBatchResults(results) {
     let currentIndex = 0;
 
     const thumbsHtml = entries.map((_entry, i) =>
-        `<img class="qig-batch-thumb${i === 0 ? ' active' : ''}" data-index="${i}" alt="Generated image ${i + 1}">`
+        `<button type="button" class="qig-batch-thumb${i === 0 ? ' active' : ''}" data-index="${i}" aria-label="Show generated image ${i + 1}" aria-current="${i === 0 ? 'true' : 'false'}"><img alt=""></button>`
     ).join('');
 
     const popup = createPopup("qig-batch-popup", `Image 1/${entries.length}`, `
-        <img id="qig-batch-img" src="" style="max-width:100%;max-height:60vh;object-fit:contain;padding:10px;min-height:100px;">
+        <img id="qig-batch-img" src="" alt="Generated image 1 of ${entries.length}" style="max-width:100%;max-height:60vh;object-fit:contain;padding:10px;min-height:100px;">
         <div class="qig-batch-nav">
-            <button id="qig-batch-prev">◀</button>
+            <button id="qig-batch-prev" type="button" aria-label="Previous generated image">◀</button>
             <span id="qig-batch-counter">1 / ${entries.length}</span>
-            <button id="qig-batch-next">▶</button>
+            <button id="qig-batch-next" type="button" aria-label="Next generated image">▶</button>
         </div>
         <div class="qig-batch-thumbs">${thumbsHtml}</div>
-        <button id="qig-batch-toggle-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
+        <button id="qig-batch-toggle-prompt-editor" type="button" aria-expanded="false" aria-controls="qig-batch-prompt-editor" style="width: calc(100% - 32px); margin: 8px 16px; padding: 6px; background: var(--SmartThemeBlurTintColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; cursor: pointer; font-size: 11px;">
             ✏️ Edit Prompt
         </button>
-        <div class="qig-prompt-editor" style="display:none;">
+        <div id="qig-batch-prompt-editor" class="qig-prompt-editor" style="display:none;">
             <div style="padding: 8px 16px;">
                 <span id="qig-batch-prompt-source-label" style="font-size: 10px; opacity: 0.7; display: block; margin-bottom: 4px;"></span>
-                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
+                <label for="qig-batch-preview-prompt" style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin-bottom: 4px;">Prompt:</label>
                 <textarea id="qig-batch-preview-prompt" style="width: 100%; height: 80px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
-                <label style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
+                <label for="qig-batch-preview-negative" style="font-size: 11px; color: var(--SmartThemeBodyColor); display: block; margin: 8px 0 4px;">Negative Prompt:</label>
                 <textarea id="qig-batch-preview-negative" style="width: 100%; height: 60px; resize: vertical; background: var(--SmartThemeBlurTintColor); color: var(--SmartThemeBodyColor); border: 1px solid var(--SmartThemeBorderColor); border-radius: 4px; padding: 8px; font-size: 12px; font-family: monospace;"></textarea>
                 <div style="display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end;">
                     <button id="qig-batch-reset-prompt" class="menu_button" style="padding: 4px 10px; font-size: 11px;">Reset to Original</button>
@@ -8439,7 +8453,7 @@ function displayBatchResults(results) {
             <button id="qig-batch-insert" title="Insert selected image into chat">📌 Insert</button>
             <button id="qig-batch-insert-all" title="Insert all images into chat">📌 Insert All</button>
             <button id="qig-batch-background" title="Set selected image as the current chat background">🖼 Background</button>
-            <button id="qig-batch-gallery" title="Save all to gallery">🖼️ Gallery</button>
+            <button id="qig-batch-gallery" title="Open Gallery">🖼️ Open Gallery</button>
             <button id="qig-batch-download" title="Download selected image">💾 Download</button>
             <button id="qig-batch-save-all" title="Download all images">💾 Save All</button>
             <button id="qig-batch-close" title="Close without inserting">Close</button>
@@ -8453,7 +8467,7 @@ function displayBatchResults(results) {
         initResizeHandle(popup);
 
         popup.querySelectorAll('.qig-batch-thumb').forEach((thumb, index) => {
-            thumb.src = entries[index].url;
+            thumb.querySelector("img").src = entries[index].url;
         });
 
         const getCurrentEntry = () => entries[currentIndex];
@@ -8479,6 +8493,7 @@ function displayBatchResults(results) {
             const isVisible = batchEditorDiv.style.display !== "none";
             batchEditorDiv.style.display = isVisible ? "none" : "block";
             batchToggleBtn.textContent = isVisible ? "✏️ Edit Prompt" : "▲ Hide Prompt";
+            batchToggleBtn.setAttribute("aria-expanded", isVisible ? "false" : "true");
         };
         batchResetBtn.onclick = (e) => {
             e.stopPropagation();
@@ -8492,11 +8507,13 @@ function displayBatchResults(results) {
         function showImage(index) {
             currentIndex = index;
             img.src = entries[index].url;
+            img.alt = `Generated image ${index + 1} of ${entries.length}`;
             syncPromptEditor(entries[index]);
             document.getElementById("qig-batch-counter").textContent = `${index + 1} / ${entries.length}`;
             popup.querySelector('.qig-popup-header span').textContent = `Image ${index + 1}/${entries.length}`;
             popup.querySelectorAll('.qig-batch-thumb').forEach((t, i) => {
                 t.classList.toggle('active', i === index);
+                t.setAttribute("aria-current", i === index ? "true" : "false");
             });
         }
 
@@ -8526,7 +8543,6 @@ function displayBatchResults(results) {
             if (tag === "INPUT" || tag === "TEXTAREA") return;
             if (e.key === "ArrowLeft") showImage((currentIndex - 1 + entries.length) % entries.length);
             if (e.key === "ArrowRight") showImage((currentIndex + 1) % entries.length);
-            if (e.key === "Escape") { popup.style.display = "none"; document.removeEventListener("keydown", keyHandler); }
         };
         if (batchKeyHandler) document.removeEventListener("keydown", batchKeyHandler);
         batchKeyHandler = keyHandler;
@@ -8585,12 +8601,15 @@ function displayBatchResults(results) {
                 toastr.error("Prompt cannot be empty");
                 return;
             }
-            popup.style.display = "none";
-            regenerateImage(lastEffectiveRequest);
+            const returnFocus = popup._qigReturnFocus;
+            hidePopup(popup, { restoreFocus: false });
+            regenerateImage(lastEffectiveRequest, returnFocus);
         };
         document.getElementById("qig-batch-gallery").onclick = (e) => {
             e.stopPropagation();
-            showGallery();
+            const returnFocusElement = popup._qigReturnFocus;
+            hidePopup(popup, { restoreFocus: false });
+            void showGallery(returnFocusElement);
         };
         document.getElementById("qig-batch-insert").onclick = async (e) => {
             e.stopPropagation();
@@ -8624,11 +8643,11 @@ function displayBatchResults(results) {
                 toastr.error("Failed to save image as a reference");
             }
         };
-        document.getElementById("qig-batch-close").onclick = () => popup.style.display = "none";
-    });
+        document.getElementById("qig-batch-close").onclick = (e) => popup._qigDismiss?.(e);
+    }, { returnFocusElement });
 }
 
-async function showGallery() {
+async function showGallery(returnFocusElement = null) {
     await galleryInitializationPromise;
     const gallery = createPopup("qig-gallery-popup", "Gallery", `
         <div class="qig-gallery-panel">
@@ -8700,8 +8719,9 @@ async function showGallery() {
                     lastPrompt = item.prompt || "";
                     lastNegative = item.negative || "";
                     lastPromptWasLLM = !!item.promptWasLLM;
-                    gallery.style.display = "none";
-                    displayImage(item, true);
+                    const resultReturnFocus = gallery._qigReturnFocus;
+                    hidePopup(gallery, { restoreFocus: false });
+                    displayImage(item, true, resultReturnFocus);
                 };
                 grid.appendChild(card);
             }
@@ -8759,7 +8779,7 @@ async function showGallery() {
             };
         }
         renderGalleryGrid();
-    }, { contentClass: "qig-popup-content--wide", resizable: false });
+    }, { contentClass: "qig-popup-content--wide", resizable: false, returnFocusElement });
 }
 
 function bindAbortDismiss(signal, dismiss) {
@@ -8775,12 +8795,12 @@ function bindAbortDismiss(signal, dismiss) {
 function showPromptEditDialog(prompt, signal) {
     return new Promise((resolve) => {
         const popup = createPopup("qig-prompt-edit-popup", "Edit LLM Generated Prompt", `
-            <div style="background:#16213e;padding:20px;border-radius:12px;max-width:600px;width:90%;max-height:80vh;overflow:auto;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-                    <h3 style="margin:0;color:#e94560;">Edit Generated Prompt</h3>
-                    <button id="qig-prompt-edit-close" style="background:none;border:none;color:#fff;font-size:20px;cursor:pointer;">✕</button>
+            <div class="qig-prompt-edit-dialog">
+                <div class="qig-prompt-edit-dialog__header">
+                    <h3>Edit Generated Prompt</h3>
+                    <button id="qig-prompt-edit-close" class="qig-close-btn" type="button" aria-label="Close prompt editor">✕</button>
                 </div>
-                <textarea id="qig-prompt-edit-text" style="width:100%;height:200px;resize:vertical;background:#0f1419;color:#fff;border:1px solid #333;border-radius:4px;padding:8px;font-family:monospace;" placeholder="Edit the generated prompt..."></textarea>
+                <textarea id="qig-prompt-edit-text" placeholder="Edit the generated prompt..."></textarea>
                 <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
                     <button id="qig-prompt-edit-cancel" class="menu_button">Cancel</button>
                     <button id="qig-prompt-edit-use" class="menu_button">Use Prompt</button>
@@ -8801,7 +8821,7 @@ function showPromptEditDialog(prompt, signal) {
                 if (settled) return;
                 settled = true;
                 removeAbortListener();
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve(value);
             };
             const close = () => finish(null);
@@ -8861,7 +8881,7 @@ function showPlainDescriptionDialog() {
             const editEl = document.getElementById("qig-plain-description-edit");
 
             const close = () => {
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve(null);
             };
             const use = () => {
@@ -8871,7 +8891,7 @@ function showPlainDescriptionDialog() {
                     textEl.focus();
                     return;
                 }
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve({
                     description,
                     promptStyle: styleEl.value || "tags",
@@ -8934,7 +8954,7 @@ function showParagraphPicker(messageText, signal) {
                 if (settled) return;
                 settled = true;
                 removeAbortListener();
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve(value);
             };
             const close = () => finish(null);
@@ -9297,7 +9317,7 @@ function reportPartialBatchErrors(label, outcome) {
     );
 }
 
-async function regenerateImage(effectiveRequest = lastEffectiveRequest) {
+async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFocusElement = null) {
     if (isGenerating) return;
     if (!lastPrompt) {
         showStatus("❌ No previous prompt to regenerate");
@@ -9341,7 +9361,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest) {
                 }));
                 if (entry) {
                     assertGenerationCanCommit(run);
-                    displayImage(entry);
+                    displayImage(entry, false, returnFocusElement);
                 }
             }
         } else {
@@ -9366,9 +9386,9 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest) {
             hideStatus();
             assertGenerationCanCommit(run);
             if (results.length > 1) {
-                displayBatchResults(results);
+                displayBatchResults(results, returnFocusElement);
             } else if (results.length === 1) {
-                displayImage(results[0]);
+                displayImage(results[0], false, returnFocusElement);
             }
         }
     } catch (e) {
@@ -9932,7 +9952,7 @@ function showFilterDialog(filter) {
             const close = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve(null);
             };
             bindPopupDismiss(popup, close);
@@ -9957,7 +9977,7 @@ function showFilterDialog(filter) {
                 const selectedScope = getSelectedScopeInfo();
                 const poolIds = finalizePoolIdsForScope(selected, selectedScope);
                 if (!poolIds.length) { alert("Select at least one pool."); return; }
-                popup.style.display = "none";
+                hidePopup(popup);
                 resolve({
                     name,
                     keywords: mode === "LLM" ? "" : keywords,
@@ -10790,6 +10810,8 @@ window.setVisiblePoolsEnabled = setVisiblePoolsEnabled;
 // Character-specific settings
 let charSettingsBaseState = null;
 let charSettingsBaseCharId = null;
+let charSettingsOverrideApplied = false;
+let charSettingsStateInitialized = false;
 
 function getCurrentRefImages(s) {
     if (s.provider === "proxy") return s.proxyRefImages || [];
@@ -10809,6 +10831,11 @@ function cloneCharScopedState(s = getSettings()) {
         nanobananaRefImages: [...(s.nanobananaRefImages || [])],
         nanogptRefImages: [...(s.nanogptRefImages || [])],
     };
+}
+
+function rememberCharSettingsBaseState(state, s = getSettings()) {
+    charSettingsBaseState = cloneCharScopedState(state);
+    s._charSettingsBaseState = cloneCharScopedState(state);
 }
 
 function applyCharScopedState(state, s = getSettings()) {
@@ -10866,6 +10893,67 @@ function getCurrentCharId() {
 function getCurrentCharName() {
     const entry = getCurrentCharacterEntry();
     return entry?.name || entry?.avatar || null;
+}
+
+function getLegacyCurrentCharStorageKey(ctx = getContext?.()) {
+    const character = ctx?.characterId != null ? ctx?.characters?.[ctx.characterId] : null;
+    return typeof character?.avatar === "string" ? character.avatar : null;
+}
+
+function getCurrentCharOverride() {
+    const charId = getCurrentCharId();
+    if (charId == null) return null;
+    const legacyKey = getLegacyCurrentCharStorageKey();
+    const settings = charSettings[charId] || (legacyKey ? charSettings[legacyKey] : null);
+    const refs = charRefImages[charId] || (legacyKey ? charRefImages[legacyKey] : null);
+    return settings || (Array.isArray(refs) && refs.length ? { refsOnly: true } : null);
+}
+
+function persistCharacterStores(nextSettings, nextRefs, errorMessage) {
+    try {
+        const transaction = stageStorageTransaction(localStorage, {
+            qig_char_settings: JSON.stringify(nextSettings),
+            qig_char_ref_images: JSON.stringify(nextRefs),
+        });
+        transaction.commit();
+        charSettings = nextSettings;
+        charRefImages = nextRefs;
+        backupToSettings("qig_char_settings", charSettings);
+        backupToSettings("qig_char_ref_images", charRefImages);
+        return true;
+    } catch (error) {
+        log(`Character settings storage failed: ${error.message}`);
+        toastr.error(errorMessage || "Failed to save character settings. Browser storage may be full.");
+        return false;
+    }
+}
+
+function updateCharacterSettingsUI() {
+    const charId = getCurrentCharId();
+    const charName = getCurrentCharName();
+    const override = getCurrentCharOverride();
+    const style = getSettings().useSTStyle !== false ? getSTStyleSettings() : null;
+    const inherited = !!(style?.charPositive || style?.charNegative);
+    const status = document.getElementById("qig-character-status");
+    const inheritedStatus = document.getElementById("qig-character-inherited-status");
+    const saveButton = document.getElementById("qig-save-char-btn");
+    const resetButton = document.getElementById("qig-reset-char-btn");
+
+    if (status) {
+        status.textContent = charId == null
+            ? "No individual character is active. Character overrides are unavailable in groups."
+            : `${charName || "Current character"}: ${override ? "QIG override active" : "using global QIG settings"}`;
+    }
+    if (inheritedStatus) {
+        inheritedStatus.textContent = inherited
+            ? "SillyTavern character prefixes are inherited for this character."
+            : "No SillyTavern character-specific prefixes are active.";
+    }
+    if (saveButton) {
+        saveButton.disabled = charId == null;
+        saveButton.querySelector("span:last-child").textContent = charId == null ? "Save for character" : `Save for ${charName || "character"}`;
+    }
+    if (resetButton) resetButton.disabled = charId == null || !override;
 }
 
 function getCurrentCardKey() {
@@ -11094,28 +11182,55 @@ function ensureContextualFilterManagerScopeSelection(scopeOptions = getContextua
 
 function saveCharSettings() {
     const charId = getCurrentCharId();
-    if (charId == null) return;
+    if (charId == null) {
+        toastr.info("Open an individual character chat to save a character override");
+        return;
+    }
     const s = getSettings();
-    charSettings[charId] = {
+    const nextSettings = { ...charSettings, [charId]: {
         prompt: s.prompt,
         negativePrompt: s.negativePrompt,
         style: s.style,
         width: s.width,
         height: s.height
-    };
-    const savedCharSettings = safeSetStorage("qig_char_settings", JSON.stringify(charSettings), "Failed to save character settings. Browser storage may be full.");
+    } };
+    const nextRefs = { ...charRefImages };
     const refs = getCurrentRefImages(s);
     if (refs.length > 0) {
-        charRefImages[charId] = refs;
+        nextRefs[charId] = [...refs];
     } else {
-        delete charRefImages[charId];
+        delete nextRefs[charId];
     }
-    const savedCharRefs = safeSetStorage("qig_char_ref_images", JSON.stringify(charRefImages), "Failed to save character reference images. Browser storage may be full.");
-    if (!savedCharSettings || !savedCharRefs) return;
-    backupToSettings("qig_char_settings", charSettings);
-    backupToSettings("qig_char_ref_images", charRefImages);
+    if (!persistCharacterStores(nextSettings, nextRefs)) return;
+    charSettingsOverrideApplied = true;
+    updateCharacterSettingsUI();
     showStatus("💾 Saved settings for this character");
     setTimeout(hideStatus, 2000);
+}
+
+function resetCharSettings() {
+    const charId = getCurrentCharId();
+    if (charId == null || !getCurrentCharOverride()) return;
+    if (!confirm(`Remove the QIG override for ${getCurrentCharName() || "this character"}?`)) return;
+    const legacyKey = getLegacyCurrentCharStorageKey();
+    const nextSettings = { ...charSettings };
+    const nextRefs = { ...charRefImages };
+    delete nextSettings[charId];
+    delete nextRefs[charId];
+    if (legacyKey) {
+        delete nextSettings[legacyKey];
+        delete nextRefs[legacyKey];
+    }
+    if (!persistCharacterStores(nextSettings, nextRefs, "Failed to remove the character override. No changes were saved.")) return;
+    const hadRecoverableBase = !!charSettingsBaseState;
+    if (hadRecoverableBase) applyCharScopedState(charSettingsBaseState);
+    rememberCharSettingsBaseState(getSettings());
+    charSettingsOverrideApplied = false;
+    saveSettingsDebounced();
+    updateCharacterSettingsUI();
+    toastr.success(hadRecoverableBase
+        ? "Character override removed"
+        : "Character override removed; current values are now the global settings");
 }
 
 function loadCharSettings() {
@@ -11124,30 +11239,64 @@ function loadCharSettings() {
     if (!document.getElementById("qig-prompt")) return false;
 
     if (charId == null) {
-        if (charSettingsBaseState) {
+        if (charSettingsOverrideApplied && charSettingsBaseState) {
             applyCharScopedState(charSettingsBaseState, s);
             saveSettingsDebounced();
         }
+        rememberCharSettingsBaseState(s, s);
         charSettingsBaseState = null;
         charSettingsBaseCharId = null;
+        charSettingsOverrideApplied = false;
+        charSettingsStateInitialized = true;
+        updateCharacterSettingsUI();
         return false;
     }
 
     if (charSettingsBaseCharId !== charId) {
-        if (charSettingsBaseState) {
+        if (charSettingsOverrideApplied && charSettingsBaseState) {
             applyCharScopedState(charSettingsBaseState, s);
+        } else if (charSettingsStateInitialized && !charSettingsOverrideApplied) {
+            // Outside an override, live values are the authoritative global base.
+            rememberCharSettingsBaseState(s, s);
         }
-        charSettingsBaseState = cloneCharScopedState(s);
-        charSettingsBaseCharId = charId;
     }
 
+    const legacyKey = getLegacyCurrentCharStorageKey();
+    if (!charSettings[charId] && legacyKey && charSettings[legacyKey]) {
+        const nextSettings = { ...charSettings, [charId]: { ...charSettings[legacyKey] } };
+        persistCharacterStores(nextSettings, charRefImages);
+    }
+    if (!charRefImages[charId] && legacyKey && Array.isArray(charRefImages[legacyKey])) {
+        const nextRefs = { ...charRefImages, [charId]: [...charRefImages[legacyKey]] };
+        persistCharacterStores(charSettings, nextRefs);
+    }
     const hasSettings = !!charSettings[charId];
     const refs = Array.isArray(charRefImages[charId]) ? charRefImages[charId] : [];
     const hasRefs = refs.length > 0;
+    const hasOverride = hasSettings || hasRefs;
+    if (charSettingsBaseCharId !== charId) {
+        const persistedBase = s._charSettingsBaseState;
+        if (!hasOverride) {
+            rememberCharSettingsBaseState(s, s);
+        } else if (charSettingsStateInitialized && charSettingsBaseState) {
+            // A runtime transition captured or restored a newer global base above.
+        } else if (persistedBase && typeof persistedBase === "object") {
+            charSettingsBaseState = cloneCharScopedState(persistedBase);
+        } else {
+            // Older versions persisted character-applied values without preserving the global base.
+            // Keep those live values rather than replacing them with guessed defaults.
+            charSettingsBaseState = null;
+        }
+        charSettingsBaseCharId = charId;
+    }
     if (!hasSettings && !hasRefs) {
-        applyCharScopedState(charSettingsBaseState, s);
+        if (charSettingsBaseState) applyCharScopedState(charSettingsBaseState, s);
+        rememberCharSettingsBaseState(s, s);
+        charSettingsOverrideApplied = false;
+        charSettingsStateInitialized = true;
         saveSettingsDebounced();
         renderContextualFilters();
+        updateCharacterSettingsUI();
         return false;
     }
 
@@ -11193,8 +11342,11 @@ function loadCharSettings() {
     renderRefImages();
     renderNanobananaRefImages();
     renderNanogptRefImages();
+    charSettingsOverrideApplied = true;
+    charSettingsStateInitialized = true;
     saveSettingsDebounced();
     renderContextualFilters();
+    updateCharacterSettingsUI();
     return true;
 }
 
@@ -11227,15 +11379,17 @@ function loadConnectionProfile(name) {
     const provider = s.provider;
     const profile = connectionProfiles[provider]?.[name];
     if (!profile) return;
-    Object.assign(s, profile);
+    for (const key of PROVIDER_KEYS[provider] || []) {
+        if (profile[key] !== undefined) s[key] = profile[key];
+    }
     if (provider === "proxy") {
-        normalizeProxyChatImageSettings(s, profile);
         s.proxyEndpointMode = normalizeProxyEndpointSetting(s.proxyEndpointMode);
         normalizeProxyChatImageSettings(s, s);
     }
     saveSettingsDebounced();
     refreshProviderInputs(provider);
     renderProfileSelect(name);
+    syncGenerationPresetIndicators();
     showStatus(`📂 Loaded profile: ${name}`);
     setTimeout(hideStatus, 2000);
 }
@@ -11257,8 +11411,8 @@ function renderProfileSelect(selectedName = "") {
     const previousSelection = document.getElementById("qig-profile-dropdown")?.value || "";
     const selected = selectedName || previousSelection;
     container.innerHTML = profiles.length
-        ? `<select id="qig-profile-dropdown"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${escapeHtml(p)}" ${p === selected ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" style="padding:2px 6px;">🗑️</button>`
-        : "<span style='color:#888;font-size:11px;'>No saved profiles</span>";
+        ? `<select id="qig-profile-dropdown" aria-label="Connection profile for ${escapeHtml(PROVIDERS[provider]?.name || provider)}"><option value="">-- Select Profile --</option>${profiles.map(p => `<option value="${escapeHtml(p)}" ${p === selected ? "selected" : ""}>${escapeHtml(p)}</option>`).join("")}</select><button id="qig-profile-del" class="menu_button" type="button" aria-label="Delete selected connection profile" title="Delete selected connection profile" style="padding:2px 6px;">🗑️</button>`
+        : "<span class='qig-muted'>No saved profiles</span>";
     const dropdown = document.getElementById("qig-profile-dropdown");
     if (dropdown) dropdown.onchange = (e) => { if (e.target.value) loadConnectionProfile(e.target.value); };
     const delBtn = document.getElementById("qig-profile-del");
@@ -11401,7 +11555,11 @@ async function deleteSelectedComfyWorkflowPreset() {
 }
 
 // === Generation Presets ===
-const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "proxyEndpointMode", "proxyPayloadMode", "proxyRefImageMode", "proxySse", "proxyChatImageMode", "proxyChatImageAllowImagesEndpoint", "proxyChatImageSystemPrompt", "proxyChatImageIncludePersonality", "proxyChatImageMaxTokens"];
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "batchCount", "sequentialSeeds", "a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength"];
+
+function getGenerationPresetKeys(presetOrSettings) {
+    return presetOrSettings?.provider === "proxy" ? [...PRESET_KEYS, ...PROXY_RECIPE_KEYS] : PRESET_KEYS;
+}
 
 function saveGenerationPresetStore(errorMessage = "Failed to save preset. Browser storage may be full.") {
     return saveLocalStoreBackup("qig_gen_presets", generationPresets, errorMessage);
@@ -11430,7 +11588,16 @@ function ensureGenerationPresetIds({ persist = false } = {}) {
 }
 
 function getActiveGenerationPresetId() {
-    return String(getSettings()?.lastLoadedPresetId || "");
+    const s = getSettings();
+    const presetId = String(s?.lastLoadedPresetId || "");
+    const preset = generationPresets.find(entry => entry?.id === presetId);
+    return preset && generationPresetMatchesSettings(preset, s) ? presetId : "";
+}
+
+function generationPresetMatchesSettings(preset, settings = getSettings()) {
+    if (!preset || !settings) return false;
+    const keys = [...getGenerationPresetKeys(preset), "useSTStyle", "injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
+    return keys.every(key => preset[key] === undefined || preset[key] === settings[key]);
 }
 
 function syncActiveGenerationPresetSetting({ persist = false } = {}) {
@@ -11513,13 +11680,22 @@ function setActiveGenerationPresetId(presetId = "", { persist = true } = {}) {
     renderPresets();
 }
 
+function syncGenerationPresetIndicators() {
+    const activePresetId = getActiveGenerationPresetId();
+    const select = document.getElementById("qig-preset-select");
+    if (select) select.value = activePresetId;
+    document.querySelectorAll("#qig-presets .qig-preset-chip > .menu_button:first-child").forEach(button => {
+        button.classList.toggle("qig-preset-chip--active", button.dataset.presetId === activePresetId);
+    });
+}
+
 async function savePreset() {
     const name = prompt("Preset name:");
     if (!name) return;
     ensureFilterPoolsState();
     const s = getSettings();
     const preset = { id: generateUUID(), name };
-    PRESET_KEYS.forEach(k => preset[k] = s[k]);
+    getGenerationPresetKeys(s).forEach(k => preset[k] = s[k]);
     // Include ST Style toggle state
     if (s.useSTStyle !== undefined) preset.useSTStyle = s.useSTStyle;
     // Include inject mode settings
@@ -11527,6 +11703,8 @@ async function savePreset() {
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
     generationPresets.push(preset);
     if (!await saveGenerationPresetStoreNow()) return;
+    setActiveGenerationPresetId(preset.id, { persist: false });
+    saveSettingsDebounced();
     renderPresets();
     showStatus(`💾 Saved preset: ${name}`);
     setTimeout(hideStatus, 2000);
@@ -11537,7 +11715,13 @@ function loadPreset(i) {
     const p = generationPresets[i];
     if (!p) return;
     const s = getSettings();
-    PRESET_KEYS.forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    getGenerationPresetKeys(p).forEach(k => { if (p[k] !== undefined) s[k] = p[k]; });
+    if (p.provider === "proxy") {
+        if (p.proxySteps === undefined && p.steps !== undefined) s.proxySteps = p.steps;
+        if (p.proxyCfg === undefined && p.cfgScale !== undefined) s.proxyCfg = p.cfgScale;
+        if (p.proxySampler === undefined && p.sampler !== undefined) s.proxySampler = p.sampler;
+        if (p.proxySeed === undefined && p.seed !== undefined) s.proxySeed = p.seed;
+    }
     normalizeProxyChatImageSettings(s, p);
     s.proxyEndpointMode = normalizeProxyEndpointSetting(s.proxyEndpointMode);
     normalizeProxyChatImageSettings(s, s);
@@ -11624,7 +11808,7 @@ function showSetupWizard() {
                 <label id="qig-wizard-key-label" for="qig-wizard-key">API Key</label>
                 <input id="qig-wizard-key" type="password" autocomplete="off" placeholder="Paste your API key">
             </div>
-            <div id="qig-wizard-extra-note" class="qig-muted" style="display:none;">This provider has more required settings (server URL, models). Finish here, then open Setup &amp; Advanced → Connection.</div>
+            <div id="qig-wizard-extra-note" class="qig-muted" style="display:none;">This provider has more required settings (server URL, models). Finish here, then open More settings → Provider Setup.</div>
             <label for="qig-wizard-style">Style</label>
             <select id="qig-wizard-style">${styleOpts}</select>
             <div class="qig-wizard-actions">
@@ -11653,7 +11837,6 @@ function showSetupWizard() {
         };
         providerSel.onchange = syncFields;
         syncFields();
-        const closeWizard = () => { popup.style.display = "none"; };
         const applyWizard = () => {
             const settings = getSettings();
             const provider = providerSel.value;
@@ -11662,14 +11845,18 @@ function showSetupWizard() {
             if (keyField) settings[keyField] = keyInput.value.trim();
             settings.style = popup.querySelector("#qig-wizard-style").value;
             saveSettingsDebounced();
-            createUI();
         };
-        popup.querySelector("#qig-wizard-skip").onclick = closeWizard;
-        popup.querySelector("#qig-wizard-save").onclick = () => { applyWizard(); closeWizard(); };
+        const finishWizard = ({ generate = false } = {}) => {
+            hidePopup(popup, { restoreFocus: false });
+            createUI();
+            document.getElementById("qig-wizard-btn")?.focus();
+            if (generate) runConfiguredPaletteGeneration();
+        };
+        popup.querySelector("#qig-wizard-skip").onclick = () => hidePopup(popup);
+        popup.querySelector("#qig-wizard-save").onclick = () => { applyWizard(); finishWizard(); };
         popup.querySelector("#qig-wizard-test").onclick = () => {
             applyWizard();
-            closeWizard();
-            runConfiguredPaletteGeneration();
+            finishWizard({ generate: true });
         };
     }, { resizable: false, popupClass: "wizard" });
 }
@@ -11702,6 +11889,7 @@ function renderPresets() {
         const loadButton = document.createElement("button");
         loadButton.type = "button";
         loadButton.className = `menu_button${preset?.id === activePresetId ? " qig-preset-chip--active" : ""}`;
+        loadButton.dataset.presetId = preset?.id || "";
         loadButton.textContent = preset?.name || "(unnamed)";
         loadButton.onclick = () => loadPreset(index);
         const deleteButton = document.createElement("button");
@@ -11754,14 +11942,12 @@ function applyInjectTagNameChange(nextTagName) {
 function refreshAllUI(s) {
     const fields = {
         "qig-prompt": "prompt", "qig-negative": "negativePrompt", "qig-quality": "qualityTags",
-        "qig-width": "width", "qig-height": "height", "qig-steps": "steps",
-        "qig-cfg": "cfgScale", "qig-sampler": "sampler", "qig-seed": "seed",
+        "qig-width": "width", "qig-height": "height",
         "qig-batch": "batchCount", "qig-provider": "provider", "qig-style": "style",
         "qig-llm-style": "llmPromptStyle",
         "qig-llm-prefill": "llmPrefill",
         "qig-llm-custom": "llmCustomInstruction",
         "qig-auto-generate-every": "autoGenerateEveryMessages",
-        "qig-auto-generate-delay": "autoGenerateDelayMs",
         "qig-two-step-instruction": "twoStepInstruction",
         "qig-background-mode": "backgroundMode",
         "qig-output-mode": "outputMode",
@@ -11777,6 +11963,9 @@ function refreshAllUI(s) {
         const el = document.getElementById(id);
         if (el) el.value = s[key] ?? "";
     });
+    syncGenerationSettingsControls(s);
+    const delayEl = document.getElementById("qig-auto-generate-delay");
+    if (delayEl) delayEl.value = String((s.autoGenerateDelayMs ?? AUTO_GENERATE_DELAY_DEFAULT) / 1000);
     const checks = {
         "qig-append-quality": "appendQuality",
         "qig-use-llm": "useLLMPrompt", "qig-auto-generate": "autoGenerate",
@@ -11807,6 +11996,7 @@ function refreshAllUI(s) {
     if (injectDepthWrap) injectDepthWrap.style.display = s.injectPosition === "atDepth" ? "block" : "none";
     renderContextualFilters();
     updateQigStatusLine();
+    syncGenerationPresetIndicators();
 }
 
 // === Export / Import Settings ===
@@ -12017,6 +12207,32 @@ function syncA1111VisibilityFromSettings(s) {
     if (controlnetOpts) controlnetOpts.style.display = s.a1111ControlNet ? "block" : "none";
 }
 
+function syncGenerationSettingsControls(settings = getSettings()) {
+    const isProxy = settings.provider === "proxy";
+    const samplerValue = isProxy
+        ? String(settings.proxySampler || settings.sampler || "")
+        : getSamplerControlValue(settings.sampler);
+    const values = {
+        "qig-steps": isProxy ? settings.proxySteps : settings.steps,
+        "qig-cfg": isProxy ? settings.proxyCfg : settings.cfgScale,
+        "qig-sampler": samplerValue,
+        "qig-seed": isProxy ? settings.proxySeed : settings.seed,
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const element = document.getElementById(id);
+        if (!element) return;
+        if (id === "qig-sampler") {
+            element.querySelector("option[data-qig-custom-sampler]")?.remove();
+            if (value && ![...element.options].some(option => option.value === value)) {
+                const option = new Option(String(value), value);
+                option.dataset.qigCustomSampler = "true";
+                element.appendChild(option);
+            }
+        }
+        element.value = value ?? "";
+    });
+}
+
 function refreshProviderInputs(provider, { updateProviderVisibility = true } = {}) {
     const s = getSettings();
     const map = {
@@ -12112,7 +12328,7 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
             ["qig-comfy-flux-vae", "comfyFluxVaeModel"],
             ["qig-comfy-flux-clip-type", "comfyFluxClipType"]
         ],
-        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-timeout", "proxyTimeout"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-steps", "proxySteps"], ["qig-proxy-cfg", "proxyCfg"], ["qig-proxy-sampler", "proxySampler"], ["qig-proxy-seed", "proxySeed"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-chat-mode", "proxyChatImageMode"], ["qig-proxy-chat-allow-images", "proxyChatImageAllowImagesEndpoint"], ["qig-proxy-chat-system", "proxyChatImageSystemPrompt"], ["qig-proxy-chat-personality", "proxyChatImageIncludePersonality"], ["qig-proxy-chat-max-tokens", "proxyChatImageMaxTokens"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
+        proxy: [["qig-proxy-url", "proxyUrl"], ["qig-proxy-key", "proxyKey"], ["qig-proxy-model", "proxyModel"], ["qig-proxy-timeout", "proxyTimeout"], ["qig-proxy-endpoint-mode", "proxyEndpointMode"], ["qig-proxy-payload-mode", "proxyPayloadMode"], ["qig-proxy-ref-mode", "proxyRefImageMode"], ["qig-proxy-sse-mode", "proxySse"], ["qig-proxy-loras", "proxyLoras"], ["qig-proxy-extra", "proxyExtraInstructions"], ["qig-proxy-facefix", "proxyFacefix"], ["qig-proxy-chat-mode", "proxyChatImageMode"], ["qig-proxy-chat-allow-images", "proxyChatImageAllowImagesEndpoint"], ["qig-proxy-chat-system", "proxyChatImageSystemPrompt"], ["qig-proxy-chat-personality", "proxyChatImageIncludePersonality"], ["qig-proxy-chat-max-tokens", "proxyChatImageMaxTokens"], ["qig-proxy-comfy-mode", "proxyComfyMode"], ["qig-proxy-comfy-timeout", "proxyComfyTimeout"], ["qig-proxy-comfy-node-id", "proxyComfyNodeId"], ["qig-proxy-comfy-workflow", "proxyComfyWorkflow"]]
     };
     (map[provider] || []).forEach(([id, key]) => {
         const el = document.getElementById(id);
@@ -12160,6 +12376,7 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
     }
     if (provider === "nanobanana") renderNanobananaRefImages();
     if (provider === "nanogpt") renderNanogptRefImages();
+    syncGenerationSettingsControls(s);
     if (updateProviderVisibility) updateProviderUI();
 }
 
@@ -12176,7 +12393,7 @@ function updateProviderUI() {
     const isNai = s.provider === "novelai";
     const sizeCustomEl = document.getElementById("qig-size-custom");
     const naiResolutionEl = document.getElementById("qig-nai-resolution");
-    if (sizeCustomEl) sizeCustomEl.style.display = "flex";
+    if (sizeCustomEl) sizeCustomEl.style.display = "grid";
     if (naiResolutionEl) naiResolutionEl.style.display = isNai ? "block" : "none";
     if (isNai) {
         const changed = normalizeSize(s);
@@ -12184,6 +12401,7 @@ function updateProviderUI() {
         syncNaiResolutionSelect();
         if (changed) saveSettingsDebounced();
     }
+    syncGenerationSettingsControls(s);
     updateQigStatusLine();
 }
 
@@ -12368,11 +12586,27 @@ function bind(id, key, isNum = false, isCheckbox = false, onChange = null) {
         if (typeof onChange === "function") onChange(value, e);
         saveSettingsDebounced();
         updateQigStatusLine();
+        syncGenerationPresetIndicators();
+        syncGenerationPresetIndicators();
     };
 }
 
 function bindCheckbox(id, key) {
     return bind(id, key, false, true);
+}
+
+function associateSettingsLabels(root = document.getElementById("qig-settings")) {
+    root?.querySelectorAll("label:not([for])").forEach(label => {
+        if (label.querySelector("input, select, textarea") || label.id) return;
+        const next = label.nextElementSibling;
+        if (next?.matches?.("input[id], select[id], textarea[id]")) {
+            label.htmlFor = next.id;
+            return;
+        }
+        const controls = label.parentElement?.querySelectorAll(":scope > input, :scope > select, :scope > textarea") || [];
+        if (controls.length !== 1 || !controls[0].id) return;
+        label.htmlFor = controls[0].id;
+    });
 }
 
 function setAutoGenerateEnabled(checked) {
@@ -12392,7 +12626,7 @@ function syncAutoGenerateControls(settings = getSettings()) {
     const everyEl = getOrCacheElement("qig-auto-generate-every");
     if (everyEl) everyEl.value = String(s?.autoGenerateEveryMessages ?? AUTO_GENERATE_EVERY_DEFAULT);
     const delayEl = getOrCacheElement("qig-auto-generate-delay");
-    if (delayEl) delayEl.value = String(s?.autoGenerateDelayMs ?? AUTO_GENERATE_DELAY_DEFAULT);
+    if (delayEl) delayEl.value = String((s?.autoGenerateDelayMs ?? AUTO_GENERATE_DELAY_DEFAULT) / 1000);
 }
 
 function syncTwoStepPromptControls(settings = getSettings()) {
@@ -12548,8 +12782,12 @@ function createUI() {
     const setupPanelExpanded = collapsed.setupPanel ? "false" : "true";
     const promptSourceMode = derivePromptSource(s);
     const selectedNaiResolution = getNaiResolutionOptionValue(s.width, s.height);
+    const activeSteps = s.provider === "proxy" ? (s.proxySteps ?? s.steps) : s.steps;
+    const activeCfg = s.provider === "proxy" ? (s.proxyCfg ?? s.cfgScale) : s.cfgScale;
+    const activeSampler = s.provider === "proxy" ? (s.proxySampler || s.sampler) : s.sampler;
+    const activeSeed = s.provider === "proxy" ? (s.proxySeed ?? s.seed) : s.seed;
     const samplerOpts = Object.entries(SAMPLER_GROUPS).map(([group, ids]) =>
-        `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${s.sampler === x ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
+        `<optgroup label="${group}">${ids.map(x => `<option value="${x}" ${activeSampler === x || SAMPLER_DISPLAY_NAMES[x] === activeSampler ? "selected" : ""}>${SAMPLER_DISPLAY_NAMES[x] || x}</option>`).join("")}</optgroup>`
     ).join("");
     const comfyWorkflowPresetOpts = [
         `<option value="">-- Select Workflow Preset --</option>`,
@@ -12590,7 +12828,7 @@ function createUI() {
                             <span>${esc(activeBatchLabel)}</span>
                         </div>
                     </div>
-                    <div id="qig-status-warnings" class="qig-status-warnings" style="display:none;"></div>
+                    <div id="qig-status-warnings" class="qig-status-warnings" role="status" aria-live="polite" style="display:none;"></div>
                 </div>
 
                 <div class="qig-essentials">
@@ -12609,7 +12847,7 @@ function createUI() {
                     </div>
                     <div class="qig-field">
                         <label id="qig-prompt-source-label">Prompt source</label>
-                        <div class="qig-prompt-source" role="radiogroup" aria-labelledby="qig-prompt-source-label">
+                            <div class="qig-prompt-source" role="radiogroup" aria-labelledby="qig-prompt-source-label" aria-describedby="qig-prompt-source-help">
                             <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="manual" ${promptSourceMode === "manual" ? "checked" : ""}><span>Manual</span></label>
                             <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="chat" ${promptSourceMode === "chat" ? "checked" : ""}><span>Chat scene</span></label>
                             <label class="qig-prompt-source__option"><input type="radio" name="qig-prompt-source" value="tags" ${promptSourceMode === "tags" ? "checked" : ""}><span>AI-tagged (auto)</span></label>
@@ -12617,7 +12855,7 @@ function createUI() {
                         <small id="qig-prompt-source-help">${esc(PROMPT_SOURCE_HELP[promptSourceMode] || "")}</small>
                     </div>
                     <div class="qig-field">
-                        <label>Style</label>
+                        <label for="qig-style">Style</label>
                         <select id="qig-style">${styleOpts}</select>
                         <small>Visual style preset applied to the prompt.</small>
                     </div>
@@ -12625,25 +12863,24 @@ function createUI() {
 
                 <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
                     <button id="qig-wizard-btn" class="menu_button" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup</span></button>
-                    <button id="qig-save-char-btn" class="menu_button" title="Save current settings as defaults for this character"><span class="fa-solid fa-user-check"></span><span>Save Char</span></button>
                     <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
                 </div>
 
                 <div class="qig-collapsible qig-setup-shell">
                     <button id="qig-setup-toggle" type="button" class="qig-collapsible__header" aria-expanded="${setupPanelExpanded}" aria-controls="qig-setup-panel">
                         <span>
-                            <span class="qig-card-title">Setup &amp; Advanced</span>
-                            <small>Provider credentials, prompt engineering, automation, and output options.</small>
+                            <span class="qig-card-title">More settings</span>
+                            <small>Generation controls, character context, automation, and provider setup.</small>
                         </span>
                         <span class="qig-collapsible__icon fa-solid ${collapsed.setupPanel ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
                     </button>
                     <div id="qig-setup-panel" class="qig-collapsible__content" ${setupPanelHidden}>
 
-                <section class="qig-menu-section qig-menu-section--connection" aria-labelledby="qig-connection-heading">
+                <section class="qig-menu-section qig-menu-section--connection qig-flow-provider" aria-labelledby="qig-connection-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span id="qig-connection-heading" class="qig-section-kicker">Connection</span>
-                            <p>Choose the image backend, load reusable credentials, and set the active style.</p>
+                            <h3 id="qig-connection-heading" class="qig-section-kicker">Provider Setup</h3>
+                            <p>Choose an image backend and manage its credentials, model, and connection profile.</p>
                         </div>
                     </div>
                     <div class="qig-control-grid">
@@ -13217,7 +13454,7 @@ function createUI() {
                              </div>
                              <label>Control Image</label>
                              <div style="display:flex;gap:4px;align-items:center;">
-                                 <img id="qig-a1111-cn-preview" src="${esc(s.a1111ControlNetImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.a1111ControlNetImage ? 'block' : 'none'};background:#333;">
+                                 <img id="qig-a1111-cn-preview" src="${esc(s.a1111ControlNetImage || '')}" alt="ControlNet reference preview" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.a1111ControlNetImage ? 'block' : 'none'};background:var(--qig-surface-soft);">
                                  <button id="qig-a1111-cn-upload-btn" class="menu_button" style="flex:1;">📎 Upload Control Image</button>
                                  <button id="qig-a1111-cn-clear-btn" class="menu_button" style="width:30px;color:#e94560;display:${s.a1111ControlNetImage ? 'block' : 'none'};">×</button>
                              </div>
@@ -13228,7 +13465,7 @@ function createUI() {
                     <hr style="margin:8px 0;opacity:0.2;">
                     <label>Reference Image</label>
                     <div style="display:flex;gap:4px;align-items:center;">
-                        <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:#333;">
+                        <img id="qig-local-ref-preview" src="${esc(s.localRefImage || '')}" alt="Local reference image preview" style="width:40px;height:40px;object-fit:cover;border-radius:4px;display:${s.localRefImage ? 'block' : 'none'};background:var(--qig-surface-soft);">
                         <button id="qig-local-ref-btn" class="menu_button" style="flex:1;">📎 Upload Source</button>
                         <button id="qig-local-ref-clear" class="menu_button" style="width:30px;color:#e94560;display:${s.localRefImage ? 'block' : 'none'};">×</button>
                     </div>
@@ -13331,20 +13568,6 @@ function createUI() {
                     <label>LoRAs (id:weight, comma-separated)</label>
                     <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters.</small>
                     <input id="qig-proxy-loras" type="text" value="${esc(s.proxyLoras || "")}" placeholder="123456:0.8, 789012:0.6">
-                    <div class="qig-row">
-                        <div><label>Steps</label><input id="qig-proxy-steps" type="number" value="${esc(s.proxySteps || 25)}" min="8" max="50"></div>
-                        <div><label>CFG</label><input id="qig-proxy-cfg" type="number" value="${esc(s.proxyCfg || 6)}" min="1" max="15" step="0.5"></div>
-                        <div><label>Seed</label><input id="qig-proxy-seed" type="number" value="${esc(s.proxySeed ?? -1)}"></div>
-                    </div>
-                    <label>Sampler</label>
-                    <select id="qig-proxy-sampler">
-                        <option value="Euler a" ${s.proxySampler === "Euler a" ? "selected" : ""}>Euler a</option>
-                        <option value="Euler" ${s.proxySampler === "Euler" ? "selected" : ""}>Euler</option>
-                        <option value="DPM++ 2M Karras" ${s.proxySampler === "DPM++ 2M Karras" ? "selected" : ""}>DPM++ 2M Karras</option>
-                        <option value="DPM++ SDE Karras" ${s.proxySampler === "DPM++ SDE Karras" ? "selected" : ""}>DPM++ SDE Karras</option>
-                        <option value="DPM++ 2M SDE Karras" ${s.proxySampler === "DPM++ 2M SDE Karras" ? "selected" : ""}>DPM++ 2M SDE Karras</option>
-                        <option value="DDIM" ${s.proxySampler === "DDIM" ? "selected" : ""}>DDIM</option>
-                    </select>
                     <label class="checkbox_label">
                         <input id="qig-proxy-facefix" type="checkbox" ${s.proxyFacefix ? "checked" : ""}>
                         <span>Enable Face Fix (PixAI ADetailer)</span>
@@ -13364,22 +13587,22 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section qig-menu-section--prompt" aria-labelledby="qig-prompt-heading">
+                <section class="qig-menu-section qig-menu-section--prompt qig-flow-create" aria-labelledby="qig-prompt-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span id="qig-prompt-heading" class="qig-section-kicker">Prompt</span>
-                            <p>Save repeatable presets and fine-tune how chat context is converted.</p>
+                            <h3 id="qig-prompt-heading" class="qig-section-kicker">Create</h3>
+                            <p>Manage generation recipes and fine-tune how QIG turns your prompt or chat into an image instruction.</p>
                         </div>
                     </div>
                     <div class="qig-action-strip">
                         <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
                         <button id="qig-plain-desc-btn" class="menu_button" title="Write a plain-language image description and let the AI turn it into a prompt"><span class="fa-solid fa-pen-to-square"></span><span>Plain Description</span></button>
-                        <button id="qig-save-preset" class="menu_button" title="Save all generation settings as a preset"><span class="fa-solid fa-bookmark"></span><span>Save Preset</span></button>
+                        <button id="qig-save-preset" class="menu_button" title="Save the current generation recipe"><span class="fa-solid fa-bookmark"></span><span>Save Recipe</span></button>
                         <button id="qig-export-btn" class="menu_button"><span class="fa-solid fa-file-export"></span><span>Export</span></button>
                         <button id="qig-import-btn" class="menu_button"><span class="fa-solid fa-file-import"></span><span>Import</span></button>
                     </div>
                     <div id="qig-presets" class="qig-presets"></div>
-                    <small class="qig-muted">Profiles save provider config. Presets save generation and inject settings. Contextual filters stay managed separately.</small>
+                    <small class="qig-muted">Recipes save generation behavior, not credentials or every provider option. Connection profiles save the active provider's private setup.</small>
 
                     <button id="qig-prompt-advanced-toggle" type="button" class="qig-collapsible__header qig-inline-collapsible" aria-expanded="${promptAdvancedExpanded}" aria-controls="qig-prompt-advanced-content">
                         <span>
@@ -13475,10 +13698,10 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-context-heading">
+                <section class="qig-menu-section qig-flow-context" aria-labelledby="qig-context-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span id="qig-context-heading" class="qig-section-kicker">Context</span>
+                            <h3 id="qig-context-heading" class="qig-section-kicker">Context</h3>
                             <p>Apply SillyTavern style data and manage conditional prompt rules.</p>
                         </div>
                     </div>
@@ -13487,6 +13710,16 @@ function createUI() {
                         <span>Use SillyTavern's Style panel</span>
                     </label>
                     <small class="qig-muted">Applies its prefix, negative prompt, and character-specific settings.</small>
+                    <div class="qig-character-panel">
+                        <div class="qig-card-title">Character Layers</div>
+                        <p id="qig-character-status" class="qig-character-panel__status"></p>
+                        <small id="qig-character-inherited-status" class="qig-muted"></small>
+                        <div class="qig-character-panel__actions">
+                            <button id="qig-save-char-btn" type="button" class="menu_button" title="Save the current QIG prompt, negative prompt, style, size, and references for this character"><span class="fa-solid fa-user-check" aria-hidden="true"></span><span>Save for character</span></button>
+                            <button id="qig-reset-char-btn" type="button" class="menu_button" title="Remove this character's QIG override"><span class="fa-solid fa-rotate-left" aria-hidden="true"></span><span>Reset override</span></button>
+                        </div>
+                        <small class="qig-muted">QIG overrides save complete defaults for this character. SillyTavern Style prefixes are inherited separately and remain managed by SillyTavern.</small>
+                    </div>
                     <div class="qig-filter-panel">
                         <div class="qig-card-title">Contextual Filters</div>
                         <small class="qig-muted">Open the manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
@@ -13494,11 +13727,11 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-automation-heading">
+                <section class="qig-menu-section qig-flow-automation" aria-labelledby="qig-automation-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span id="qig-automation-heading" class="qig-section-kicker">Automation</span>
-                            <p>Control when images generate and how finished images land in chat.</p>
+                            <h3 id="qig-automation-heading" class="qig-section-kicker">Automation &amp; Delivery</h3>
+                            <p>Control when images generate and how finished images are inserted or stored.</p>
                         </div>
                     </div>
                     <div class="qig-subsection">
@@ -13508,12 +13741,12 @@ function createUI() {
                     </label>
                     <div class="qig-control-grid" style="margin:6px 0 8px;">
                         <div class="qig-field">
-                            <label>Every AI replies</label>
+                            <label for="qig-auto-generate-every">Generate every N AI replies</label>
                             <input id="qig-auto-generate-every" type="number" value="${esc(normalizeAutoGenerateEveryMessages(s.autoGenerateEveryMessages))}" min="${AUTO_GENERATE_EVERY_MIN}" max="${AUTO_GENERATE_EVERY_MAX}" step="1">
                         </div>
                         <div class="qig-field">
-                            <label>Delay (ms)</label>
-                            <input id="qig-auto-generate-delay" type="number" value="${esc(normalizeAutoGenerateDelayMs(s.autoGenerateDelayMs))}" min="${AUTO_GENERATE_DELAY_MIN}" max="${AUTO_GENERATE_DELAY_MAX}" step="100">
+                            <label for="qig-auto-generate-delay">Delay (seconds)</label>
+                            <input id="qig-auto-generate-delay" type="number" value="${esc(normalizeAutoGenerateDelayMs(s.autoGenerateDelayMs) / 1000)}" min="0" max="60" step="0.1">
                         </div>
                     </div>
                     <small class="qig-muted">1 keeps current behavior; 3 means every third eligible AI reply. Delay applies to normal and inject auto-generation.</small>
@@ -13602,7 +13835,7 @@ function createUI() {
                 </div>
                 <small style="opacity:0.6;font-size:10px;">Direct uses the selected scene settings. Inject extracts image tags from the latest tagged AI message, or asks the LLM for one tag from the selected scene.</small>
 
-                <div class="qig-dependent-panel">
+                <div id="qig-text-ai-routing" class="qig-dependent-panel">
                     <label class="checkbox_label">
                         <input id="qig-llm-override" type="checkbox" ${s.llmOverrideEnabled ? "checked" : ""}>
                         <span>Use separate AI for image prompts</span>
@@ -13619,13 +13852,14 @@ function createUI() {
                 </div>
                 </section>
 
-                <section class="qig-menu-section" aria-labelledby="qig-output-heading">
+                <section class="qig-menu-section qig-flow-generation" aria-labelledby="qig-output-heading">
                     <div class="qig-section-header">
                         <div>
-                            <span id="qig-output-heading" class="qig-section-kicker">Output</span>
-                            <p>Set insertion behavior, saved file handling, image size, and repeat count.</p>
+                            <h3 id="qig-output-heading" class="qig-section-kicker">Generation</h3>
+                            <p>Set image size, count, sampler, guidance, and seed in one place.</p>
                         </div>
                     </div>
+                <div id="qig-delivery-settings">
                 <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
                     <span>Auto-insert into chat (skip popup)</span>
@@ -13661,31 +13895,32 @@ function createUI() {
                     <input id="qig-save-to-server-meta" type="checkbox" ${s.saveToServerEmbedMetadata ? "checked" : ""} ${s.saveToServer ? "" : "disabled"}>
                     <span>Embed metadata in saved PNGs</span>
                 </label>
+                </div>
 
-                <div class="qig-control-grid">
-                    <div class="qig-field qig-field--full">
-                        <label>Size</label>
-                        <small>Output resolution in pixels. Larger images are slower and use more VRAM.</small>
+                <div class="qig-control-grid qig-generation-grid">
+                    <fieldset class="qig-field qig-field--full qig-size-fieldset">
+                        <legend>Image size</legend>
+                        <small id="qig-size-help">Output resolution in pixels. Larger images are slower and use more VRAM.</small>
                         <div id="qig-size-custom" class="qig-row qig-size-row">
-                            <input id="qig-width" type="number" value="${esc(s.width)}" min="256" max="2048" step="64">
-                            <span>×</span>
-                            <input id="qig-height" type="number" value="${esc(s.height)}" min="256" max="2048" step="64">
-                            <select id="qig-aspect" style="width:70px;margin-left:4px">
+                            <label><span>Width</span><input id="qig-width" type="number" value="${esc(s.width)}" min="256" max="2048" step="64" aria-describedby="qig-size-help"></label>
+                            <span aria-hidden="true">×</span>
+                            <label><span>Height</span><input id="qig-height" type="number" value="${esc(s.height)}" min="256" max="2048" step="64" aria-describedby="qig-size-help"></label>
+                            <label><span>Aspect</span><select id="qig-aspect">
                                 <option value="">-</option>
                                 <option value="1:1">1:1</option>
                                 <option value="3:2">3:2</option>
                                 <option value="2:3">2:3</option>
                                 <option value="16:9">16:9</option>
                                 <option value="9:16">9:16</option>
-                            </select>
+                            </select></label>
                         </div>
                         <select id="qig-nai-resolution" style="display:none;width:100%">
                             ${NAI_RESOLUTIONS.map(r => `<option value="${r.w}x${r.h}" ${selectedNaiResolution === `${r.w}x${r.h}` ? "selected" : ""}>${r.label}</option>`).join("")}
                             <option value="${NAI_CUSTOM_RESOLUTION_VALUE}" ${selectedNaiResolution === NAI_CUSTOM_RESOLUTION_VALUE ? "selected" : ""}>Custom (${esc(s.width)}×${esc(s.height)})</option>
                         </select>
-                    </div>
+                    </fieldset>
                     <div class="qig-field">
-                        <label>Batch Count</label>
+                        <label for="qig-batch">Image count</label>
                         <input id="qig-batch" type="number" value="${esc(s.batchCount)}" min="1" max="10">
                         <small>Number of images to generate per click.</small>
                     </div>
@@ -13704,18 +13939,12 @@ function createUI() {
                         <span class="qig-collapsible__icon fa-solid ${collapsed.advancedSettings ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
                     </button>
                     <div class="qig-collapsible__content" id="qig-advanced-settings" ${advancedSettingsHidden}>
-                    <label>Steps</label>
-                    <small style="opacity:0.6;font-size:10px;">More steps = higher quality but slower (20-30 is typical)</small>
-                    <input id="qig-steps" type="number" value="${esc(s.steps)}" min="1" max="150">
-                    <label>CFG Scale</label>
-                    <small style="opacity:0.6;font-size:10px;">How strictly the image follows the prompt — higher = more literal (5-10 typical)</small>
-                    <input id="qig-cfg" type="number" value="${esc(s.cfgScale)}" min="1" max="30" step="0.5">
-                    <label>Sampler</label>
-                    <small style="opacity:0.6;font-size:10px;">Algorithm used to generate the image — euler_a is a good default</small>
-                    <select id="qig-sampler">${samplerOpts}</select>
-                    <label>Seed (-1 = random)</label>
-                    <small style="opacity:0.6;font-size:10px;">Same seed + same prompt = same image. -1 for random each time</small>
-                    <input id="qig-seed" type="number" value="${esc(s.seed)}">
+                    <div class="qig-control-grid qig-generation-advanced-grid">
+                        <div class="qig-field"><label for="qig-steps">Steps</label><input id="qig-steps" type="number" value="${esc(activeSteps)}" min="1" max="150"><small>Higher can improve detail but takes longer.</small></div>
+                        <div class="qig-field"><label for="qig-cfg">Guidance (CFG)</label><input id="qig-cfg" type="number" value="${esc(activeCfg)}" min="1" max="30" step="0.5"><small>Higher follows the prompt more literally.</small></div>
+                        <div class="qig-field"><label for="qig-sampler">Sampler</label><select id="qig-sampler">${samplerOpts}</select><small>Generation algorithm supported by the active provider.</small></div>
+                        <div class="qig-field"><label for="qig-seed">Seed</label><input id="qig-seed" type="number" value="${esc(activeSeed)}"><small>Use -1 for a random seed.</small></div>
+                    </div>
                     </div>
                 </div>
                 </section>
@@ -13727,10 +13956,31 @@ function createUI() {
 
     document.getElementById("extensions_settings").insertAdjacentHTML("beforeend", html);
 
+    const setupPanel = document.getElementById("qig-setup-panel");
+    const flowSections = [
+        ".qig-flow-create",
+        ".qig-flow-generation",
+        ".qig-flow-context",
+        ".qig-flow-automation",
+        ".qig-flow-provider",
+    ];
+    for (const selector of flowSections) {
+        const section = setupPanel?.querySelector(selector);
+        if (section) setupPanel.appendChild(section);
+    }
+    const deliverySettings = document.getElementById("qig-delivery-settings");
+    const automationSection = setupPanel?.querySelector(".qig-flow-automation");
+    if (deliverySettings && automationSection) automationSection.appendChild(deliverySettings);
+    const textAiRouting = document.getElementById("qig-text-ai-routing");
+    const createSection = setupPanel?.querySelector(".qig-flow-create");
+    if (textAiRouting && createSection) createSection.appendChild(textAiRouting);
+    associateSettingsLabels();
+
     document.getElementById("qig-generate-btn").onclick = () => runConfiguredPaletteGeneration();
     document.getElementById("qig-logs-btn").onclick = showLogs;
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
-    document.getElementById("qig-gallery-settings-btn").onclick = showGallery;
+    document.getElementById("qig-reset-char-btn").onclick = resetCharSettings;
+    document.getElementById("qig-gallery-settings-btn").onclick = () => showGallery();
     document.getElementById("qig-prompt-history-btn").onclick = showPromptHistory;
     document.getElementById("qig-chatgpt-nbp-setup").onclick = () => {
         applyChatGptNbpWorkflowPreset();
@@ -13776,10 +14026,12 @@ function createUI() {
         saveSettingsDebounced();
         updateProviderUI();
         renderProfileSelect();
+        syncGenerationPresetIndicators();
     };
     document.getElementById("qig-style").onchange = (e) => {
         getSettings().style = e.target.value;
         saveSettingsDebounced();
+        syncGenerationPresetIndicators();
     };
 
     bind("qig-pollinations-key", "pollinationsKey");
@@ -14204,10 +14456,6 @@ function createUI() {
     });
     bind("qig-proxy-sse-mode", "proxySse", () => updateProxyCompatibilityUI());
     bind("qig-proxy-loras", "proxyLoras");
-    bind("qig-proxy-steps", "proxySteps", true);
-    bind("qig-proxy-cfg", "proxyCfg", true);
-    bind("qig-proxy-sampler", "proxySampler");
-    bind("qig-proxy-seed", "proxySeed", true);
     bindCheckbox("qig-proxy-facefix", "proxyFacefix");
     bind("qig-proxy-extra", "proxyExtraInstructions");
     bind("qig-proxy-chat-system", "proxyChatImageSystemPrompt");
@@ -14390,6 +14638,7 @@ function createUI() {
         document.getElementById("qig-llm-options").style.display = e.target.checked ? "block" : "none";
         saveSettingsDebounced();
         updateQigStatusLine();
+        syncGenerationPresetIndicators();
     };
     bind("qig-llm-custom", "llmCustomInstruction");
     bindCheckbox("qig-llm-edit", "llmEditPrompt");
@@ -14401,10 +14650,22 @@ function createUI() {
         getSettings().llmPromptStyle = e.target.value;
         saveSettingsDebounced();
         document.getElementById("qig-llm-custom-wrap").style.display = e.target.value === "custom" ? "block" : "none";
+        syncGenerationPresetIndicators();
     };
     bindAutoGenerateCheckbox("qig-auto-generate");
     bindAutoGenerateNumberInput("qig-auto-generate-every", "autoGenerateEveryMessages", normalizeAutoGenerateEveryMessages);
-    bindAutoGenerateNumberInput("qig-auto-generate-delay", "autoGenerateDelayMs", normalizeAutoGenerateDelayMs);
+    const autoGenerateDelayEl = getOrCacheElement("qig-auto-generate-delay");
+    if (autoGenerateDelayEl) {
+        autoGenerateDelayEl.oninput = (e) => {
+            const s = getSettings();
+            const next = normalizeAutoGenerateDelayMs(Number(e.target.value) * 1000);
+            const changed = s.autoGenerateDelayMs !== next;
+            s.autoGenerateDelayMs = next;
+            if (changed) resetAutoGenerateCadence({ clearTimer: true });
+            saveSettingsDebounced();
+        };
+        autoGenerateDelayEl.onchange = () => syncAutoGenerateControls();
+    }
     const twoStepPromptEl = document.getElementById("qig-two-step-prompt");
     if (twoStepPromptEl) {
         twoStepPromptEl.onchange = (e) => {
@@ -14541,7 +14802,7 @@ function createUI() {
             updateGenerateShortcutHints();
         };
     }
-    bindCheckbox("qig-use-st-style", "useSTStyle");
+    bind("qig-use-st-style", "useSTStyle", false, true, updateCharacterSettingsUI);
     // Inject mode bindings (inject on/off is driven by the prompt-source selector)
     document.getElementById("qig-inject-tag-name").onchange = (e) => {
         e.target.value = applyInjectTagNameChange(e.target.value);
@@ -14636,6 +14897,7 @@ function createUI() {
         }
         syncSizeInputs(s.width, s.height);
         saveSettingsDebounced();
+        syncGenerationPresetIndicators();
     };
     if (widthEl) widthEl.onchange = onSizeChange;
     if (heightEl) heightEl.onchange = onSizeChange;
@@ -14654,6 +14916,7 @@ function createUI() {
         }
         syncSizeInputs(s.width, s.height);
         saveSettingsDebounced();
+        syncGenerationPresetIndicators();
     };
     document.getElementById("qig-nai-resolution").onchange = (e) => {
         if (e.target.value === NAI_CUSTOM_RESOLUTION_VALUE) {
@@ -14669,6 +14932,7 @@ function createUI() {
         syncSizeInputs(s.width, s.height);
         syncNaiResolutionSelect();
         saveSettingsDebounced();
+        syncGenerationPresetIndicators();
     };
     bind("qig-batch", "batchCount", true);
     document.getElementById("qig-batch").addEventListener("input", (e) => {
@@ -14676,13 +14940,29 @@ function createUI() {
         if (wrap) wrap.style.display = parseInt(e.target.value) > 1 ? "" : "none";
     });
     bindCheckbox("qig-seq-seeds", "sequentialSeeds");
-    bind("qig-steps", "steps", true);
-    bind("qig-cfg", "cfgScale", true);
-    bind("qig-sampler", "sampler");
-    bind("qig-seed", "seed", true);
+    const bindGenerationSetting = (id, defaultKey, proxyKey, numeric = false) => {
+        const element = getOrCacheElement(id);
+        if (!element) return;
+        element.oninput = (event) => {
+            const settings = getSettings();
+            const key = settings.provider === "proxy" ? proxyKey : defaultKey;
+            const rawValue = event.target.value;
+            settings[key] = settings.provider === "proxy" && proxyKey === "proxySampler"
+                ? (SAMPLER_DISPLAY_NAMES[rawValue] || rawValue)
+                : (numeric ? Number(rawValue) : rawValue);
+            saveSettingsDebounced();
+            updateQigStatusLine();
+            syncGenerationPresetIndicators();
+        };
+    };
+    bindGenerationSetting("qig-steps", "steps", "proxySteps", true);
+    bindGenerationSetting("qig-cfg", "cfgScale", "proxyCfg", true);
+    bindGenerationSetting("qig-sampler", "sampler", "proxySampler");
+    bindGenerationSetting("qig-seed", "seed", "proxySeed", true);
 
     updateProviderUI();
     updatePromptSourceUI(s);
+    updateCharacterSettingsUI();
     updateQigStatusLine();
 
     // Drag and Drop Metadata Listener
@@ -15072,11 +15352,7 @@ async function generateImageInjectPalette() {
                 }
 
                 if (s.useSTStyle !== false) {
-                    const stStyle = getSTStyleSettings();
-                    if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-                    if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-                    if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-                    if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+                    ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
                 }
 
                 const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
@@ -15188,7 +15464,8 @@ async function generateImageFromPlainDescription() {
         useLLMPrompt: true,
         llmPromptStyle: request.promptStyle || baseSettings.llmPromptStyle || "tags",
     };
-    const run = beginGeneration({ settings: requestedSettings, disableGenerateButton: true, clearPendingAuto: true });
+    const ctx = getContext();
+    const run = beginGeneration({ settings: requestedSettings, context: ctx, disableGenerateButton: true, clearPendingAuto: true });
     const s = run.settings;
     const cancelCheckpoint = getCancelCheckpoint();
     const originalSeed = getGenerationSeedValue(s);
@@ -15224,11 +15501,7 @@ async function generateImageFromPlainDescription() {
         let negative = resolvePrompt(s.negativePrompt);
 
         if (s.useSTStyle !== false) {
-            const stStyle = getSTStyleSettings();
-            if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-            if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-            if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-            if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+            ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
         }
 
         const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
@@ -15431,11 +15704,7 @@ async function generateImage() {
 
     // Apply ST Style panel settings (prefix, char-specific, negative)
     if (s.useSTStyle !== false) {
-        const stStyle = getSTStyleSettings();
-        if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-        if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-        if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-        if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+        ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
     }
 
     const llmSceneText = scenePrompt || basePrompt;
@@ -15995,11 +16264,7 @@ async function processInjectMessage(messageText, messageIndex) {
 
                 // Apply ST Style
                 if (s.useSTStyle !== false) {
-                    const stStyle = getSTStyleSettings();
-                    if (stStyle.prefix) prompt = `${stStyle.prefix}, ${prompt}`;
-                    if (stStyle.charPositive) prompt = `${prompt}, ${stStyle.charPositive}`;
-                    if (stStyle.negative) negative = `${negative}, ${stStyle.negative}`;
-                    if (stStyle.charNegative) negative = `${negative}, ${stStyle.charNegative}`;
+                    ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
                 }
 
                 const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
@@ -16304,6 +16569,7 @@ jQuery(function () {
             generateRaw = scriptModule.generateRaw;
             generateRawData = scriptModule.generateRawData;
             createRawPrompt = scriptModule.createRawPrompt;
+            substituteParams = scriptModule.substituteParams;
             getRequestHeaders = scriptModule.getRequestHeaders;
 
             try {
@@ -16846,6 +17112,7 @@ async function handleMetadataDrop(e) {
             if (importedProvider) refreshProviderInputs(importedProvider);
 
             saveSettingsDebounced();
+            syncGenerationPresetIndicators();
             showStatus("✅ Settings updated from image!");
             setTimeout(() => showStatus(null), 2000);
         }
