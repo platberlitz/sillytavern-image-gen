@@ -245,11 +245,16 @@ const NBP_NEGATIVE_GUIDANCE = "Avoid wet-looking skin, oily shine, greasy gloss,
 const NANOBANANA_ASPECT_RATIOS = ["1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9"];
 const NANOBANANA_FLASH31_EXTRA_RATIOS = ["1:4", "1:8", "4:1", "8:1"];
 const QIG_DEFAULT_COLLAPSED_SECTIONS = {
-    providerSettings: true,
+    sectionProvider: false,
+    sectionCreate: true,
+    sectionContext: true,
+    sectionAutomation: true,
+    sectionGeneration: true,
+    providerSettings: false,
     promptAdvanced: true,
     injectOptions: true,
     advancedSettings: true,
-    setupPanel: true,
+    setupPanel: false,
 };
 let qigKeyboardShortcutsBound = false;
 
@@ -496,6 +501,15 @@ const PROVIDER_KEY_FIELDS = {
 };
 
 function getProviderKeyValue(s = getSettings(), provider = s?.provider) {
+    if (provider === "nanobanana") {
+        return String(s?.nanobananaKey || s?.nanobananaProxyKey || "").trim();
+    }
+    if (provider === "novelai") {
+        return String(s?.naiKey || s?.naiProxyKey || "").trim();
+    }
+    if (provider === "gptimage") {
+        return String(s?.gptImageKey || s?.gptImageProxyKey || "").trim();
+    }
     const field = PROVIDER_KEY_FIELDS[provider];
     return field ? String(s?.[field] || "").trim() : "";
 }
@@ -738,6 +752,8 @@ const defaultSettings = {
     civitaiLoras: "",
     // Nanobanana (Gemini)
     nanobananaKey: "",
+    nanobananaProxyUrl: "",
+    nanobananaProxyKey: "",
     nanobananaModel: "gemini-3-pro-image-preview",
     nanobananaNbpMode: true,
     nanobananaNbpPreset: "house",
@@ -1612,7 +1628,7 @@ const PROVIDER_KEYS = {
     nanogpt: ["nanogptKey", "nanogptModel", "nanogptRefImages", "nanogptStrength"],
     chutes: ["chutesKey", "chutesModel"],
     civitai: ["civitaiKey", "civitaiModel", "civitaiScheduler", "civitaiLoras"],
-    nanobanana: ["nanobananaKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
+    nanobanana: ["nanobananaKey", "nanobananaProxyUrl", "nanobananaProxyKey", "nanobananaModel", "nanobananaExtraInstructions", "nanobananaRefImages"],
     stability: ["stabilityKey"],
     replicate: ["replicateKey", "replicateModel"],
     fal: ["falKey", "falModel"],
@@ -6585,6 +6601,26 @@ async function genCivitAI(prompt, negative, s, signal) {
     throw new Error(`CivitAI job timeout. Last error: ${lastError || 'Still processing'}`);
 }
 
+function getNanobananaApiUrl(proxyUrl = "", model = "gemini-3-pro-image-preview", apiKey = "") {
+    const trimmedProxy = String(proxyUrl || "").trim().replace(/\/$/, "");
+    if (!trimmedProxy) {
+        return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    }
+    if (trimmedProxy.includes(":generateContent") || trimmedProxy.includes("/chat/completions")) {
+        let url = trimmedProxy;
+        if (apiKey && !url.includes("key=")) {
+            url += (url.includes("?") ? "&" : "?") + `key=${apiKey}`;
+        }
+        return url;
+    }
+    const path = trimmedProxy.endsWith("/v1beta") ? trimmedProxy : `${trimmedProxy}/v1beta`;
+    let url = `${path}/models/${model}:generateContent`;
+    if (apiKey) {
+        url += `?key=${apiKey}`;
+    }
+    return url;
+}
+
 async function genNanobanana(prompt, negative, s, signal) {
     // Build parts array with reference images and prompt
     const parts = [];
@@ -6631,9 +6667,17 @@ async function genNanobanana(prompt, negative, s, signal) {
     };
     if (imageSize) generationConfig.imageConfig.imageSize = imageSize;
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${s.nanobananaModel}:generateContent?key=${s.nanobananaKey}`, {
+    const apiKey = s.nanobananaProxyKey || s.nanobananaKey;
+    const url = getNanobananaApiUrl(s.nanobananaProxyUrl, s.nanobananaModel, apiKey);
+    const headers = { "Content-Type": "application/json" };
+    if (apiKey) {
+        headers["Authorization"] = `Bearer ${apiKey}`;
+        headers["x-goog-api-key"] = apiKey;
+    }
+
+    const res = await fetch(url, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers,
         body: JSON.stringify({
             contents: [{ role: "user", parts }],
             generationConfig
@@ -10254,7 +10298,9 @@ async function generateForProvider(prompt, negative, settings, signal, options =
             ? settings.naiProxyUrl
             : settings.provider === "gptimage"
                 ? settings.gptImageProxyUrl
-                : "";
+                : settings.provider === "nanobanana"
+                    ? settings.nanobananaProxyUrl
+                    : "";
     const safeUrl = normalizeProviderImageSource(normalized.url, { trustedLocalBackend, trustedBaseUrl });
     if (!safeUrl) throw new Error("Provider returned an unsafe or unsupported image URL");
     return { ...normalized, url: safeUrl };
@@ -13266,7 +13312,7 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
         nanogpt: [["qig-nanogpt-key", "nanogptKey"], ["qig-nanogpt-model", "nanogptModel"], ["qig-nanogpt-strength", "nanogptStrength"]],
         chutes: [["qig-chutes-key", "chutesKey"], ["qig-chutes-model", "chutesModel"]],
         civitai: [["qig-civitai-key", "civitaiKey"], ["qig-civitai-model", "civitaiModel"], ["qig-civitai-scheduler", "civitaiScheduler"], ["qig-civitai-loras", "civitaiLoras"]],
-        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-nbp-mode", "nanobananaNbpMode"], ["qig-nanobanana-nbp-preset", "nanobananaNbpPreset"], ["qig-nanobanana-nbp-negative", "nanobananaNbpUseNegative"], ["qig-nanobanana-nbp-custom-director", "nanobananaNbpCustomDirector"], ["qig-nanobanana-nbp-custom", "nanobananaNbpCustomPrompt"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
+        nanobanana: [["qig-nanobanana-key", "nanobananaKey"], ["qig-nanobanana-proxy-url", "nanobananaProxyUrl"], ["qig-nanobanana-proxy-key", "nanobananaProxyKey"], ["qig-nanobanana-model", "nanobananaModel"], ["qig-nanobanana-nbp-mode", "nanobananaNbpMode"], ["qig-nanobanana-nbp-preset", "nanobananaNbpPreset"], ["qig-nanobanana-nbp-negative", "nanobananaNbpUseNegative"], ["qig-nanobanana-nbp-custom-director", "nanobananaNbpCustomDirector"], ["qig-nanobanana-nbp-custom", "nanobananaNbpCustomPrompt"], ["qig-nanobanana-extra", "nanobananaExtraInstructions"]],
         stability: [["qig-stability-key", "stabilityKey"]],
         replicate: [["qig-replicate-key", "replicateKey"], ["qig-replicate-model", "replicateModel"]],
         fal: [["qig-fal-key", "falKey"], ["qig-fal-model", "falModel"]],
@@ -13926,6 +13972,16 @@ function createUI() {
     if (s.provider === "novelai") normalizeSize(s);
     const esc = (v) => escapeHtml(v == null ? "" : String(v));
     const collapsed = getCollapsedSections(s);
+    const sectionProviderHidden = collapsed.sectionProvider ? "hidden" : "";
+    const sectionProviderExpanded = collapsed.sectionProvider ? "false" : "true";
+    const sectionCreateHidden = collapsed.sectionCreate ? "hidden" : "";
+    const sectionCreateExpanded = collapsed.sectionCreate ? "false" : "true";
+    const sectionContextHidden = collapsed.sectionContext ? "hidden" : "";
+    const sectionContextExpanded = collapsed.sectionContext ? "false" : "true";
+    const sectionAutomationHidden = collapsed.sectionAutomation ? "hidden" : "";
+    const sectionAutomationExpanded = collapsed.sectionAutomation ? "false" : "true";
+    const sectionGenerationHidden = collapsed.sectionGeneration ? "hidden" : "";
+    const sectionGenerationExpanded = collapsed.sectionGeneration ? "false" : "true";
     const providerSettingsHidden = collapsed.providerSettings ? "hidden" : "";
     const providerSettingsExpanded = collapsed.providerSettings ? "false" : "true";
     const promptAdvancedHidden = collapsed.promptAdvanced ? "hidden" : "";
@@ -13971,6 +14027,8 @@ function createUI() {
                         <span>Generate</span>
                         <span class="qig-shortcut-hint">${esc(formatGenerateShortcutLabel())}</span>
                     </button>
+                    <button class="menu_button qig-action-bar__prominent qig-wizard-btn" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard" aria-hidden="true"></span><span>Quick Setup</span></button>
+                    <button class="menu_button qig-action-bar__prominent qig-logs-btn" title="View generation logs and errors"><span class="fa-solid fa-list-check" aria-hidden="true"></span><span>Logs</span></button>
                     <button id="qig-gallery-settings-btn" class="menu_button qig-action-bar__secondary" title="Browse generated images (Ctrl+Shift+G)" aria-label="Open generated image gallery"><span class="fa-solid fa-images" aria-hidden="true"></span><span>Gallery</span></button>
                     <button id="qig-prompt-history-btn" class="menu_button qig-action-bar__secondary" title="View prompt history (Ctrl+Shift+H)" aria-label="Open prompt history"><span class="fa-solid fa-clock-rotate-left" aria-hidden="true"></span><span>Prompts</span></button>
                 </nav>
@@ -14019,8 +14077,8 @@ function createUI() {
                 </div>
 
                 <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
-                    <button id="qig-wizard-btn" class="menu_button" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup</span></button>
-                    <button id="qig-logs-btn" class="menu_button" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Logs</span></button>
+                    <button class="menu_button qig-btn-prominent qig-wizard-btn" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup Wizard</span></button>
+                    <button class="menu_button qig-btn-prominent qig-logs-btn" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Generation Logs</span></button>
                 </div>
 
                 <div class="qig-collapsible qig-setup-shell">
@@ -14033,13 +14091,15 @@ function createUI() {
                     </button>
                     <div id="qig-setup-panel" class="qig-collapsible__content" ${setupPanelHidden}>
 
-                <section class="qig-menu-section qig-menu-section--connection qig-flow-provider" aria-labelledby="qig-connection-heading">
-                    <div class="qig-section-header">
-                        <div>
+                <section class="qig-menu-section qig-menu-section--connection qig-menu-section--collapsible qig-flow-provider" aria-labelledby="qig-connection-heading">
+                    <button id="qig-section-provider-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionProviderExpanded}" aria-controls="qig-section-provider-content">
+                        <span class="qig-section-header-text">
                             <h3 id="qig-connection-heading" class="qig-section-kicker">Provider Setup</h3>
-                            <p>Choose an image backend and manage its credentials, model, and connection profile.</p>
-                        </div>
-                    </div>
+                            <small class="qig-section-subtitle">Choose an image backend and manage credentials, models, and connection profiles.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionProvider ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-section-provider-content" class="qig-collapsible__content" ${sectionProviderHidden}>
                     <div class="qig-control-grid">
                         <div class="qig-field">
                             <label>Provider</label>
@@ -14201,9 +14261,9 @@ function createUI() {
                     <div class="qig-provider-ready">
                         <div>
                             <strong>Nano Banana Pro setup</strong>
-                            <small>Use a Gemini API key, keep the Pro model selected, then generate from the current chat scene or a direct prompt.</small>
+                            <small>Use a Gemini API key or reverse proxy, keep the Pro model selected, then generate from the current chat scene or a direct prompt.</small>
                         </div>
-                        <span class="qig-status-pill ${s.nanobananaKey ? "qig-status-pill--ready" : ""}">${s.nanobananaKey ? "Key saved" : "Needs key"}</span>
+                        <span class="qig-status-pill ${(s.nanobananaKey || s.nanobananaProxyKey) ? "qig-status-pill--ready" : ""}">${(s.nanobananaKey || s.nanobananaProxyKey) ? "Key saved" : "Needs key"}</span>
                     </div>
                     <div class="qig-row">
                         <div>
@@ -14217,6 +14277,18 @@ function createUI() {
                                 ${buildNanobananaModelOptions(s.nanobananaModel)}
                             </select>
                             <small>Pro gives the strongest instruction following. Flash is better for quick drafts.</small>
+                        </div>
+                    </div>
+                    <div class="qig-row">
+                        <div>
+                            <label for="qig-nanobanana-proxy-url">Reverse Proxy URL (optional)</label>
+                            <input id="qig-nanobanana-proxy-url" type="text" value="${esc(s.nanobananaProxyUrl || "")}" placeholder="https://proxy.example.com or https://generativelanguage.googleapis.com">
+                            <small>Custom endpoint domain/path if using an OpenAI/Gemini reverse proxy or API gateway.</small>
+                        </div>
+                        <div>
+                            <label for="qig-nanobanana-proxy-key">Reverse Proxy Key (optional)</label>
+                            <input id="qig-nanobanana-proxy-key" type="password" value="${esc(s.nanobananaProxyKey || "")}" autocomplete="off" placeholder="Proxy password or key">
+                            <small>Optional authentication header or query key for reverse proxy access.</small>
                         </div>
                     </div>
                     <div class="qig-nbp-panel">
@@ -14828,13 +14900,15 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section qig-menu-section--prompt qig-flow-create" aria-labelledby="qig-prompt-heading">
-                    <div class="qig-section-header">
-                        <div>
-                            <h3 id="qig-prompt-heading" class="qig-section-kicker">Create</h3>
-                            <p>Manage generation recipes and fine-tune how QIG turns your prompt or chat into an image instruction.</p>
-                        </div>
-                    </div>
+                <section class="qig-menu-section qig-menu-section--prompt qig-menu-section--collapsible qig-flow-create" aria-labelledby="qig-prompt-heading">
+                    <button id="qig-section-create-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionCreateExpanded}" aria-controls="qig-section-create-content">
+                        <span class="qig-section-header-text">
+                            <h3 id="qig-prompt-heading" class="qig-section-kicker">Recipes &amp; Prompting</h3>
+                            <small class="qig-section-subtitle">Manage generation recipes, plain descriptions, presets, and LLM prompt rewriting.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionCreate ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-section-create-content" class="qig-collapsible__content" ${sectionCreateHidden}>
                     <div class="qig-action-strip">
                         <button id="qig-chatgpt-nbp-setup" class="menu_button qig-inline-action" title="Set QIG for ChatGPT prompt writing and Nano Banana Pro image rendering"><span class="fa-solid fa-wand-magic-sparkles"></span><span>ChatGPT + NBP</span></button>
                         <button id="qig-plain-desc-btn" class="menu_button" title="Write a plain-language image description and let the AI turn it into a prompt"><span class="fa-solid fa-pen-to-square"></span><span>Plain Description</span></button>
@@ -14939,13 +15013,15 @@ function createUI() {
                     </div>
                 </section>
 
-                <section class="qig-menu-section qig-flow-context" aria-labelledby="qig-context-heading">
-                    <div class="qig-section-header">
-                        <div>
-                            <h3 id="qig-context-heading" class="qig-section-kicker">Context</h3>
-                            <p>Apply SillyTavern style data and manage conditional prompt rules.</p>
-                        </div>
-                    </div>
+                <section class="qig-menu-section qig-menu-section--collapsible qig-flow-context" aria-labelledby="qig-context-heading">
+                    <button id="qig-section-context-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionContextExpanded}" aria-controls="qig-section-context-content">
+                        <span class="qig-section-header-text">
+                            <h3 id="qig-context-heading" class="qig-section-kicker">Context Rules &amp; Media</h3>
+                            <small class="qig-section-subtitle">Apply SillyTavern character overrides, inject library media, and manage contextual filters.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionContext ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-section-context-content" class="qig-collapsible__content" ${sectionContextHidden}>
                     <label class="checkbox_label qig-switch-row">
                         <input id="qig-use-st-style" type="checkbox" ${s.useSTStyle !== false ? "checked" : ""}>
                         <span>Use SillyTavern's Style panel</span>
@@ -14983,15 +15059,18 @@ function createUI() {
                         <small class="qig-muted">Open the manager to organize pools, character-scoped filters, and per-filter seed overrides.</small>
                         <div id="qig-contextual-filters"></div>
                     </div>
+                    </div>
                 </section>
 
-                <section class="qig-menu-section qig-flow-automation" aria-labelledby="qig-automation-heading">
-                    <div class="qig-section-header">
-                        <div>
+                <section class="qig-menu-section qig-menu-section--collapsible qig-flow-automation" aria-labelledby="qig-automation-heading">
+                    <button id="qig-section-automation-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionAutomationExpanded}" aria-controls="qig-section-automation-content">
+                        <span class="qig-section-header-text">
                             <h3 id="qig-automation-heading" class="qig-section-kicker">Automation &amp; Delivery</h3>
-                            <p>Control when images generate and how finished images are inserted or stored.</p>
-                        </div>
-                    </div>
+                            <small class="qig-section-subtitle">Control auto-generation triggers, background chat modes, shortcut keys, and tag injection.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionAutomation ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-section-automation-content" class="qig-collapsible__content" ${sectionAutomationHidden}>
                     <div class="qig-subsection">
                     <label class="checkbox_label" style="margin-top:6px;">
                         <input id="qig-auto-generate" type="checkbox" ${s.autoGenerate ? "checked" : ""}>
@@ -15107,16 +15186,19 @@ function createUI() {
                         <label style="font-size:11px;margin-top:4px;">Max Tokens</label>
                         <input id="qig-llm-override-max" type="number" value="${esc(s.llmOverrideMaxTokens || 500)}" min="50" max="4096" style="width:100%;">
                     </div>
+                    </div>
                 </div>
                 </section>
 
-                <section class="qig-menu-section qig-flow-generation" aria-labelledby="qig-output-heading">
-                    <div class="qig-section-header">
-                        <div>
-                            <h3 id="qig-output-heading" class="qig-section-kicker">Generation</h3>
-                            <p>Set image size, count, sampler, guidance, and seed in one place.</p>
-                        </div>
-                    </div>
+                <section class="qig-menu-section qig-menu-section--collapsible qig-flow-generation" aria-labelledby="qig-output-heading">
+                    <button id="qig-section-generation-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionGenerationExpanded}" aria-controls="qig-section-generation-content">
+                        <span class="qig-section-header-text">
+                            <h3 id="qig-output-heading" class="qig-section-kicker">Generation Parameters</h3>
+                            <small class="qig-section-subtitle">Set output resolution, image count, chat insertion modes, sampler, CFG, and seed.</small>
+                        </span>
+                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionGeneration ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
+                    </button>
+                    <div id="qig-section-generation-content" class="qig-collapsible__content" ${sectionGenerationHidden}>
                 <div id="qig-delivery-settings">
                 <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
@@ -15205,6 +15287,7 @@ function createUI() {
                     </div>
                     </div>
                 </div>
+                </div>
                 </section>
                     </div>
                 </div>
@@ -15216,11 +15299,11 @@ function createUI() {
 
     const setupPanel = document.getElementById("qig-setup-panel");
     const flowSections = [
+        ".qig-flow-provider",
         ".qig-flow-create",
-        ".qig-flow-generation",
         ".qig-flow-context",
         ".qig-flow-automation",
-        ".qig-flow-provider",
+        ".qig-flow-generation",
     ];
     for (const selector of flowSections) {
         const section = setupPanel?.querySelector(selector);
@@ -15235,7 +15318,9 @@ function createUI() {
     associateSettingsLabels();
 
     document.getElementById("qig-generate-btn").onclick = () => runConfiguredPaletteGeneration();
-    document.getElementById("qig-logs-btn").onclick = showLogs;
+    document.querySelectorAll(".qig-logs-btn").forEach(btn => {
+        btn.onclick = showLogs;
+    });
     document.getElementById("qig-save-char-btn").onclick = saveCharSettings;
     document.getElementById("qig-reset-char-btn").onclick = resetCharSettings;
     document.getElementById("qig-gallery-settings-btn").onclick = () => showGallery();
@@ -15253,6 +15338,11 @@ function createUI() {
     document.getElementById("qig-export-btn").onclick = exportAllSettings;
     document.getElementById("qig-import-btn").onclick = importSettings;
     setupQigCollapsibleSection("setupPanel", "qig-setup-toggle", "qig-setup-panel");
+    setupQigCollapsibleSection("sectionProvider", "qig-section-provider-toggle", "qig-section-provider-content");
+    setupQigCollapsibleSection("sectionCreate", "qig-section-create-toggle", "qig-section-create-content");
+    setupQigCollapsibleSection("sectionContext", "qig-section-context-toggle", "qig-section-context-content");
+    setupQigCollapsibleSection("sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content");
+    setupQigCollapsibleSection("sectionGeneration", "qig-section-generation-toggle", "qig-section-generation-content");
     setupQigCollapsibleSection("providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content");
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
@@ -15264,7 +15354,9 @@ function createUI() {
     renderContextualFilters();
     renderContextMediaSummary();
 
-    document.getElementById("qig-wizard-btn").onclick = () => showSetupWizard();
+    document.querySelectorAll(".qig-wizard-btn").forEach(btn => {
+        btn.onclick = () => showSetupWizard();
+    });
     document.getElementById("qig-preset-save-quick").onclick = savePreset;
     document.getElementById("qig-preset-select").onchange = (e) => {
         const presetId = e.target.value;
@@ -15339,6 +15431,8 @@ function createUI() {
     bind("qig-civitai-scheduler", "civitaiScheduler");
     bind("qig-civitai-loras", "civitaiLoras");
     bind("qig-nanobanana-key", "nanobananaKey");
+    bind("qig-nanobanana-proxy-url", "nanobananaProxyUrl");
+    bind("qig-nanobanana-proxy-key", "nanobananaProxyKey");
     bind("qig-nanobanana-model", "nanobananaModel");
     document.getElementById("qig-nanobanana-nbp-mode").onchange = (e) => {
         const enabled = e.target.checked;
