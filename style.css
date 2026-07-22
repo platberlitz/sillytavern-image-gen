@@ -1,8 +1,9 @@
-#qig-settings {
+:root, #qig-settings, .qig-popup {
     --qig-accent: var(--SmartThemeQuoteColor);
     --qig-surface: color-mix(in srgb, var(--SmartThemeBlurTintColor) 88%, var(--SmartThemeBodyColor) 12%);
     --qig-surface-soft: color-mix(in srgb, var(--SmartThemeBlurTintColor) 94%, var(--SmartThemeBodyColor) 6%);
-    --qig-line: color-mix(in srgb, var(--SmartThemeBorderColor) 88%, var(--SmartThemeBlurTintColor) 12%);
+    --qig-line: color-mix(in srgb, var(--SmartThemeBorderColor) 65%, var(--SmartThemeBodyColor) 35%);
+    --qig-line-strong: color-mix(in srgb, var(--SmartThemeBorderColor) 45%, var(--SmartThemeBodyColor) 55%);
     --qig-text-soft: color-mix(in srgb, var(--SmartThemeBodyColor) 82%, var(--SmartThemeBlurTintColor) 18%);
     --qig-success: color-mix(in srgb, var(--qig-accent) 76%, var(--SmartThemeBodyColor) 24%);
     --qig-ease: cubic-bezier(0.22, 1, 0.36, 1);
@@ -72,7 +73,7 @@
 #qig-settings hr {
     margin: 12px 0;
     border: 0;
-    border-top: 1px solid var(--qig-line);
+    border-top: 1px solid var(--qig-line-strong);
 }
 
 #qig-settings .menu_button {
@@ -238,7 +239,7 @@
 .qig-menu-section {
     padding: 16px 2px;
     border: 0;
-    border-bottom: 1px solid var(--qig-line);
+    border-bottom: 1px solid var(--qig-line-strong);
     border-radius: 0;
     background: transparent;
 }
@@ -887,7 +888,7 @@
     justify-content: space-between;
     align-items: center;
     padding: 12px 16px;
-    border-bottom: 1px solid var(--SmartThemeBorderColor);
+    border-bottom: 1px solid var(--qig-line-strong, var(--SmartThemeBorderColor));
     font-weight: bold;
 }
 
@@ -1880,38 +1881,25 @@
 }
 
 .qig-prompt-edit-dialog {
-    width: min(600px, 90vw);
-    max-height: 80vh;
-    overflow: auto;
-    padding: 20px;
-    color: var(--SmartThemeBodyColor);
-    background: var(--SmartThemeBlurTintColor);
-    border-radius: 10px;
-}
-
-.qig-prompt-edit-dialog__header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    padding: 16px;
     gap: 12px;
-    margin-bottom: 16px;
-}
-
-.qig-prompt-edit-dialog__header h3 {
-    margin: 0;
+    box-sizing: border-box;
     color: var(--SmartThemeBodyColor);
 }
 
 .qig-prompt-edit-dialog textarea {
     width: 100%;
     min-height: 200px;
-    padding: 8px;
+    padding: 10px;
     resize: vertical;
     color: var(--SmartThemeBodyColor);
     background: var(--SmartThemeBlurTintColor);
-    border: 1px solid var(--SmartThemeBorderColor);
+    border: 1px solid var(--qig-line-strong, var(--SmartThemeBorderColor));
     border-radius: 6px;
     font: inherit;
+    box-sizing: border-box;
 }
 
 @media (max-width: 768px) {

@@ -9753,20 +9753,15 @@ function bindAbortDismiss(signal, dismiss) {
 function showPromptEditDialog(prompt, signal) {
     return new Promise((resolve) => {
         const popup = createPopup("qig-prompt-edit-popup", "Edit LLM Generated Prompt", `
-            <div class="qig-prompt-edit-dialog">
-                <div class="qig-prompt-edit-dialog__header">
-                    <h3>Edit Generated Prompt</h3>
-                    <button id="qig-prompt-edit-close" class="qig-close-btn" type="button" aria-label="Close prompt editor">✕</button>
-                </div>
-                <textarea id="qig-prompt-edit-text" placeholder="Edit the generated prompt..."></textarea>
-                <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end;">
+            <div class="qig-popup-form qig-prompt-edit-dialog">
+                <textarea id="qig-prompt-edit-text" rows="10" placeholder="Edit the generated prompt..."></textarea>
+                <div class="qig-dialog-actions" style="margin-top:14px;">
                     <button id="qig-prompt-edit-cancel" class="menu_button">Cancel</button>
                     <button id="qig-prompt-edit-use" class="menu_button">Use Prompt</button>
                 </div>
             </div>`, (popup) => {
             const textarea = document.getElementById("qig-prompt-edit-text");
             textarea.value = prompt;
-            const closeBtn = document.getElementById("qig-prompt-edit-close");
             const cancelBtn = document.getElementById("qig-prompt-edit-cancel");
             const useBtn = document.getElementById("qig-prompt-edit-use");
 
@@ -9786,7 +9781,6 @@ function showPromptEditDialog(prompt, signal) {
             const use = () => finish(textarea.value);
             removeAbortListener = bindAbortDismiss(signal, close);
 
-            closeBtn.onclick = close;
             cancelBtn.onclick = close;
             useBtn.onclick = use;
 
@@ -9802,7 +9796,7 @@ function showPromptEditDialog(prompt, signal) {
                     close();
                 }
             };
-        });
+        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
     });
 }
 
