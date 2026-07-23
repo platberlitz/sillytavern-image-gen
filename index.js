@@ -21,6 +21,12 @@ import {
     parseSettingsImport,
     stageStorageTransaction,
 } from "./lib/settings-transfer.js";
+import {
+    canSeedSynchronizedStoreFromLocal,
+    cloneSynchronizedValue,
+    persistSynchronizedStore,
+    reconcileSynchronizedStore,
+} from "./lib/settings-persistence.js";
 import { GalleryRepository } from "./lib/gallery-repository.js";
 import {
     detectImageFormat,
@@ -42,12 +48,14 @@ import {
     buildGptImagePayload,
     buildNanobananaPayload,
     describeProviderImageSource,
+    extractProviderErrorMessage,
     extractProviderImageSource,
     getGptImageApiUrl,
     getNanobananaApiUrl,
     imageResponseToDataUrl,
     isOpenAIChatCompletionsEndpoint,
     materializeProviderImageSource,
+    requestGptImageWithRouteRetry,
 } from "./lib/provider-adapters.js";
 import {
     buildContextMediaCandidates,
@@ -1020,6 +1028,7 @@ const defaultSettings = {
     _replacementMapsMigrated: false,
     _legacyTemplatesIgnored: false,
     _charSettingsBaseState: null,
+    _syncCacheId: "",
     // Backups of localStorage stores (survive browser storage wipes)
     _backupCharSettings: null,
     _backupProfiles: null,
@@ -1072,13 +1081,14 @@ const BACKUP_KEYS = {
     qig_active_pool_ids_by_char: "_backupActiveFilterPoolIdsByChar",
     [CONTEXT_MEDIA_STORE_KEY]: "_backupContextMedia",
 };
+const SYNC_CACHE_ID_KEY = "qig_sync_cache_id";
 function writeBackupToSettings(localKey, data) {
     const backupKey = BACKUP_KEYS[localKey];
     if (!backupKey) return false;
     try {
         const es = extension_settings?.[extensionName];
         if (!es) return false;
-        es[backupKey] = data;
+        es[backupKey] = cloneSynchronizedValue(data);
         return true;
     } catch (e) {
         log(`Backup write failed for ${backupKey}: ${e.message}`);
@@ -1111,14 +1121,68 @@ async function saveBackupToSettings(localKey, data) {
 }
 
 function saveLocalStoreBackup(localKey, data, errorMessage) {
-    if (!safeSetStorage(localKey, JSON.stringify(data), errorMessage)) return false;
-    backupToSettings(localKey, data);
-    return true;
+    const cacheSaved = safeSetStorage(localKey, JSON.stringify(data));
+    const backupSaved = writeBackupToSettings(localKey, data);
+    if (backupSaved) saveSettingsDebounced?.();
+    if (!cacheSaved && backupSaved) {
+        log(`Server sync was queued while the local cache write failed for ${localKey}`);
+        toastr?.warning?.("Settings were queued for synchronization, but this browser's local cache could not be updated.");
+    }
+    if (!backupSaved && errorMessage) toastr?.error?.(errorMessage);
+    return backupSaved;
 }
 
 async function saveLocalStoreBackupNow(localKey, data, errorMessage) {
-    if (!safeSetStorage(localKey, JSON.stringify(data), errorMessage)) return false;
-    return saveBackupToSettings(localKey, data);
+    const backupKey = BACKUP_KEYS[localKey];
+    const settings = extension_settings?.[extensionName];
+    if (!backupKey || !settings) return false;
+    try {
+        const result = await persistSynchronizedStore({
+            storage: localStorage,
+            settings,
+            localKey,
+            backupKey,
+            value: data,
+            save: flushSettingsBackup,
+        });
+        if (!result.cacheSaved) {
+            log(`Local cache write failed for ${localKey}: ${result.cacheError?.message || "unknown error"}`);
+            toastr?.warning?.("Saved to your SillyTavern account, but this browser's local cache could not be updated.");
+        }
+        return true;
+    } catch (error) {
+        log(`Server synchronization failed for ${localKey}: ${error.message}`);
+        toastr?.error?.(errorMessage || "Failed to synchronize settings with SillyTavern.");
+        return false;
+    }
+}
+
+const activeSynchronizedStoreMutations = new Set();
+let settingsImportInProgress = false;
+function blockMutationDuringSettingsImport() {
+    if (!settingsImportInProgress) return false;
+    toastr?.info?.("Settings are being imported. Please wait a moment.");
+    return true;
+}
+
+async function runSynchronizedStoreMutations(localKeys, task, { throwIfBusy = false } = {}) {
+    const keys = [...new Set(localKeys)];
+    if (keys.some(key => activeSynchronizedStoreMutations.has(key))) {
+        const message = "Synchronized settings are already being updated. Please wait a moment.";
+        if (throwIfBusy) throw new Error(message);
+        toastr?.info?.(message);
+        return false;
+    }
+    keys.forEach(key => activeSynchronizedStoreMutations.add(key));
+    try {
+        return await task();
+    } finally {
+        keys.forEach(key => activeSynchronizedStoreMutations.delete(key));
+    }
+}
+
+function runSynchronizedStoreMutation(localKey, task) {
+    return runSynchronizedStoreMutations([localKey], task);
 }
 function escapeHtml(str) {
     return String(str).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
@@ -3256,7 +3320,7 @@ function migratePromptReplacementsToFilters(rules, {
     };
 }
 
-function migrateLegacyReplacementStores(settings = getSettings()) {
+function migrateLegacyReplacementStores(settings = getSettings(), { allowLocalStore = true } = {}) {
     const s = settings || getSettings();
     if (!s || s._replacementMapsMigrated) return false;
 
@@ -3281,7 +3345,7 @@ function migrateLegacyReplacementStores(settings = getSettings()) {
         }
     };
 
-    appendRules(safeParse("qig_prompt_replacements", []));
+    if (allowLocalStore) appendRules(safeParse("qig_prompt_replacements", []));
     appendRules(s._backupPromptReplacements);
 
     if (storedRules.length) {
@@ -3294,13 +3358,24 @@ function migrateLegacyReplacementStores(settings = getSettings()) {
         s._replacementMapsMigrated = true;
     }
 
-    localStorage.removeItem("qig_prompt_replacements");
-    localStorage.removeItem("qig_active_prompt_replacement_ids_global");
-    localStorage.removeItem("qig_active_prompt_replacement_ids_by_char");
     s._backupPromptReplacements = null;
     s._backupActivePromptReplacementIdsGlobal = null;
     s._backupActivePromptReplacementIdsByChar = null;
     return storedRules.length > 0;
+}
+
+function cleanupLegacyReplacementLocalStores() {
+    for (const key of [
+        "qig_prompt_replacements",
+        "qig_active_prompt_replacement_ids_global",
+        "qig_active_prompt_replacement_ids_by_char",
+    ]) {
+        try {
+            localStorage.removeItem(key);
+        } catch (error) {
+            log(`Could not remove migrated legacy cache ${key}: ${error.message}`);
+        }
+    }
 }
 
 async function loadSettings() {
@@ -3342,54 +3417,106 @@ async function loadSettings() {
     s.outputMode = normalizeOutputMode(s.outputMode);
     s.manualInsertTarget = normalizeManualInsertTarget(s.manualInsertTarget);
     cleanupLegacyTemplateStores(s);
-    // Restore localStorage stores from extensionSettings backup if localStorage was wiped
-    const restoreTargets = [
-        { localKey: "qig_char_settings", backupKey: "_backupCharSettings", setter: v => { charSettings = v; } },
-        { localKey: "qig_profiles", backupKey: "_backupProfiles", setter: v => { connectionProfiles = v; } },
-        { localKey: "qig_char_ref_images", backupKey: "_backupCharRefImages", setter: v => { charRefImages = v; } },
-        { localKey: "qig_gen_presets", backupKey: "_backupGenPresets", setter: v => { generationPresets = v; } },
-        { localKey: "qig_comfy_workflows", backupKey: "_backupComfyWorkflows", setter: v => { comfyWorkflows = v; } },
-        { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", setter: v => { contextualFilters = v; } },
-        { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", setter: v => { filterPools = v; } },
-        { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", setter: v => { activeFilterPoolIdsGlobal = v; } },
-        { localKey: "qig_active_pool_ids_by_card", backupKey: "_backupActiveFilterPoolIdsByCard", setter: v => { activeFilterPoolIdsByCard = v; } },
-        { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", setter: v => { activeFilterPoolIdsByChar = v; } },
-        { localKey: CONTEXT_MEDIA_STORE_KEY, backupKey: "_backupContextMedia", setter: v => { contextMediaLibrary = v; } },
-    ];
-    let restoredCount = 0;
-    for (const { localKey, backupKey, setter } of restoreTargets) {
-        const localVal = localStorage.getItem(localKey);
-        const backupVal = s[backupKey];
-        if (backupVal == null) continue;
-
-        let parsedLocal;
-        let hasParsableLocal = false;
-        if (localVal != null) {
+    // Server settings are authoritative; localStorage is only a same-device cache.
+    const savedCacheId = typeof saved?._syncCacheId === "string" ? saved._syncCacheId : "";
+    let localCacheId = "";
+    try { localCacheId = localStorage.getItem(SYNC_CACHE_ID_KEY) || ""; } catch { /* server state remains usable */ }
+    let localCacheWritesAllowed = true;
+    if (localCacheId && localCacheId !== savedCacheId) {
+        try {
+            localStorage.removeItem(SYNC_CACHE_ID_KEY);
+            localCacheId = "";
+        } catch (error) {
             try {
-                parsedLocal = JSON.parse(localVal);
-                hasParsableLocal = true;
+                localStorage.setItem(SYNC_CACHE_ID_KEY, "");
+                localCacheId = "";
             } catch {
-                hasParsableLocal = false;
+                localCacheWritesAllowed = false;
+                log(`Could not clear mismatched synchronized cache ownership: ${error.message}`);
             }
         }
-
-        const expectsArray = Array.isArray(backupVal);
-        const expectsObject = !expectsArray && typeof backupVal === "object" && backupVal !== null;
-        const typeMismatch = hasParsableLocal && (
-            (expectsArray && !Array.isArray(parsedLocal)) ||
-            (expectsObject && (typeof parsedLocal !== "object" || parsedLocal === null || Array.isArray(parsedLocal)))
-        );
-
-        if (localVal == null || !hasParsableLocal || typeMismatch) {
-            setter(backupVal);
-            safeSetStorage(localKey, JSON.stringify(backupVal));
-            restoredCount++;
+    }
+    const cacheOwnerMatches = canSeedSynchronizedStoreFromLocal({
+        serverCacheId: savedCacheId,
+        localCacheId,
+    });
+    let serverSettingsNeedSave = false;
+    if (!savedCacheId) {
+        s._syncCacheId = generateUUID();
+        serverSettingsNeedSave = true;
+    }
+    const restoreTargets = [
+        { localKey: "qig_char_settings", backupKey: "_backupCharSettings", expectedType: "object", fallback: {}, setter: v => { charSettings = v; }, getter: () => charSettings },
+        { localKey: "qig_profiles", backupKey: "_backupProfiles", expectedType: "object", fallback: {}, setter: v => { connectionProfiles = v; }, getter: () => connectionProfiles },
+        { localKey: "qig_char_ref_images", backupKey: "_backupCharRefImages", expectedType: "object", fallback: {}, setter: v => { charRefImages = v; }, getter: () => charRefImages },
+        { localKey: "qig_gen_presets", backupKey: "_backupGenPresets", expectedType: "array", fallback: [], setter: v => { generationPresets = v; }, getter: () => generationPresets },
+        { localKey: "qig_comfy_workflows", backupKey: "_backupComfyWorkflows", expectedType: "array", fallback: [], setter: v => { comfyWorkflows = v; }, getter: () => comfyWorkflows },
+        { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", expectedType: "array", fallback: [], setter: v => { contextualFilters = v; }, getter: () => contextualFilters },
+        { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", expectedType: "array", fallback: [], setter: v => { filterPools = v; }, getter: () => filterPools },
+        { localKey: "qig_active_pool_ids_global", backupKey: "_backupActiveFilterPoolIdsGlobal", expectedType: "array", fallback: [DEFAULT_FILTER_POOL_ID], setter: v => { activeFilterPoolIdsGlobal = v; }, getter: () => activeFilterPoolIdsGlobal },
+        { localKey: "qig_active_pool_ids_by_card", backupKey: "_backupActiveFilterPoolIdsByCard", expectedType: "object", fallback: {}, setter: v => { activeFilterPoolIdsByCard = v; }, getter: () => activeFilterPoolIdsByCard },
+        { localKey: "qig_active_pool_ids_by_char", backupKey: "_backupActiveFilterPoolIdsByChar", expectedType: "object", fallback: {}, setter: v => { activeFilterPoolIdsByChar = v; }, getter: () => activeFilterPoolIdsByChar },
+        { localKey: CONTEXT_MEDIA_STORE_KEY, backupKey: "_backupContextMedia", expectedType: "object", fallback: {}, setter: v => { contextMediaLibrary = v; }, getter: () => contextMediaLibrary },
+    ];
+    const localValues = new Map();
+    for (const { localKey } of restoreTargets) {
+        try {
+            const raw = localStorage.getItem(localKey);
+            localValues.set(localKey, raw == null ? undefined : JSON.parse(raw));
+        } catch {
+            localValues.set(localKey, undefined);
         }
     }
-    if (restoredCount > 0) {
-        log(`Restored ${restoredCount} preset store(s) from server backup`);
-        toastr?.info?.(`Restored ${restoredCount} setting(s) from server backup (localStorage was empty)`);
+    let localLegacyReplacementRules;
+    try {
+        const raw = localStorage.getItem("qig_prompt_replacements");
+        localLegacyReplacementRules = raw == null ? undefined : JSON.parse(raw);
+    } catch { /* malformed legacy data is ignored */ }
+    const hasUnownedSynchronizedData = restoreTargets.some(({ localKey, backupKey, expectedType }) => {
+        const serverValue = s[backupKey];
+        const serverIsValid = expectedType === "array"
+            ? Array.isArray(serverValue)
+            : serverValue && typeof serverValue === "object" && !Array.isArray(serverValue);
+        if (serverIsValid) return false;
+        const value = localValues.get(localKey);
+        if (expectedType === "array") return Array.isArray(value) && value.length > 0;
+        return value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).length > 0;
+    });
+    const hasUnownedLegacyReplacementData = !Array.isArray(s._backupPromptReplacements)
+        && Array.isArray(localLegacyReplacementRules)
+        && localLegacyReplacementRules.length > 0;
+    const hasUnownedLegacyData = !savedCacheId
+        && !localCacheId
+        && (hasUnownedSynchronizedData || hasUnownedLegacyReplacementData);
+    const legacySeedApproved = hasUnownedLegacyData && confirm("Quick Image Gen found legacy browser-only settings that are not linked to a SillyTavern account. Import them into the current server user? They may include API keys and private reference images. Choose Cancel if this browser data belongs to another user.");
+    const legacySeedDeclined = hasUnownedLegacyData && !legacySeedApproved;
+    const maySeedFromLocal = cacheOwnerMatches || legacySeedApproved;
+    let synchronizedFromServer = 0;
+    let serverStoresSeeded = 0;
+    let localCachesRefreshed = true;
+    for (const { localKey, backupKey, expectedType, fallback, setter } of restoreTargets) {
+        const reconciled = reconcileSynchronizedStore({
+            serverValue: s[backupKey],
+            localValue: maySeedFromLocal ? localValues.get(localKey) : undefined,
+            fallback,
+            expectedType,
+        });
+        setter(reconciled.value);
+        if (localCacheWritesAllowed) {
+            localCachesRefreshed = safeSetStorage(localKey, JSON.stringify(reconciled.value)) && localCachesRefreshed;
+        } else {
+            localCachesRefreshed = false;
+        }
+        if (reconciled.serverNeedsUpdate) {
+            s[backupKey] = cloneSynchronizedValue(reconciled.value);
+            serverStoresSeeded++;
+            serverSettingsNeedSave = true;
+        } else {
+            synchronizedFromServer++;
+        }
     }
+    if (synchronizedFromServer > 0) log(`Synchronized ${synchronizedFromServer} setting store(s) from SillyTavern`);
+    if (serverStoresSeeded > 0) log(`Seeded ${serverStoresSeeded} setting store(s) into SillyTavern`);
     try {
         contextMediaLibrary = normalizeContextMediaLibrary(contextMediaLibrary);
     } catch (error) {
@@ -3397,7 +3524,9 @@ async function loadSettings() {
         contextMediaLibrary = normalizeContextMediaLibrary({});
         toastr?.warning?.("Invalid Context Media data was reset so Quick Image Gen could continue.");
     }
-    safeSetStorage(CONTEXT_MEDIA_STORE_KEY, JSON.stringify(contextMediaLibrary), "Failed to migrate Context Media. Browser storage may be full.");
+    if (localCacheWritesAllowed) {
+        localCachesRefreshed = safeSetStorage(CONTEXT_MEDIA_STORE_KEY, JSON.stringify(contextMediaLibrary), "Failed to migrate Context Media. Browser storage may be full.") && localCachesRefreshed;
+    }
     backupToSettings(CONTEXT_MEDIA_STORE_KEY, contextMediaLibrary);
     const normalizedPresets = normalizeGenerationPresetStore(generationPresets);
     ensureGenerationPresetIds({ persist: true });
@@ -3410,8 +3539,36 @@ async function loadSettings() {
     }
     syncActiveGenerationPresetSetting({ persist: true });
     ensureFilterPoolsState({ persist: true });
-    migrateLegacyReplacementStores(s);
-    saveSettingsDebounced?.();
+    const legacyReplacementMigrationPending = !s._replacementMapsMigrated;
+    migrateLegacyReplacementStores(s, { allowLocalStore: maySeedFromLocal });
+    if (legacyReplacementMigrationPending) serverSettingsNeedSave = true;
+    let initialServerSaveSucceeded = !serverSettingsNeedSave;
+    if (serverSettingsNeedSave) {
+        try {
+            await flushSettingsBackup();
+            initialServerSaveSucceeded = true;
+        } catch (error) {
+            log(`Initial settings synchronization failed: ${error.message}`);
+            toastr?.warning?.("Quick Image Gen loaded, but synchronized settings could not be saved to SillyTavern yet.");
+            saveSettingsDebounced?.();
+        }
+    } else {
+        saveSettingsDebounced?.();
+    }
+    if (initialServerSaveSucceeded && maySeedFromLocal && legacyReplacementMigrationPending) {
+        cleanupLegacyReplacementLocalStores();
+    }
+    if (initialServerSaveSucceeded && localCacheWritesAllowed) {
+        localCachesRefreshed = true;
+        for (const { localKey, getter } of restoreTargets) {
+            localCachesRefreshed = safeSetStorage(localKey, JSON.stringify(getter())) && localCachesRefreshed;
+        }
+    }
+    if (initialServerSaveSucceeded && localCachesRefreshed && !legacySeedDeclined) {
+        safeSetStorage(SYNC_CACHE_ID_KEY, s._syncCacheId);
+    } else if (!localCachesRefreshed) {
+        log("Synchronized cache ownership marker was not updated because one or more local cache writes failed");
+    }
 }
 
 function normalizePoolIdList(poolIds) {
@@ -3445,19 +3602,27 @@ function isDefaultFilterPoolName(name) {
 }
 
 function saveFilterPools() {
-    const ok = safeSetStorage("qig_filter_pools", JSON.stringify(filterPools), "Failed to save filter pools. Browser storage may be full.");
-    if (ok) backupToSettings("qig_filter_pools", filterPools);
-    return ok;
+    const ok = safeSetStorage("qig_filter_pools", JSON.stringify(filterPools));
+    const synced = writeBackupToSettings("qig_filter_pools", filterPools);
+    if (synced) saveSettingsDebounced?.();
+    if (!ok && synced) log("Filter pool synchronization was queued while the local cache write failed");
+    return synced;
 }
 
 function saveActiveFilterPools() {
-    const okGlobal = safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal), "Failed to save active global pools. Browser storage may be full.");
-    const okByCard = safeSetStorage("qig_active_pool_ids_by_card", JSON.stringify(activeFilterPoolIdsByCard), "Failed to save active card pools. Browser storage may be full.");
-    const okByChar = safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar), "Failed to save active character pools. Browser storage may be full.");
-    if (okGlobal) backupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
-    if (okByCard) backupToSettings("qig_active_pool_ids_by_card", activeFilterPoolIdsByCard);
-    if (okByChar) backupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
-    return okGlobal && okByCard && okByChar;
+    const okGlobal = safeSetStorage("qig_active_pool_ids_global", JSON.stringify(activeFilterPoolIdsGlobal));
+    const okByCard = safeSetStorage("qig_active_pool_ids_by_card", JSON.stringify(activeFilterPoolIdsByCard));
+    const okByChar = safeSetStorage("qig_active_pool_ids_by_char", JSON.stringify(activeFilterPoolIdsByChar));
+    const syncedGlobal = writeBackupToSettings("qig_active_pool_ids_global", activeFilterPoolIdsGlobal);
+    const syncedByCard = writeBackupToSettings("qig_active_pool_ids_by_card", activeFilterPoolIdsByCard);
+    const syncedByChar = writeBackupToSettings("qig_active_pool_ids_by_char", activeFilterPoolIdsByChar);
+    const synced = syncedGlobal && syncedByCard && syncedByChar;
+    if (synced) saveSettingsDebounced?.();
+    if (!(okGlobal && okByCard && okByChar) && synced) {
+        log("Active filter pool synchronization was queued while local cache writes failed");
+        toastr?.warning?.("Filter settings were queued for synchronization, but this browser's local cache could not be updated.");
+    }
+    return synced;
 }
 
 function persistFilterPoolState() {
@@ -6315,40 +6480,57 @@ async function genGptImage(prompt, negative, s, signal) {
         log("GPT Image: transparent backgrounds require PNG or WebP output; omitting background for JPEG.");
     }
     if (s.gptImageProxyUrl && !/\/(?:v1|images(?:\/generations)?)\/?(?:[?#].*)?$/i.test(String(s.gptImageProxyUrl).trim())) {
-        log("GPT Image: proxy URL does not end in /v1 or /images/generations; treating it as the full generation endpoint.");
+        log("GPT Image: trying the configured proxy URL as an exact endpoint first.");
     }
 
-    log(`GPT Image request to ${describeProviderImageSource(apiUrl)}: model=${model}, size=${payload.size}, quality=${payload.quality || "auto"}, format=${payload.output_format || "png"}`);
     const headers = {
         "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json",
     };
-    const res = await fetch(apiUrl, {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-        signal,
+    const requestImage = async (requestUrl) => {
+        log(`GPT Image request to ${describeProviderImageSource(requestUrl)}: model=${model}, size=${payload.size}, quality=${payload.quality || "auto"}, format=${payload.output_format || "png"}`);
+        const response = await fetch(requestUrl, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+            signal,
+        });
+        if (!response.ok) {
+            const detail = await readProxyErrorResponse(response);
+            throw new Error(`GPT Image error ${response.status}: ${detail || response.statusText}`);
+        }
+
+        const contentType = response.headers.get("content-type") || "";
+        const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
+        const responseBaseUrl = response.url || requestUrl;
+        log(`GPT Image response: status=${response.status}, type=${responseMime || "unknown"}, endpoint=${describeProviderImageSource(responseBaseUrl)}`);
+        if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
+            return { image: await imageResponseToDataUrl(response), requestUrl, responseBaseUrl };
+        }
+
+        const data = await readResponseJson(response);
+        return {
+            data,
+            source: extractProviderImageSource(data, { defaultMime: getGptImageMime(outputFormat) }),
+            requestUrl,
+            responseBaseUrl,
+        };
+    };
+
+    const result = await requestGptImageWithRouteRetry(apiUrl, requestImage, (retryUrl) => {
+            log(`GPT Image proxy namespace rejected the root route; retrying ${describeProviderImageSource(retryUrl)}`);
     });
-
-    if (!res.ok) {
-        const detail = await readProxyErrorResponse(res);
-        throw new Error(`GPT Image error ${res.status}: ${detail || res.statusText}`);
+    if (result.image) return result.image;
+    const { data, source, requestUrl, responseBaseUrl } = result;
+    if (!source) {
+        const providerError = extractProviderErrorMessage(data);
+        throw new Error(providerError
+            ? `GPT Image proxy returned an error: ${providerError}`
+            : `GPT Image returned no image: ${JSON.stringify(data || {}).substring(0, 300)}`);
     }
-
-    const contentType = res.headers.get("content-type") || "";
-    const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
-    log(`GPT Image response: status=${res.status}, type=${responseMime || "unknown"}, endpoint=${describeProviderImageSource(res.url || apiUrl)}`);
-    if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
-        return await imageResponseToDataUrl(res);
-    }
-
-    const responseBaseUrl = res.url || apiUrl;
-    const data = await readResponseJson(res);
-    const source = extractProviderImageSource(data, { defaultMime: getGptImageMime(outputFormat) });
-    if (!source) throw new Error(`GPT Image returned no image: ${JSON.stringify(data || {}).substring(0, 300)}`);
     log(`GPT Image result source: ${describeProviderImageSource(source, responseBaseUrl)}`);
     const materialized = await materializeProviderImageSource(source, {
-        requestUrl: apiUrl,
+        requestUrl,
         responseUrl: responseBaseUrl,
         headers,
         signal,
@@ -10882,6 +11064,7 @@ function getMappedPoolIdsForCopiedFilter(sourcePoolIds, { scope = FILTER_SCOPE_G
 }
 
 function addFilterPool(scope = FILTER_SCOPE_GLOBAL) {
+    if (blockMutationDuringSettingsImport()) return;
     const currentCharId = getCurrentCharId();
     const currentCard = getCurrentCardScopeInfo();
     const isCardScope = scope === FILTER_SCOPE_CARD;
@@ -10922,6 +11105,7 @@ function addFilterPool(scope = FILTER_SCOPE_GLOBAL) {
 }
 
 function renameFilterPool(poolId) {
+    if (blockMutationDuringSettingsImport()) return;
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
     const rawName = prompt("Rename pool:", pool.name || "");
@@ -10938,6 +11122,7 @@ function renameFilterPool(poolId) {
 }
 
 function deleteFilterPool(poolId) {
+    if (blockMutationDuringSettingsImport()) return;
     if (poolId === DEFAULT_FILTER_POOL_ID) {
         toastr.warning("The default pool cannot be deleted.");
         return;
@@ -10981,6 +11166,7 @@ function deleteFilterPool(poolId) {
 }
 
 function toggleFilterPool(poolId) {
+    if (blockMutationDuringSettingsImport()) return;
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
     const scopeInfo = getScopedRecordFromEntity(pool);
@@ -11009,6 +11195,7 @@ function toggleFilterPool(poolId) {
 }
 
 function setVisiblePoolsEnabled(enabled) {
+    if (blockMutationDuringSettingsImport()) return;
     const selectedScope = getSelectedFilterManagerScopeDescriptor();
     const { globalPools, scopedPools } = getVisibleFilterPools(selectedScope);
     if (enabled) {
@@ -11243,6 +11430,7 @@ function showFilterDialog(filter) {
             document.getElementById("qig-fd-save").onclick = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
+                if (blockMutationDuringSettingsImport()) return;
                 const name = document.getElementById("qig-fd-name").value.trim();
                 const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
@@ -11287,8 +11475,10 @@ function showFilterDialog(filter) {
 // CONTEXTUAL_FILTERS_CRUD_PLACEHOLDER
 
 async function addContextualFilter() {
+    if (blockMutationDuringSettingsImport()) return;
     const result = await showFilterDialog(null);
     if (!result) return;
+    if (blockMutationDuringSettingsImport()) return;
     result.id = generateUUID();
     result.enabled = true;
     result.poolIds = normalizePoolIdList(result.poolIds);
@@ -11300,10 +11490,12 @@ async function addContextualFilter() {
 }
 
 async function editContextualFilter(id) {
+    if (blockMutationDuringSettingsImport()) return;
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
     const result = await showFilterDialog(f);
     if (!result) return;
+    if (blockMutationDuringSettingsImport()) return;
     const previousScopeKey = getContextualFilterScopeKey(f);
     Object.assign(f, result);
     f.poolIds = normalizePoolIdList(f.poolIds);
@@ -11316,6 +11508,7 @@ async function editContextualFilter(id) {
 }
 
 function deleteContextualFilter(id) {
+    if (blockMutationDuringSettingsImport()) return;
     const idx = contextualFilters.findIndex(x => x.id === id);
     if (idx === -1) return;
     contextualFilters.splice(idx, 1);
@@ -11324,6 +11517,7 @@ function deleteContextualFilter(id) {
 }
 
 function toggleContextualFilter(id) {
+    if (blockMutationDuringSettingsImport()) return;
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
     f.enabled = !f.enabled;
@@ -11332,6 +11526,7 @@ function toggleContextualFilter(id) {
 }
 
 function clearContextualFilters() {
+    if (blockMutationDuringSettingsImport()) return;
     const currentCharId = getCurrentCharId();
     const charName = getCurrentCharName();
     const currentCard = getCurrentCardScopeInfo();
@@ -11398,6 +11593,7 @@ function buildCopiedContextualFilter(filter, { scope = FILTER_SCOPE_GLOBAL, char
 }
 
 function duplicateContextualFilter(id) {
+    if (blockMutationDuringSettingsImport()) return;
     const f = contextualFilters.find(x => x.id === id);
     if (!f) return;
     const scopeInfo = getScopedRecordFromEntity(f);
@@ -11425,6 +11621,7 @@ function duplicateContextualFilter(id) {
 }
 
 function copyContextualFilterToScope(id, target = "global") {
+    if (blockMutationDuringSettingsImport()) return;
     const filter = contextualFilters.find(entry => entry.id === id);
     if (!filter) return;
     if (target === "current-card" || (target === "current" && getCurrentCardKey())) {
@@ -11453,6 +11650,7 @@ function copyContextualFilterToScope(id, target = "global") {
 }
 
 function copyFilterPoolToCurrentCard(poolId) {
+    if (blockMutationDuringSettingsImport()) return;
     const pool = filterPools.find(entry => entry.id === poolId);
     if (!pool) return;
     const currentCard = getCurrentCardScopeInfo();
@@ -11478,6 +11676,7 @@ function copyFilterPoolToCurrentCard(poolId) {
 }
 
 function copyFilterPoolToCurrentChar(poolId) {
+    if (blockMutationDuringSettingsImport()) return;
     const pool = filterPools.find(entry => entry.id === poolId);
     if (!pool) return;
     const currentCharId = getCurrentCharId();
@@ -11522,6 +11721,7 @@ function clearContextualFilterManagerDragState() {
 }
 
 function moveContextualFilter(draggedId, targetId, position = "after") {
+    if (blockMutationDuringSettingsImport()) return;
     if (!draggedId || !targetId || draggedId === targetId) return;
 
     const dragged = contextualFilters.find(filter => filter.id === draggedId);
@@ -12197,22 +12397,31 @@ function getCurrentCharOverride() {
 }
 
 function persistCharacterStores(nextSettings, nextRefs, errorMessage) {
+    if (blockMutationDuringSettingsImport()) return false;
+    let cacheSaved = false;
     try {
         const transaction = stageStorageTransaction(localStorage, {
             qig_char_settings: JSON.stringify(nextSettings),
             qig_char_ref_images: JSON.stringify(nextRefs),
         });
         transaction.commit();
-        charSettings = nextSettings;
-        charRefImages = nextRefs;
-        backupToSettings("qig_char_settings", charSettings);
-        backupToSettings("qig_char_ref_images", charRefImages);
-        return true;
+        cacheSaved = true;
     } catch (error) {
         log(`Character settings storage failed: ${error.message}`);
-        toastr.error(errorMessage || "Failed to save character settings. Browser storage may be full.");
+    }
+    const settingsSynced = [
+        writeBackupToSettings("qig_char_settings", nextSettings),
+        writeBackupToSettings("qig_char_ref_images", nextRefs),
+    ].every(Boolean);
+    if (!settingsSynced) {
+        toastr.error(errorMessage || "Failed to synchronize character settings with SillyTavern.");
         return false;
     }
+    charSettings = nextSettings;
+    charRefImages = nextRefs;
+    saveSettingsDebounced?.();
+    if (!cacheSaved) toastr?.warning?.("Character settings were queued for synchronization, but this browser's local cache could not be updated.");
+    return true;
 }
 
 function updateCharacterSettingsUI() {
@@ -12641,7 +12850,7 @@ function loadCharSettings() {
     return true;
 }
 
-async function saveConnectionProfile() {
+async function saveConnectionProfileNow() {
     const s = getSettings();
     const provider = s.provider;
     const rawName = prompt("Profile name:");
@@ -12656,13 +12865,18 @@ async function saveConnectionProfile() {
     keys.forEach(k => profile[k] = s[k]);
     const existing = !!connectionProfiles[provider]?.[name];
     if (existing && !confirm(`Profile "${name}" already exists. Overwrite it?`)) return;
-    if (!connectionProfiles[provider]) connectionProfiles[provider] = {};
-    connectionProfiles[provider][name] = profile;
-    if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to save profile. Browser storage may be full.")) return;
-    if (!await saveBackupToSettings("qig_profiles", connectionProfiles)) return;
+    const nextProfiles = cloneSynchronizedValue(connectionProfiles);
+    if (!nextProfiles[provider]) nextProfiles[provider] = {};
+    nextProfiles[provider][name] = profile;
+    if (!await saveLocalStoreBackupNow("qig_profiles", nextProfiles, "Failed to save profile to your SillyTavern account.")) return;
+    connectionProfiles = nextProfiles;
     renderProfileSelect(name);
     showStatus(`${existing ? "♻️ Updated" : "💾 Saved"} profile: ${name}`);
     setTimeout(hideStatus, 2000);
+}
+
+function saveConnectionProfile() {
+    return runSynchronizedStoreMutation("qig_profiles", saveConnectionProfileNow);
 }
 
 function loadConnectionProfile(name) {
@@ -12685,13 +12899,18 @@ function loadConnectionProfile(name) {
     setTimeout(hideStatus, 2000);
 }
 
-async function deleteConnectionProfile(name) {
+async function deleteConnectionProfileNow(name) {
     const provider = getSettings().provider;
     if (!confirm(`Delete profile "${name}"?`)) return;
-    delete connectionProfiles[provider]?.[name];
-    if (!safeSetStorage("qig_profiles", JSON.stringify(connectionProfiles), "Failed to delete profile. Browser storage may be full.")) return;
-    if (!await saveBackupToSettings("qig_profiles", connectionProfiles)) return;
+    const nextProfiles = cloneSynchronizedValue(connectionProfiles);
+    delete nextProfiles[provider]?.[name];
+    if (!await saveLocalStoreBackupNow("qig_profiles", nextProfiles, "Failed to delete profile from your SillyTavern account.")) return;
+    connectionProfiles = nextProfiles;
     renderProfileSelect();
+}
+
+function deleteConnectionProfile(name) {
+    return runSynchronizedStoreMutation("qig_profiles", () => deleteConnectionProfileNow(name));
 }
 
 function renderProfileSelect(selectedName = "") {
@@ -12747,8 +12966,10 @@ function saveComfyWorkflowStore(errorMessage = "Failed to save workflow presets.
     return saveLocalStoreBackup("qig_comfy_workflows", comfyWorkflows, errorMessage);
 }
 
-async function saveComfyWorkflowStoreNow(errorMessage = "Failed to save workflow presets. Browser storage may be full.") {
-    return saveLocalStoreBackupNow("qig_comfy_workflows", comfyWorkflows, errorMessage);
+async function commitComfyWorkflowStore(nextStore, errorMessage = "Failed to synchronize workflow presets with SillyTavern.") {
+    if (!await saveLocalStoreBackupNow("qig_comfy_workflows", nextStore, errorMessage)) return false;
+    comfyWorkflows = nextStore;
+    return true;
 }
 
 function setComfyWorkflowActionState(hasSelection) {
@@ -12795,7 +13016,7 @@ function loadSelectedComfyWorkflowPreset() {
     setTimeout(hideStatus, 2000);
 }
 
-async function saveComfyWorkflowPresetAs() {
+async function saveComfyWorkflowPresetAsNow() {
     const rawName = prompt("Workflow preset name:");
     if (rawName == null) return;
     const name = rawName.trim();
@@ -12807,47 +13028,63 @@ async function saveComfyWorkflowPresetAs() {
     const snapshot = getComfyWorkflowSnapshot();
     if (existing) {
         if (!confirm(`Workflow preset "${name}" already exists. Overwrite it?`)) return;
-        Object.assign(existing, snapshot, { updatedAt: new Date().toISOString() });
-        if (!await saveComfyWorkflowStoreNow()) return;
+        const nextStore = comfyWorkflows.map(workflow => workflow.id === existing.id
+            ? { ...workflow, ...snapshot, updatedAt: new Date().toISOString() }
+            : workflow);
+        if (!await commitComfyWorkflowStore(nextStore)) return;
         renderComfyWorkflowPresets(existing.id);
         showStatus(`♻️ Updated workflow preset: ${name}`);
         setTimeout(hideStatus, 2000);
         return;
     }
     const id = `cwf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    comfyWorkflows.push({ id, name, ...snapshot, updatedAt: new Date().toISOString() });
-    if (!await saveComfyWorkflowStoreNow()) return;
+    const nextStore = [...comfyWorkflows, { id, name, ...snapshot, updatedAt: new Date().toISOString() }];
+    if (!await commitComfyWorkflowStore(nextStore)) return;
     renderComfyWorkflowPresets(id);
     showStatus(`💾 Saved workflow preset: ${name}`);
     setTimeout(hideStatus, 2000);
 }
 
-async function updateSelectedComfyWorkflowPreset() {
+function saveComfyWorkflowPresetAs() {
+    return runSynchronizedStoreMutation("qig_comfy_workflows", saveComfyWorkflowPresetAsNow);
+}
+
+async function updateSelectedComfyWorkflowPresetNow() {
     const preset = getSelectedComfyWorkflowPreset();
     if (!preset) {
         toastr.warning("Select a workflow preset first");
         return;
     }
     if (!confirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`)) return;
-    Object.assign(preset, getComfyWorkflowSnapshot(), { updatedAt: new Date().toISOString() });
-    if (!await saveComfyWorkflowStoreNow()) return;
+    const nextStore = comfyWorkflows.map(workflow => workflow.id === preset.id
+        ? { ...workflow, ...getComfyWorkflowSnapshot(), updatedAt: new Date().toISOString() }
+        : workflow);
+    if (!await commitComfyWorkflowStore(nextStore)) return;
     renderComfyWorkflowPresets(preset.id);
     showStatus(`♻️ Updated workflow preset: ${preset.name}`);
     setTimeout(hideStatus, 2000);
 }
 
-async function deleteSelectedComfyWorkflowPreset() {
+function updateSelectedComfyWorkflowPreset() {
+    return runSynchronizedStoreMutation("qig_comfy_workflows", updateSelectedComfyWorkflowPresetNow);
+}
+
+async function deleteSelectedComfyWorkflowPresetNow() {
     const preset = getSelectedComfyWorkflowPreset();
     if (!preset) {
         toastr.warning("Select a workflow preset first");
         return;
     }
     if (!confirm(`Delete workflow preset "${preset.name}"?`)) return;
-    comfyWorkflows = comfyWorkflows.filter(w => w.id !== preset.id);
-    if (!await saveComfyWorkflowStoreNow()) return;
+    const nextStore = comfyWorkflows.filter(w => w.id !== preset.id);
+    if (!await commitComfyWorkflowStore(nextStore)) return;
     renderComfyWorkflowPresets("");
     showStatus(`🗑️ Deleted workflow preset: ${preset.name}`);
     setTimeout(hideStatus, 2000);
+}
+
+function deleteSelectedComfyWorkflowPreset() {
+    return runSynchronizedStoreMutation("qig_comfy_workflows", deleteSelectedComfyWorkflowPresetNow);
 }
 
 // === Generation Presets ===
@@ -12863,8 +13100,10 @@ function saveGenerationPresetStore(errorMessage = "Failed to save preset. Browse
     return saveLocalStoreBackup("qig_gen_presets", generationPresets, errorMessage);
 }
 
-async function saveGenerationPresetStoreNow(errorMessage = "Failed to save preset. Browser storage may be full.") {
-    return saveLocalStoreBackupNow("qig_gen_presets", generationPresets, errorMessage);
+async function commitGenerationPresetStore(nextStore, errorMessage = "Failed to synchronize presets with SillyTavern.") {
+    if (!await saveLocalStoreBackupNow("qig_gen_presets", nextStore, errorMessage)) return false;
+    generationPresets = nextStore;
+    return true;
 }
 
 function ensureGenerationPresetIds({ persist = false } = {}) {
@@ -12987,7 +13226,7 @@ function syncGenerationPresetIndicators() {
     });
 }
 
-async function savePreset() {
+async function savePresetNow() {
     const name = prompt("Preset name:");
     if (!name) return;
     ensureFilterPoolsState();
@@ -12999,13 +13238,19 @@ async function savePreset() {
     // Include inject mode settings
     const injectKeys = ["injectEnabled", "injectTagName", "injectPrompt", "injectRegex", "injectPosition", "injectDepth", "injectInsertMode", "injectAutoClean", "paletteMode"];
     injectKeys.forEach(k => { if (s[k] !== undefined) preset[k] = s[k]; });
-    generationPresets.push(preset);
-    if (!await saveGenerationPresetStoreNow()) return;
-    setActiveGenerationPresetId(preset.id, { persist: false });
-    saveSettingsDebounced();
+    const previousActiveId = String(s.lastLoadedPresetId || "");
+    s.lastLoadedPresetId = preset.id;
+    if (!await commitGenerationPresetStore([...generationPresets, preset])) {
+        s.lastLoadedPresetId = previousActiveId;
+        return;
+    }
     renderPresets();
     showStatus(`💾 Saved preset: ${name}`);
     setTimeout(hideStatus, 2000);
+}
+
+function savePreset() {
+    return runSynchronizedStoreMutation("qig_gen_presets", savePresetNow);
 }
 
 function loadPreset(i) {
@@ -13040,26 +13285,42 @@ function loadPreset(i) {
     setTimeout(hideStatus, 2000);
 }
 
-async function deletePreset(i) {
-    const removed = generationPresets.splice(i, 1)[0];
-    if (removed?.id && getActiveGenerationPresetId() === removed.id) {
-        setActiveGenerationPresetId("", { persist: false });
+async function deletePresetNow(i) {
+    const removed = generationPresets[i];
+    if (!removed) return;
+    const nextStore = generationPresets.filter((_, index) => index !== i);
+    const settings = getSettings();
+    const previousActiveId = String(settings.lastLoadedPresetId || "");
+    if (removed.id && previousActiveId === removed.id) settings.lastLoadedPresetId = "";
+    if (!await commitGenerationPresetStore(nextStore, "Failed to delete preset from your SillyTavern account.")) {
+        settings.lastLoadedPresetId = previousActiveId;
+        return;
     }
     syncActiveGenerationPresetSetting({ persist: false });
-    if (!await saveGenerationPresetStoreNow("Failed to delete preset. Browser storage may be full.")) return;
     closePalettePresetMenu();
     renderPresets();
 }
 
-async function clearPresets() {
+function deletePreset(i) {
+    return runSynchronizedStoreMutation("qig_gen_presets", () => deletePresetNow(i));
+}
+
+async function clearPresetsNow() {
     if (confirm("Clear all presets?")) {
-        generationPresets = [];
-        localStorage.removeItem("qig_gen_presets");
-        setActiveGenerationPresetId("", { persist: false });
-        if (!await saveBackupToSettings("qig_gen_presets", generationPresets)) return;
+        const settings = getSettings();
+        const previousActiveId = String(settings.lastLoadedPresetId || "");
+        settings.lastLoadedPresetId = "";
+        if (!await commitGenerationPresetStore([], "Failed to clear presets from your SillyTavern account.")) {
+            settings.lastLoadedPresetId = previousActiveId;
+            return;
+        }
         closePalettePresetMenu();
         renderPresets();
     }
+}
+
+function clearPresets() {
+    return runSynchronizedStoreMutation("qig_gen_presets", clearPresetsNow);
 }
 
 function seedStarterPresets() {
@@ -13498,7 +13759,18 @@ async function commitSettingsImportNow(data) {
 }
 
 function commitSettingsImport(data) {
-    return queueContextMediaMutation(() => commitSettingsImportNow(data));
+    return runSynchronizedStoreMutations(
+        Object.keys(BACKUP_KEYS),
+        async () => {
+            settingsImportInProgress = true;
+            try {
+                return await queueContextMediaMutation(() => commitSettingsImportNow(data));
+            } finally {
+                settingsImportInProgress = false;
+            }
+        },
+        { throwIfBusy: true },
+    );
 }
 
 function importSettings() {
@@ -14448,7 +14720,7 @@ function createUI() {
                     <small style="opacity:0.6;font-size:10px;">Defaults to <code>gpt-image-2</code>. You can type any compatible model ID for proxies.</small>
                     <label>Proxy URL <small>(optional — leave blank to use official OpenAI API)</small></label>
                     <input id="qig-gpt-image-proxy-url" type="text" value="${esc(s.gptImageProxyUrl)}" placeholder="https://your-proxy-url/v1">
-                    <small>A URL ending in <code>/v1</code> expands to OpenAI's image route. Any other path, such as <code>/proxy/openai</code>, is used as the exact POST endpoint.</small>
+                    <small>A URL ending in <code>/v1</code> expands to OpenAI's image route. Other paths are tried exactly as entered; Comfy-style <code>/proxy/openai</code> namespaces can retry the standard image route when required.</small>
                     <label>Proxy Key <small>(optional — overrides API key above for proxy)</small></label>
                     <input id="qig-gpt-image-proxy-key" type="password" value="${esc(s.gptImageProxyKey)}" placeholder="Leave blank to use API key above">
                     <div class="qig-row">

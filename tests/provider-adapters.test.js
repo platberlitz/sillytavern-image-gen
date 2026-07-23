@@ -5,11 +5,14 @@ import {
   buildGptImagePayload,
   buildNanobananaPayload,
   describeProviderImageSource,
+  extractProviderErrorMessage,
   extractProviderImageSource,
   getGptImageApiUrl,
+  getGptImageRouteRetryUrl,
   getNanobananaApiUrl,
   imageResponseToDataUrl,
   materializeProviderImageSource,
+  requestGptImageWithRouteRetry,
 } from '../lib/provider-adapters.js';
 
 const PNG_BASE64 = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGP4z8Dwn4GBgYGJAQoAHgQCAZ7uX1EAAAAASUVORK5CYII=';
@@ -43,6 +46,52 @@ test('GPT Image preserves exact proxy endpoints and expands only known base path
   assert.equal(getGptImageApiUrl('https://proxy.example/v1?token=canary'), 'https://proxy.example/v1/images/generations?token=canary');
   assert.equal(getGptImageApiUrl('/v1/#section'), '/v1/images/generations#section');
   assert.equal(getGptImageApiUrl('https://proxy.example/v1/chat/completions'), 'https://proxy.example/v1/images/generations');
+});
+
+test('GPT Image retries only wrapped missing-route errors at the standard image operation', () => {
+  const missingRoute = {
+    choices: [{ message: { content: '## **Proxy error (HTTP 404 Not Found)**\n\nThe requested proxy endpoint does not exist' } }],
+  };
+  assert.match(extractProviderErrorMessage(missingRoute), /requested proxy endpoint/);
+  assert.equal(
+    getGptImageRouteRetryUrl('/proxy/openai?token=canary#route', missingRoute),
+    '/proxy/openai/images/generations?token=canary#route',
+  );
+  assert.equal(
+    getGptImageRouteRetryUrl('/proxy/openai/images/generations', missingRoute),
+    '',
+  );
+  assert.equal(
+    getGptImageRouteRetryUrl('/proxy/openai', { choices: [{ message: { content: 'Ordinary assistant text' } }] }),
+    '',
+  );
+  assert.equal(
+    getGptImageRouteRetryUrl('/proxy/openai', { error: { message: 'HTTP 401 Unauthorized' } }),
+    '',
+  );
+});
+
+test('GPT Image route recovery retries once with the same request adapter', async () => {
+  const calls = [];
+  const result = await requestGptImageWithRouteRetry('/proxy/openai', async (url) => {
+    calls.push(url);
+    if (calls.length === 1) {
+      return {
+        data: { choices: [{ message: { content: 'Proxy error (HTTP 404 Not Found): The requested proxy endpoint does not exist' } }] },
+      };
+    }
+    return { source: 'data:image/png;base64,recovered' };
+  });
+
+  assert.deepEqual(calls, ['/proxy/openai', '/proxy/openai/images/generations']);
+  assert.equal(result.source, 'data:image/png;base64,recovered');
+
+  const ordinaryCalls = [];
+  await requestGptImageWithRouteRetry('/proxy/openai', async (url) => {
+    ordinaryCalls.push(url);
+    return { data: { choices: [{ message: { content: 'No image available' } }] } };
+  });
+  assert.deepEqual(ordinaryCalls, ['/proxy/openai']);
 });
 
 test('Nanobanana keeps native Gemini payloads for generateContent endpoints', () => {

@@ -19,6 +19,7 @@ test("settings exports include active state but omit secrets and private images"
             comfyWorkflow: JSON.stringify({ "1": { inputs: { api_key: "workflow-canary", model: "safe" } } }),
             width: 768,
             _backupProfiles: { secret: true },
+            _syncCacheId: "internal-cache-owner",
         },
         connectionProfiles: {
             proxy: { Home: { proxyUrl: "https://user:pass@images.example/v1?model=flux&api_key=url-canary", proxyKey: "profile-canary", proxyModel: "flux" } },
@@ -35,7 +36,7 @@ test("settings exports include active state but omit secrets and private images"
     assert.equal(exported.connectionProfiles.proxy.Home.proxyUrl, "https://images.example/v1?model=flux");
     assert.equal(exported.contextualFilters[0].cardKey, "character:one");
     assert.equal(exported.charRefImages, undefined);
-    assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles/);
+    assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles|internal-cache-owner/);
 });
 
 test("Context Media exports retain taxonomy but omit all local media details", () => {

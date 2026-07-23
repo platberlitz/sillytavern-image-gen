@@ -31,13 +31,15 @@ Requires SillyTavern 1.12+ (extension manifest v3). Browser-only for most provid
 | `proxy` | Reverse Proxy (OpenAI-compatible) | No |
 | `custom` | Custom API (JSON, multipart, async polling) | Optional |
 
-Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
+Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. This account data is not end-to-end encrypted by QIG. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
+
+QIG synchronizes active settings, Connection Profiles, generation presets, Comfy workflows, character overrides and references, Contextual Filters, filter pools, and Context Media through the current SillyTavern server user. Browser storage is only a local cache for those stores. Gallery images, prompt history, and runtime logs remain local to each browser and do not follow you to another device.
 
 ### Provider notes
 
 - **Pollinations**: Free by default (`flux`). Paid models include NanoBanana variants, Grok, Pruna, Nova Canvas, Seedream, Wan, and GPT Image 1/1.5. Some paid models require Pollinations auth.
 - **NovelAI**: Default model `nai-diffusion-4-5-curated`. Resolution presets available. Supports proxy URL/key overrides.
-- **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable. A proxy URL ending in `/v1` expands to `/images/generations`; any other path, such as `/proxy/openai`, is used as the exact POST endpoint.
+- **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable. A proxy URL ending in `/v1` expands to `/images/generations`; any other path is tried as the exact POST endpoint first. Comfy-style `/proxy/openai` namespaces that report a missing proxy route are retried once at `/proxy/openai/images/generations`.
 - **Nanobanana (Gemini)**: Four models ranging from Gemini 2.0 Flash Exp through Nano Banana Pro (Gemini 3 Pro Image). NBP mode adds optional director presets and negative guidance. Native Gemini proxy bases use `generateContent`; full `/chat/completions` URLs use an OpenAI-compatible request body.
 - **Navy.ai / Routeway**: Model ID suggestions with custom model support. Base64 image responses.
 - **Z.AI**: Default `cogview-4`. HD quality default.
@@ -395,7 +397,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 - Legacy Prompt Replacement Maps are migrated into Contextual Filters on settings load, preset import, and settings import.
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
-- Settings exports use schema v6 and omit credentials, private/reference images, and all Custom API trust or request-definition fields. Schema v5 imports remain supported and retain local credentials.
+- Settings exports use schema v7 and omit credentials, private/reference images, and all Custom API trust or request-definition fields. Schema v5 imports remain supported and retain local credentials.
 - Legacy localStorage gallery entries migrate transactionally to IndexedDB. Legacy data is retained if any asset cannot be migrated.
 
 ## Development
