@@ -4,7 +4,9 @@ import test from 'node:test';
 import {
   buildGptImagePayload,
   buildNanobananaPayload,
+  describeProviderImageSource,
   extractProviderImageSource,
+  getGptImageApiUrl,
   getNanobananaApiUrl,
   imageResponseToDataUrl,
   materializeProviderImageSource,
@@ -33,6 +35,14 @@ test('GPT Image payload always sends the prompt in the OpenAI image schema', () 
     background: 'transparent',
     moderation: 'low',
   });
+});
+
+test('GPT Image preserves exact proxy endpoints and expands only known base paths', () => {
+  assert.equal(getGptImageApiUrl('/proxy/openai'), '/proxy/openai');
+  assert.equal(getGptImageApiUrl('https://proxy.example/proxy/openai?route=image'), 'https://proxy.example/proxy/openai?route=image');
+  assert.equal(getGptImageApiUrl('https://proxy.example/v1?token=canary'), 'https://proxy.example/v1/images/generations?token=canary');
+  assert.equal(getGptImageApiUrl('/v1/#section'), '/v1/images/generations#section');
+  assert.equal(getGptImageApiUrl('https://proxy.example/v1/chat/completions'), 'https://proxy.example/v1/images/generations');
 });
 
 test('Nanobanana keeps native Gemini payloads for generateContent endpoints', () => {
@@ -162,6 +172,26 @@ test('authenticated result fetches fall back to browser loading after CORS failu
   });
 
   assert.equal(source, 'https://proxy.example/results/image.png');
+});
+
+test('strict authenticated result retrieval preserves a safe actionable failure', async () => {
+  const privateUrl = 'https://proxy.example/results/private.png?token=secret';
+  await assert.rejects(materializeProviderImageSource('/results/private.png?token=secret', {
+    requestUrl: 'https://proxy.example/proxy/openai',
+    headers: { Authorization: 'Bearer canary-key' },
+    fetchImpl: async () => { throw new TypeError(`Cannot reach ${privateUrl} (CORS proxy is disabled)`); },
+    allowBrowserFallback: false,
+  }), (error) => {
+    assert.match(error.message, /Could not retrieve generated image from https:\/\/proxy\.example\/results\/private\.png/);
+    assert.match(error.message, /CORS proxy is disabled/);
+    assert.doesNotMatch(error.message, /token=secret/);
+    return true;
+  });
+
+  assert.equal(
+    describeProviderImageSource('https://cdn.example/image.png?token=secret#private'),
+    'https://cdn.example/image.png',
+  );
 });
 
 test('cross-origin result URLs never receive provider credentials', async () => {

@@ -37,7 +37,7 @@ Image-provider keys are stored in QIG extension settings and Connection Profiles
 
 - **Pollinations**: Free by default (`flux`). Paid models include NanoBanana variants, Grok, Pruna, Nova Canvas, Seedream, Wan, and GPT Image 1/1.5. Some paid models require Pollinations auth.
 - **NovelAI**: Default model `nai-diffusion-4-5-curated`. Resolution presets available. Supports proxy URL/key overrides.
-- **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable. Proxy URLs should end in `/v1` or the full `/images/generations` endpoint.
+- **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable. A proxy URL ending in `/v1` expands to `/images/generations`; any other path, such as `/proxy/openai`, is used as the exact POST endpoint.
 - **Nanobanana (Gemini)**: Four models ranging from Gemini 2.0 Flash Exp through Nano Banana Pro (Gemini 3 Pro Image). NBP mode adds optional director presets and negative guidance. Native Gemini proxy bases use `generateContent`; full `/chat/completions` URLs use an OpenAI-compatible request body.
 - **Navy.ai / Routeway**: Model ID suggestions with custom model support. Base64 image responses.
 - **Z.AI**: Default `cogview-4`. HD quality default.
