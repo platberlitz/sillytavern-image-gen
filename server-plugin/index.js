@@ -4,7 +4,9 @@ const express = require("express");
 const { readResponseTextWithLimit } = require("./response-limit");
 
 function sendJson(res, status, body) {
+    if (res.destroyed || res.writableEnded) return false;
     res.status(status).type("application/json").send(JSON.stringify(body));
+    return true;
 }
 
 function requireString(value, name) {
@@ -18,7 +20,11 @@ function requireString(value, name) {
 
 function withTimeout(signal) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+    }, REQUEST_TIMEOUT_MS);
 
     if (signal) {
         if (signal.aborted) controller.abort();
@@ -29,13 +35,18 @@ function withTimeout(signal) {
         signal: controller.signal,
         abort: () => controller.abort(),
         done: () => clearTimeout(timeout),
+        didTimeOut: () => timedOut,
     };
 }
 
 async function relayJson(req, res, url, authHeader, init = {}) {
     const timeout = withTimeout();
+    let clientDisconnected = false;
     const abortOnDisconnect = () => {
-        if (!res.writableEnded) timeout.abort();
+        if (!res.writableEnded) {
+            clientDisconnected = true;
+            timeout.abort();
+        }
     };
     req.once("aborted", abortOnDisconnect);
     res.once("close", abortOnDisconnect);
@@ -53,12 +64,18 @@ async function relayJson(req, res, url, authHeader, init = {}) {
         });
 
         const text = await readResponseTextWithLimit(upstream);
+        if (clientDisconnected || req.aborted || res.destroyed || res.writableEnded) return;
         res.status(upstream.status);
         res.set("Content-Type", upstream.headers.get("content-type") || "application/json");
         res.send(text);
     } catch (error) {
+        if (clientDisconnected || req.aborted || res.destroyed || res.writableEnded) return;
         if (error?.name === "AbortError") {
-            sendJson(res, 504, { error: "Quick Image Gen relay request timed out" });
+            sendJson(res, timeout.didTimeOut() ? 504 : 502, {
+                error: timeout.didTimeOut()
+                    ? "Quick Image Gen relay request timed out"
+                    : "Quick Image Gen relay request aborted",
+            });
             return;
         }
         sendJson(res, 502, { error: error?.message || "Quick Image Gen relay request failed" });
@@ -75,7 +92,7 @@ async function handleCivitai(req, res) {
         const apiKey = requireString(req.body?.apiKey, "apiKey");
 
         if (action === "createJob") {
-            return relayJson(req, res, "https://civitai.com/api/v1/consumer/jobs", `Bearer ${apiKey}`, {
+            return await relayJson(req, res, "https://civitai.com/api/v1/consumer/jobs", `Bearer ${apiKey}`, {
                 method: "POST",
                 body: req.body?.body,
             });
@@ -85,7 +102,7 @@ async function handleCivitai(req, res) {
             const token = requireString(req.body?.token, "token");
             const url = new URL("https://civitai.com/api/v1/consumer/jobs");
             url.searchParams.set("token", token);
-            return relayJson(req, res, url.toString(), `Bearer ${apiKey}`);
+            return await relayJson(req, res, url.toString(), `Bearer ${apiKey}`);
         }
 
         sendJson(res, 400, { error: `Unsupported CivitAI action: ${action}` });
@@ -100,7 +117,7 @@ async function handleReplicate(req, res) {
         const apiKey = requireString(req.body?.apiKey, "apiKey");
 
         if (action === "createPrediction") {
-            return relayJson(req, res, "https://api.replicate.com/v1/predictions", `Token ${apiKey}`, {
+            return await relayJson(req, res, "https://api.replicate.com/v1/predictions", `Token ${apiKey}`, {
                 method: "POST",
                 body: req.body?.body,
             });
@@ -112,7 +129,7 @@ async function handleReplicate(req, res) {
                 sendJson(res, 400, { error: "Invalid Replicate prediction id" });
                 return;
             }
-            return relayJson(req, res, `https://api.replicate.com/v1/predictions/${encodeURIComponent(id)}`, `Token ${apiKey}`);
+            return await relayJson(req, res, `https://api.replicate.com/v1/predictions/${encodeURIComponent(id)}`, `Token ${apiKey}`);
         }
 
         sendJson(res, 400, { error: `Unsupported Replicate action: ${action}` });

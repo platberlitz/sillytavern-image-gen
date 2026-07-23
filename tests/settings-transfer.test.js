@@ -31,12 +31,79 @@ test("settings exports include active state but omit secrets and private images"
 
     assert.equal(exported.version, SETTINGS_TRANSFER_VERSION);
     assert.equal(exported.activeSettings.width, 768);
-    assert.deepEqual(JSON.parse(exported.activeSettings.comfyWorkflow), { "1": { inputs: { model: "safe" } } });
+    assert.equal(exported.activeSettings.comfyWorkflow, undefined);
     assert.equal(exported.connectionProfiles.proxy.Home.proxyModel, "flux");
     assert.equal(exported.connectionProfiles.proxy.Home.proxyUrl, "https://images.example/v1?model=flux");
     assert.equal(exported.contextualFilters[0].cardKey, "character:one");
     assert.equal(exported.charRefImages, undefined);
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles|internal-cache-owner/);
+});
+
+test("Comfy executable graphs are omitted and workflow presets are not imported", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            comfyWorkflow: '{"export-active-canary":true}',
+            PROXYCOMFYWORKFLOW: '{"export-proxy-canary":true}',
+            width: 768,
+        },
+        comfyWorkflows: [{
+            id: "workflow-1",
+            name: "Portrait",
+            updatedAt: "2026-07-22T00:00:00.000Z",
+            localModel: "flux-safe",
+            ComfyWorkflow: '{"stored-comfy-canary":true}',
+            Workflow: { "stored-workflow-canary": true },
+            REQUEST: { "stored-request-canary": true },
+        }],
+    });
+
+    assert.deepEqual(exported.activeSettings, { width: 768 });
+    assert.deepEqual(exported.comfyWorkflows, [{
+        id: "workflow-1",
+        name: "Portrait",
+        updatedAt: "2026-07-22T00:00:00.000Z",
+        localModel: "flux-safe",
+    }]);
+    assert.doesNotMatch(JSON.stringify(exported), /canary/);
+
+    const imported = parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        activeSettings: {
+            COMFYWORKFLOW: '{"import-active-canary":true}',
+            ProxyComfyWorkflow: '{"import-proxy-canary":true}',
+            height: 1024,
+        },
+        comfyWorkflows: [{
+            id: "workflow-2",
+            name: "Landscape",
+            localModel: "sdxl-safe",
+            comfyWorkflow: '{"import-comfy-canary":true}',
+            workflow: { "import-workflow-canary": true },
+            Request: { "import-request-canary": true },
+        }],
+    }));
+
+    assert.deepEqual(imported.activeSettings, { height: 1024 });
+    assert.equal(imported.comfyWorkflows, undefined);
+    assert.doesNotMatch(JSON.stringify(imported), /canary/);
+});
+
+test("legacy Comfy interruption remains local trust configuration", () => {
+    const exported = createSettingsExport({
+        activeSettings: { comfyAllowLegacyInterrupt: true, width: 768 },
+    });
+    const imported = parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        activeSettings: { COMFYALLOWLEGACYINTERRUPT: true, width: 1024 },
+    }));
+    const merged = mergePreservingPrivateFields({ comfyAllowLegacyInterrupt: false }, {
+        comfyAllowLegacyInterrupt: true,
+        width: 1024,
+    });
+
+    assert.deepEqual(exported.activeSettings, { width: 768 });
+    assert.deepEqual(imported.activeSettings, { width: 1024 });
+    assert.deepEqual(merged, { comfyAllowLegacyInterrupt: false, width: 1024 });
 });
 
 test("Context Media exports retain taxonomy but omit all local media details", () => {
@@ -220,12 +287,16 @@ test("imports reject unsupported versions, prototype keys, bad IDs, and oversize
 test("merging imported settings preserves local credentials without accepting imported ones", () => {
     const current = {
         proxyKey: "local-secret",
+        comfyWorkflow: '{"local-comfy":true}',
+        PROXYCOMFYWORKFLOW: '{"local-proxy-comfy":true}',
         nested: { apiKey: "nested-secret", model: "old" },
     };
     const imported = parseSettingsImport(JSON.stringify({
         version: 6,
         activeSettings: {
             proxyKey: "file-secret",
+            comfyWorkflow: '{"file-comfy":true}',
+            PROXYCOMFYWORKFLOW: '{"file-proxy-comfy":true}',
             nested: { apiKey: "file-nested", model: "new" },
             width: 1024,
         },
@@ -234,6 +305,8 @@ test("merging imported settings preserves local credentials without accepting im
 
     assert.deepEqual(merged, {
         proxyKey: "local-secret",
+        comfyWorkflow: '{"local-comfy":true}',
+        PROXYCOMFYWORKFLOW: '{"local-proxy-comfy":true}',
         nested: { apiKey: "nested-secret", model: "new" },
         width: 1024,
     });

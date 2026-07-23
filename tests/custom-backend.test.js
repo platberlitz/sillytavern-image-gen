@@ -122,6 +122,94 @@ test("executes a simple JSON backend", async () => {
     assert.equal(calls[0].init.redirect, "error");
 });
 
+test("applies configured header auth to same-origin final image requests", async () => {
+    const calls = [];
+    await executeCustomBackend(baseConfig, {}, {
+        fetchImpl: async (url, init) => {
+            calls.push({ url, init });
+            if (calls.length === 1) {
+                return new Response(JSON.stringify({ result: { image: "/result.jpg" } }), {
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+        },
+    });
+    assert.equal(calls[1].url, "https://images.example.test/result.jpg");
+    assert.equal(calls[1].init.headers["X-API-Key"], "secret");
+});
+
+test("safely adds query auth to same-origin final image URLs", async () => {
+    const calls = [];
+    await executeCustomBackend({
+        ...baseConfig,
+        authType: "query",
+        authName: "api_key",
+        apiKey: "secret&admin=true",
+    }, {}, {
+        fetchImpl: async (url, init) => {
+            calls.push({ url, init });
+            if (calls.length === 1) {
+                return new Response(JSON.stringify({ result: { image: "/result.jpg?size=large" } }), {
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+        },
+    });
+    const finalUrl = new URL(calls[1].url);
+    assert.equal(finalUrl.searchParams.get("size"), "large");
+    assert.equal(finalUrl.searchParams.get("api_key"), "secret&admin=true");
+    assert.equal(finalUrl.searchParams.has("admin"), false);
+});
+
+test("never forwards configured auth to cross-origin final image URLs", async () => {
+    for (const authType of ["bearer", "header", "basic", "query"]) {
+        const apiKey = `credential-${authType}`;
+        const calls = [];
+        await executeCustomBackend({
+            ...baseConfig,
+            authType,
+            authName: authType === "query" ? "api_key" : "X-API-Key",
+            apiKey,
+        }, {}, {
+            fetchImpl: async (url, init) => {
+                calls.push({ url, init });
+                if (calls.length === 1) {
+                    return new Response(JSON.stringify({ result: { image: "https://cdn.example.test/result.jpg?size=large" } }), {
+                        headers: { "Content-Type": "application/json" },
+                    });
+                }
+                return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+            },
+        });
+        assert.equal(calls[1].url, "https://cdn.example.test/result.jpg?size=large");
+        assert.equal(calls[1].init.headers.Authorization, undefined);
+        assert.equal(calls[1].init.headers["X-API-Key"], undefined);
+        assert.equal(Object.values(calls[1].init.headers).includes(apiKey), false);
+    }
+});
+
+test("does not apply auth when materializing direct data URLs", async () => {
+    const dataUrl = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+    const calls = [];
+    await executeCustomBackend(baseConfig, {}, {
+        fetchImpl: async (url, init) => {
+            calls.push({ url, init });
+            if (calls.length === 1) {
+                return new Response(JSON.stringify({ result: { image: dataUrl } }), {
+                    headers: { "Content-Type": "application/json" },
+                });
+            }
+            const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
+            const bytes = Uint8Array.from(atob(base64), char => char.charCodeAt(0));
+            return new Response(bytes, { headers: { "Content-Type": "image/gif" } });
+        },
+    });
+    assert.equal(calls[1].url, dataUrl);
+    assert.equal(calls[1].init.headers, undefined);
+});
+
 test("resolves relative output URLs against the response and validates bytes", async () => {
     const calls = [];
     const result = await executeCustomBackend({ ...baseConfig, responsePath: "/image", responseType: "auto" }, {}, {

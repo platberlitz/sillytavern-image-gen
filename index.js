@@ -2,14 +2,18 @@ import {
     MAX_IMAGE_BYTES,
     MAX_PROVIDER_RESPONSE_BYTES,
     normalizeImageSource,
+    redactUrlCredentials,
     readResponseArrayBuffer,
     readResponseJson,
     readResponseText,
     replaceSelectOptions,
 } from "./lib/security.js";
 import {
+    attachResultFailures,
     clampChatMessageIndex,
     collectBatchResults,
+    collectSequentialResults,
+    getResultFailures,
     normalizeBatchCount,
 } from "./lib/generation.js";
 import { GenerationRunManager, snapshotGenerationSettings } from "./lib/generation-run.js";
@@ -43,6 +47,13 @@ import {
 } from "./lib/inject-regex.js";
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
+import {
+    buildComfyPromptRequest,
+    cancelComfyPrompt,
+    getComfyWorkflowCapabilities,
+    parseComfyPromptResponse,
+    pollComfyHistory,
+} from "./lib/comfyui-backend.js";
 import { getGeminiCandidateFailure, isEffectivelyBlankPixels } from "./lib/generated-image.js";
 import {
     buildGptImagePayload,
@@ -1003,6 +1014,9 @@ const defaultSettings = {
     comfyUpscale: false,
     comfyUpscaleModel: "RealESRGAN_x4plus.pth",
     comfyLoras: "",
+    comfyOutputNodeIds: "",
+    comfyOutputImageIndex: -1,
+    comfyAllowLegacyInterrupt: false,
     // ST Style integration
     useSTStyle: true,
     // Inject Mode (wickedcode01-style)
@@ -1236,6 +1250,7 @@ let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const generationRunManager = new GenerationRunManager();
 let activeGenerationRun = null;
+let activeComfyPrompt = null;
 const blobUrls = new Set();
 let lifecycleCleanupInstalled = false;
 let batchKeyHandler = null;
@@ -1836,7 +1851,7 @@ const PROVIDER_KEYS = {
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
     zai: ["zaiKey", "zaiModel", "zaiQuality"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyAllowLegacyInterrupt", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxyExtraInstructions", "proxyRefImages", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"],
     custom: ["customApiUrl", "customApiKey", "customApiAuthType", "customApiAuthName", "customApiModel", "customApiPollUrl", "customApiRefImages"]
 };
@@ -2158,7 +2173,7 @@ function shouldInlineAutoProxyRefUrl(url) {
     }
 }
 
-async function normalizeAutoProxyRefUrl(url, { messageIndex = null, sourceLabel = "" } = {}) {
+async function normalizeAutoProxyRefUrl(url, { messageIndex = null, sourceLabel = "", signal } = {}) {
     const source = String(url || "").trim();
     if (!source) return "";
     if (isDataImageUrl(source)) return source;
@@ -2170,12 +2185,13 @@ async function normalizeAutoProxyRefUrl(url, { messageIndex = null, sourceLabel 
     }
 
     try {
-        const { buffer } = await fetchImageBuffer(absoluteUrl);
+        const { buffer } = await fetchImageBuffer(absoluteUrl, { signal });
         const formatInfo = detectImageFormat(buffer);
         if (!formatInfo) throw new Error("Response is not a supported image format");
         log(`Auto chat ref: Inlined ${sourceLabel || "message image"}${messageIndex != null ? ` from message #${messageIndex}` : ""}`);
         return `data:${formatInfo.mime};base64,${arrayBufferToBase64(buffer)}`;
     } catch (e) {
+        if (e.name === "AbortError") throw e;
         log(`Auto chat ref: Failed to inline ${sourceLabel || "message image"}${messageIndex != null ? ` from message #${messageIndex}` : ""}: ${e.message}`);
         return "";
     }
@@ -3154,6 +3170,7 @@ function beginGeneration({ settings = getGenerationSettingsForRun(), context = g
 
 function endGeneration(run, { disableGenerateButton = false } = {}) {
     if (!generationRunManager.finish(run)) return false;
+    if (activeComfyPrompt?.runId === run.id) activeComfyPrompt = null;
     activeGenerationRun = null;
     currentAbortController = null;
     isGenerating = false;
@@ -3182,13 +3199,23 @@ function requestGenerationCancel(reason = "Generation cancelled by user", { forc
     generationRunManager.cancel(reason);
     resetAutoGenerateCadence({ clearTimer: true });
 
-    // Send server-side interrupt (fire-and-forget) so the GPU actually stops
+    // Best-effort server cancellation. ComfyUI never receives a bodyless global interrupt.
     try {
         const s = activeGenerationRun?.settings || extension_settings?.[extensionName];
         if (s?.provider === "local" && s.localUrl) {
             const baseUrl = s.localUrl.replace(/\/$/, "");
             if (s.localType === "comfyui") {
-                corsFetch(`${baseUrl}/interrupt`, { method: "POST" }).catch(() => {});
+                const tracked = activeComfyPrompt;
+                if (tracked?.promptId) {
+                    cancelComfyPrompt(tracked.promptId, {
+                        baseUrl: tracked.baseUrl,
+                        fetchImpl: corsFetch,
+                        tryJobsCancel: true,
+                        allowLegacyInterrupt: tracked.allowLegacyInterrupt,
+                    }).then(result => {
+                        if (result.cancelled === false) log(`ComfyUI: ${result.reason || "prompt could not be safely cancelled"}`);
+                    }).catch(error => log(`ComfyUI cancellation failed: ${error.message}`));
+                }
             } else {
                 corsFetch(`${baseUrl}/sdapi/v1/interrupt`, { method: "POST" }).catch(() => {});
             }
@@ -4844,7 +4871,7 @@ function extractMessageAttachedImageRefs(message) {
     return refs;
 }
 
-async function collectChatContextProxyRefImages(settings = getSettings(), ctx = getContext()) {
+async function collectChatContextProxyRefImages(settings = getSettings(), ctx = getContext(), signal) {
     if (settings?.provider !== "proxy" || !shouldUseChatMessageScene(settings, ctx)) return [];
 
     const selectedMessages = getSelectedSceneMessages(settings, ctx);
@@ -4856,6 +4883,7 @@ async function collectChatContextProxyRefImages(settings = getSettings(), ctx = 
     let discoveredImageCount = 0;
 
     for (const entry of selectedMessages) {
+        if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
         const imageRefs = extractMessageAttachedImageRefs(entry.message);
         if (!imageRefs.length) continue;
         sourceMessageCount++;
@@ -4865,6 +4893,7 @@ async function collectChatContextProxyRefImages(settings = getSettings(), ctx = 
             const normalized = await normalizeAutoProxyRefUrl(imageRef.url, {
                 messageIndex: entry.index,
                 sourceLabel: imageRef.label,
+                signal,
             });
             const value = String(normalized || "").trim();
             if (!value || seen.has(value)) continue;
@@ -7053,8 +7082,8 @@ async function genNanobanana(prompt, negative, s, signal) {
     throw new Error("No image in response");
 }
 
-async function genLocal(prompt, negative, s, signal) {
-    const baseUrl = s.localUrl.replace(/\/$/, "");
+async function genLocal(prompt, negative, s, signal, options = {}) {
+    const baseUrl = s.localUrl.replace(/\/+$/, "");
 
     if (s.localType === "comfyui") {
         // Map sampler names to ComfyUI format
@@ -7077,153 +7106,174 @@ async function genLocal(prompt, negative, s, signal) {
         const denoise = parseFloatOr(s.comfyDenoise, 1.0);
         const clipSkip = parseIntOr(s.comfyClipSkip, 1);
         const comfyTimeoutSeconds = Math.max(10, parseIntOr(s.comfyTimeout, 300));
+        const clientId = generateUUID();
+        const outputNodeIds = String(s.comfyOutputNodeIds || "")
+            .split(",")
+            .map(value => value.trim())
+            .filter(Boolean);
+        const configuredImageIndex = Number(s.comfyOutputImageIndex);
+        const outputImageIndex = Number.isInteger(configuredImageIndex) && configuredImageIndex >= 0
+            ? configuredImageIndex
+            : undefined;
 
-        async function waitForComfyImage(promptId) {
-            for (let i = 0; i < comfyTimeoutSeconds; i++) {
-                if (signal?.aborted) throw new DOMException("Generation cancelled", "AbortError");
-                await new Promise(r => setTimeout(r, 1000));
-                showStatus(`Generating... (waiting ${i + 1}s)`);
-                let hist;
-                try {
-                    const histRes = await corsFetch(`${baseUrl}/history/${promptId}`, { signal });
-                    if (!histRes.ok) continue;
-                    hist = await readResponseJson(histRes, 1024 * 1024);
-                } catch { continue; }
-                const result = hist[promptId];
-                checkComfyResult(result);
-                if (result?.outputs) {
-                    for (const nodeId in result.outputs) {
-                        const output = result.outputs[nodeId];
-                        if (output.images?.[0]) {
-                            const img = output.images[0];
-                            return `${baseUrl}/view?filename=${encodeURIComponent(img.filename)}&subfolder=${encodeURIComponent(img.subfolder || "")}&type=${img.type || "output"}`;
-                        }
-                    }
+        async function runComfyRequest(phase, task) {
+            const controller = new AbortController();
+            let timedOut = false;
+            const abortFromParent = () => controller.abort(signal?.reason);
+            if (signal?.aborted) abortFromParent();
+            else signal?.addEventListener("abort", abortFromParent, { once: true });
+            const timeoutId = setTimeout(() => {
+                timedOut = true;
+                controller.abort();
+            }, comfyTimeoutSeconds * 1000);
+            try {
+                return await task(controller.signal);
+            } catch (error) {
+                if (error?.name === "AbortError" && timedOut && !signal?.aborted) {
+                    throw new Error(`ComfyUI ${phase} timed out after ${comfyTimeoutSeconds} seconds`);
                 }
+                throw error;
+            } finally {
+                clearTimeout(timeoutId);
+                signal?.removeEventListener("abort", abortFromParent);
             }
-            throw new Error(`ComfyUI timed out after ${comfyTimeoutSeconds}s`);
+        }
+
+        async function uploadComfyReference() {
+            return runComfyRequest("reference upload", async requestSignal => {
+                const { blob, filename } = await createComfyReferenceUpload(s.localRefImage, requestSignal);
+                const formData = new FormData();
+                formData.append("image", blob, filename);
+                const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
+                    method: "POST",
+                    body: formData,
+                    signal: requestSignal,
+                });
+                if (!uploadRes.ok) {
+                    const detail = await readResponseText(uploadRes, 64 * 1024).catch(() => "");
+                    throw new Error(`ComfyUI reference upload failed with HTTP ${uploadRes.status}${detail ? `: ${detail.slice(0, 300)}` : ""}`);
+                }
+                const uploadData = await readResponseJson(uploadRes, 1024 * 1024);
+                const descriptor = {
+                    name: String(uploadData?.name || filename),
+                    subfolder: typeof uploadData?.subfolder === "string" ? uploadData.subfolder : "",
+                    type: typeof uploadData?.type === "string" && uploadData.type ? uploadData.type : "input",
+                };
+                log(`ComfyUI: Uploaded reference image as "${descriptor.name}"`);
+                return descriptor;
+            });
+        }
+
+        async function submitComfyWorkflow(request, effectiveParameters = {}) {
+            const body = { ...request, client_id: clientId };
+            const promptResponse = await runComfyRequest("prompt submission", async requestSignal => {
+                const res = await corsFetch(`${baseUrl}/prompt`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                    signal: requestSignal,
+                });
+                if (!res.ok) {
+                    let detail = "";
+                    try {
+                        const errorBody = await readResponseJson(res, 1024 * 1024);
+                        detail = errorBody.error?.message || errorBody.error || "";
+                        if (typeof detail !== "string") detail = JSON.stringify(detail);
+                    } catch { /* preserve the HTTP status */ }
+                    throw new Error(`ComfyUI error ${res.status}${detail ? `: ${detail.slice(0, 500)}` : ""}`);
+                }
+                return parseComfyPromptResponse(await readResponseJson(res, 1024 * 1024));
+            });
+            const trackedPrompt = {
+                runId: activeGenerationRun?.id ?? null,
+                baseUrl,
+                promptId: promptResponse.prompt_id,
+                allowLegacyInterrupt: s.comfyAllowLegacyInterrupt === true,
+            };
+            activeComfyPrompt = trackedPrompt;
+            showStatus("🖼️ ComfyUI workflow queued...");
+            try {
+                const historyResult = await pollComfyHistory(promptResponse.prompt_id, {
+                    baseUrl,
+                    fetchImpl: corsFetch,
+                    signal,
+                    timeoutMs: comfyTimeoutSeconds * 1000,
+                    outputNodeIds: outputNodeIds.length ? outputNodeIds : undefined,
+                    imageIndex: outputImageIndex,
+                });
+                return {
+                    images: historyResult.images.map(image => ({
+                        url: image.url,
+                        effectiveRequest: {
+                            parameters: {
+                                ...effectiveParameters,
+                                outputNode: image.nodeId,
+                                outputImageIndex: image.imageIndex,
+                            },
+                        },
+                    })),
+                    effectiveRequest: { parameters: effectiveParameters },
+                };
+            } catch (error) {
+                if (error?.code === "COMFY_HISTORY_TIMEOUT") {
+                    cancelComfyPrompt(promptResponse.prompt_id, {
+                        baseUrl,
+                        fetchImpl: corsFetch,
+                        tryJobsCancel: true,
+                    }).then(result => {
+                        if (result.cancelled === false) log(`ComfyUI timeout cleanup: ${result.reason || "prompt could not be safely cancelled"}`);
+                    }).catch(cancelError => log(`ComfyUI timeout cleanup failed: ${cancelError.message}`));
+                }
+                throw error;
+            } finally {
+                if (activeComfyPrompt === trackedPrompt) activeComfyPrompt = null;
+            }
         }
 
         // Check for custom workflow JSON
         if (s.comfyWorkflow && s.comfyWorkflow.trim()) {
-            let customWorkflow = null;
-            try {
-                customWorkflow = JSON.parse(s.comfyWorkflow);
-            } catch (e) {
-                log(`ComfyUI: Invalid workflow JSON: ${e.message}, using default`);
-            }
-
-            if (customWorkflow && typeof customWorkflow === "object" && !Array.isArray(customWorkflow)) {
-
-                // Upload reference image for %reference_image% placeholder
-                let uploadedRefName = '';
-                if (s.localRefImage) {
-                    try {
-                        const { blob, filename } = await createComfyReferenceUpload(s.localRefImage, signal);
-                        const formData = new FormData();
-                        formData.append("image", blob, filename);
-                        const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
-                            method: "POST",
-                            body: formData,
-                            signal
-                        });
-                        if (uploadRes.ok) {
-                            const uploadData = await readResponseJson(uploadRes, 1024 * 1024);
-                            uploadedRefName = uploadData.name || filename;
-                            log(`ComfyUI: Uploaded reference image as "${uploadedRefName}"`);
-                        } else {
-                            log(`ComfyUI: Failed to upload reference image (${uploadRes.status})`);
-                        }
-                    } catch (uploadErr) {
-                        log(`ComfyUI: Reference image upload error: ${uploadErr.message}`);
-                    }
-                }
-
-                // Replace placeholders like sd-proxy does
-                const replacements = {
-                    '%prompt%': prompt,
-                    '%negative%': negative,
-                    '%seed%': String(seed),
-                    '%width%': String(s.width),
-                    '%height%': String(s.height),
-                    '%steps%': String(s.steps),
-                    '%cfg%': String(s.cfgScale),
-                    '%denoise%': String(denoise),
-                    '%clip_skip%': String(clipSkip),
-                    '%sampler%': samplerName,
-                    '%scheduler%': schedulerName,
-                    '%model%': s.localModel || 'model.safetensors',
-                    '%reference_image%': uploadedRefName
-                };
-                const typedReplacements = {
-                    '%prompt%': prompt,
-                    '%negative%': negative,
-                    '%seed%': seed,
-                    '%width%': Number(s.width),
-                    '%height%': Number(s.height),
-                    '%steps%': Number(s.steps),
-                    '%cfg%': Number(s.cfgScale),
-                    '%denoise%': denoise,
-                    '%clip_skip%': clipSkip,
-                    '%sampler%': samplerName,
-                    '%scheduler%': schedulerName,
-                    '%model%': s.localModel || 'model.safetensors',
-                    '%reference_image%': uploadedRefName
-                };
-
-                const replaceInObj = (obj) => {
-                    for (const key in obj) {
-                        if (typeof obj[key] === 'string') {
-                            if (Object.prototype.hasOwnProperty.call(typedReplacements, obj[key])) {
-                                obj[key] = typedReplacements[obj[key]];
-                                continue;
-                            }
-                            for (const [placeholder, value] of Object.entries(replacements)) {
-                                obj[key] = obj[key].split(placeholder).join(value);
-                            }
-                        } else if (typeof obj[key] === 'object' && obj[key] !== null) {
-                            replaceInObj(obj[key]);
-                        }
-                    }
-                };
-                replaceInObj(customWorkflow);
-
-                log(`ComfyUI: Using custom workflow with ${Object.keys(customWorkflow).length} nodes`);
-
-                const res = await corsFetch(`${baseUrl}/prompt`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ prompt: customWorkflow }),
-                    signal
-                });
-                if (!res.ok) {
-                    let detail = "";
-                    try { const b = await readResponseJson(res, 1024 * 1024); detail = b.error?.message || b.error || ""; } catch {}
-                    throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}`);
-                }
-                const data = await readResponseJson(res, 1024 * 1024);
-
-                const promptId = data.prompt_id;
-                return await waitForComfyImage(promptId);
-            }
-            if (customWorkflow) log("ComfyUI: Workflow JSON must be an API-format object, using default");
-        }
-
-        function checkComfyResult(result) {
-            if (result?.status?.status_str === "error") {
-                const errorMsgs = result.status.messages || [];
-                const executionError = errorMsgs.find(m => m[0] === "execution_error");
-                const errMsg = executionError?.[1]?.exception_message || "Unknown execution error";
-                let hint = "";
-                if (/clip.*invalid|invalid.*clip|clip.*not.*found/i.test(errMsg)) {
-                    hint = " (Hint: model may lack a built-in CLIP encoder. For UNET-only models, enable 'Skip Negative Prompt' and fill in the CLIP Model and VAE Model fields below it. Or use a custom workflow JSON exported from ComfyUI.)";
-                } else if (/vae.*invalid|invalid.*vae|vae.*not.*found/i.test(errMsg)) {
-                    hint = " (Hint: model may lack a built-in VAE. For UNET-only models, enable 'Skip Negative Prompt' and fill in the VAE Model field below it. Or use a custom workflow JSON exported from ComfyUI.)";
-                } else if (/negative.*conditioning|conditioning.*negative/i.test(errMsg)) {
-                    hint = " (Hint: this model may not support negative prompts. Try enabling 'Skip Negative Prompt' in ComfyUI settings.)";
-                }
-                throw new Error(`ComfyUI execution error: ${errMsg}${hint}`);
-            }
+            const capabilities = getComfyWorkflowCapabilities(s.comfyWorkflow);
+            const uploadedReference = capabilities.referenceImages && s.localRefImage
+                ? await uploadComfyReference()
+                : null;
+            const uploadedReferencePath = uploadedReference?.subfolder
+                ? `${uploadedReference.subfolder.replace(/^\/+|\/+$/g, "")}/${uploadedReference.name}`
+                : uploadedReference?.name;
+            const tokenValues = {
+                prompt,
+                negativePrompt: negative,
+                seed,
+                width: Number(s.width),
+                height: Number(s.height),
+                steps: Number(s.steps),
+                cfgScale: Number(s.cfgScale),
+                denoise,
+                clipSkip,
+                samplerName,
+                schedulerName,
+                modelName: s.localModel || "model.safetensors",
+                referenceImages: uploadedReferencePath ? [uploadedReferencePath] : [],
+                batchIndex: Number.isInteger(options.batchIndex) ? options.batchIndex : 0,
+                batchCount: Number.isInteger(options.batchCount) ? options.batchCount : 1,
+                clientId,
+                filenamePrefix: "qig",
+            };
+            const request = buildComfyPromptRequest(s.comfyWorkflow, tokenValues);
+            const nodeCount = Object.keys(request.prompt || {}).length;
+            log(`ComfyUI: Using custom API workflow with ${nodeCount} nodes`);
+            return submitComfyWorkflow(request, {
+                model: capabilities.model ? tokenValues.modelName : undefined,
+                width: capabilities.width ? tokenValues.width : undefined,
+                height: capabilities.height ? tokenValues.height : undefined,
+                steps: capabilities.steps ? tokenValues.steps : undefined,
+                cfgScale: capabilities.cfgScale ? tokenValues.cfgScale : undefined,
+                sampler: capabilities.sampler ? samplerName : undefined,
+                scheduler: capabilities.scheduler ? schedulerName : undefined,
+                seed: capabilities.seed ? seed : undefined,
+                denoise: capabilities.denoise ? denoise : undefined,
+                clipSkip: capabilities.clipSkip ? clipSkip : undefined,
+                workflowTokens: capabilities.tokens,
+            });
         }
 
         // ComfyUI API - Default workflow
@@ -7297,15 +7347,18 @@ async function genLocal(prompt, negative, s, signal) {
                 workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
             }
         }
+        let nextOptionalNodeId = Math.max(...Object.keys(workflowNodes).map(id => Number(id)).filter(Number.isFinite)) + 1;
+        const allocateComfyNodeId = () => String(nextOptionalNodeId++);
+        let usedReferenceImage = false;
+        let usedUpscale = false;
 
         // LoRA injection for ComfyUI default workflow
         if (s.comfyLoras && s.comfyLoras.trim()) {
-            let loraNodeStart = 20;
             let lastModelRef = fluxMode ? ["11", 0] : ["4", 0];
             let lastClipRef = fluxMode ? ["12", 0] : ["4", 1];
             const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
             let injectedCount = 0;
-            loras.forEach((l, i) => {
+            loras.forEach((l) => {
                 const lastColon = l.lastIndexOf(":");
                 const hasWeight = lastColon > 0 && !isNaN(parseFloat(l.slice(lastColon + 1)));
                 const name = (hasWeight ? l.slice(0, lastColon) : l).trim();
@@ -7313,7 +7366,7 @@ async function genLocal(prompt, negative, s, signal) {
                 const weight = isNaN(pw) ? 0.8 : pw;
                 if (!name) return;
                 injectedCount++;
-                const nodeId = String(loraNodeStart + i);
+                const nodeId = allocateComfyNodeId();
                 workflowNodes[nodeId] = {
                     class_type: "LoraLoader",
                     inputs: {
@@ -7341,75 +7394,59 @@ async function genLocal(prompt, negative, s, signal) {
 
         // img2img: swap EmptyLatentImage for LoadImage + VAEEncode when reference image present
         if (s.localRefImage && denoise < 1.0) {
-            // Upload image to ComfyUI
-            const { blob, filename } = await createComfyReferenceUpload(s.localRefImage, signal);
-            const formData = new FormData();
-            formData.append("image", blob, filename);
-            try {
-                const uploadRes = await corsFetch(`${baseUrl}/upload/image`, {
-                    method: "POST",
-                    body: formData,
-                    signal
-                });
-                if (uploadRes.ok) {
-                    const uploadData = await readResponseJson(uploadRes, 1024 * 1024);
-                    const uploadedName = uploadData.name || filename;
-
-                    // Replace EmptyLatentImage (node 5) with LoadImage
-                    workflowNodes["5"] = {
-                        class_type: "LoadImage",
-                        inputs: { image: uploadedName }
-                    };
-                    // Add VAEEncode node (node 15) to encode the loaded image to latent
-                    const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
-                    workflowNodes["15"] = {
-                        class_type: "VAEEncode",
-                        inputs: { pixels: ["5", 0], vae: vaeRef }
-                    };
-                    // Rewire KSampler latent_image to VAEEncode output
-                    workflowNodes["3"].inputs.latent_image = ["15", 0];
-                    log(`ComfyUI: img2img mode — uploaded reference image as "${uploadedName}", denoise=${denoise}`);
-                } else {
-                    log(`ComfyUI: Failed to upload reference image (${uploadRes.status}), falling back to txt2img`);
-                }
-            } catch (uploadErr) {
-                log(`ComfyUI: Image upload error: ${uploadErr.message}, falling back to txt2img`);
-            }
+            const uploadedReference = await uploadComfyReference();
+            const uploadedName = uploadedReference.subfolder
+                ? `${uploadedReference.subfolder.replace(/\/+$/, "")}/${uploadedReference.name}`
+                : uploadedReference.name;
+            workflowNodes["5"] = {
+                class_type: "LoadImage",
+                inputs: { image: uploadedName },
+            };
+            const vaeEncodeNodeId = allocateComfyNodeId();
+            const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
+            workflowNodes[vaeEncodeNodeId] = {
+                class_type: "VAEEncode",
+                inputs: { pixels: ["5", 0], vae: vaeRef },
+            };
+            workflowNodes["3"].inputs.latent_image = [vaeEncodeNodeId, 0];
+            usedReferenceImage = true;
+            log(`ComfyUI: img2img mode, uploaded reference image as "${uploadedName}", denoise=${denoise}`);
         }
 
         // Upscale: inject UpscaleModelLoader + ImageUpscaleWithModel between VAEDecode and SaveImage
         if (s.comfyUpscale && s.comfyUpscaleModel) {
-            workflowNodes["30"] = {
+            const upscaleLoaderNodeId = allocateComfyNodeId();
+            const upscaleNodeId = allocateComfyNodeId();
+            workflowNodes[upscaleLoaderNodeId] = {
                 class_type: "UpscaleModelLoader",
                 inputs: { model_name: s.comfyUpscaleModel }
             };
-            workflowNodes["31"] = {
+            workflowNodes[upscaleNodeId] = {
                 class_type: "ImageUpscaleWithModel",
-                inputs: { upscale_model: ["30", 0], image: ["8", 0] }
+                inputs: { upscale_model: [upscaleLoaderNodeId, 0], image: ["8", 0] }
             };
             // Rewire SaveImage to take upscaled output instead of VAEDecode
-            workflowNodes["9"].inputs.images = ["31", 0];
+            workflowNodes["9"].inputs.images = [upscaleNodeId, 0];
+            usedUpscale = true;
             log(`ComfyUI: Upscale enabled with model=${s.comfyUpscaleModel}`);
         }
 
         log(`ComfyUI: sampler=${samplerName}, scheduler=${schedulerName}, steps=${s.steps}, cfg=${s.cfgScale}, seed=${seed}, denoise=${denoise}, clip_skip=${clipSkip}, size=${s.width}x${s.height}${s.localRefImage && denoise < 1.0 ? ', mode=img2img' : ''}${s.comfyUpscale ? ', upscale=' + s.comfyUpscaleModel : ''}`);
 
-        const res = await corsFetch(`${baseUrl}/prompt`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ prompt: workflowNodes }),
-            signal
+        return submitComfyWorkflow({ prompt: workflowNodes }, {
+            model: s.localModel || "model.safetensors",
+            width: usedReferenceImage || usedUpscale ? undefined : Number(s.width),
+            height: usedReferenceImage || usedUpscale ? undefined : Number(s.height),
+            steps: Number(s.steps),
+            cfgScale: Number(s.cfgScale),
+            sampler: samplerName,
+            scheduler: schedulerName,
+            seed,
+            denoise,
+            clipSkip,
+            ...(usedUpscale ? { upscaleModel: s.comfyUpscaleModel } : {}),
+            ...(usedReferenceImage ? { dimensionsFromReference: true } : {}),
         });
-        if (!res.ok) {
-            let detail = "";
-            try { const b = await readResponseJson(res, 1024 * 1024); detail = b.error?.message || b.error || ""; } catch {}
-            const hint403 = res.status === 403 ? " (Hint: ComfyUI-Manager's security check may be blocking this request. In ComfyUI-Manager settings, set Security Level to 'normal', then restart ComfyUI. Also ensure --enable-cors-header is set.)" : "";
-            throw new Error(`ComfyUI error ${res.status}${detail ? ": " + detail : ""}${hint403}`);
-        }
-        const data = await readResponseJson(res, 1024 * 1024);
-        // Poll for result - find any SaveImage output
-        const promptId = data.prompt_id;
-        return await waitForComfyImage(promptId);
     }
 
     // A1111 API
@@ -7703,13 +7740,14 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
         // If workflow JSON is provided, use POST with body
         const hasWorkflow = s.proxyComfyWorkflow && s.proxyComfyWorkflow.trim();
         const url = `${baseUrl}/prompt/${encodeURIComponent(prompt)}${qs}`;
-        log(`ComfyUI Proxy: ${url.substring(0, 80)}...`);
+        log(`ComfyUI Proxy: ${redactUrlCredentials(url).substring(0, 80)}...`);
 
         const controller = new AbortController();
         let timedOut = false;
-        const timeout = (s.proxyComfyTimeout || 300) * 1000;
-        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
-        if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+        const proxyComfyTimeoutSeconds = Math.max(10, Math.min(1800, parseIntOr(s.proxyComfyTimeout, 300)));
+        const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, proxyComfyTimeoutSeconds * 1000);
+        const abortFromParent = () => controller.abort();
+        if (signal) signal.addEventListener("abort", abortFromParent, { once: true });
 
         const fetchOpts = { signal: controller.signal };
         if (hasWorkflow) {
@@ -7718,22 +7756,22 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
             fetchOpts.body = s.proxyComfyWorkflow.trim();
         }
 
-        let res;
         try {
-            res = await fetch(url, fetchOpts);
+            const res = await fetch(url, fetchOpts);
+            if (!res.ok) {
+                const errText = await readResponseText(res, 1024 * 1024).catch(() => "");
+                throw new Error(`ComfyUI Proxy error ${res.status}: ${errText || res.statusText}`);
+            }
+            return createTransientImageObjectUrl(await readResponseArrayBuffer(res, MAX_IMAGE_BYTES));
         } catch (e) {
             if (e.name === "AbortError" && timedOut && !signal?.aborted) {
-                throw new Error(`ComfyUI Proxy timed out after ${s.proxyComfyTimeout}s`);
+                throw new Error(`ComfyUI Proxy timed out after ${proxyComfyTimeoutSeconds}s`);
             }
             throw e;
         } finally {
             clearTimeout(timeoutId);
+            if (signal) signal.removeEventListener("abort", abortFromParent);
         }
-        if (!res.ok) {
-            const errText = await readResponseText(res, 1024 * 1024).catch(() => "");
-            throw new Error(`ComfyUI Proxy error ${res.status}: ${errText || res.statusText}`);
-        }
-        return createTransientImageObjectUrl(await readResponseArrayBuffer(res, MAX_IMAGE_BYTES));
     }
 
     const headers = { "Content-Type": "application/json" };
@@ -7750,26 +7788,80 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
     const sseEnabled = endpointMode === "images_generations" ? shouldUseProxySse(s, payloadMode) : false;
 
     if (!requestUrl) throw new Error("Proxy URL is required");
-    log(`Proxy mode: endpoint=${endpointMode}, payload=${payloadMode}, refMode=${refMode}, sse=${sseEnabled}, refImages=${refImages.length}, runtimeRefs=${runtimeRefImages.length}, url=${requestUrl.substring(0, 80)}`);
+    log(`Proxy mode: endpoint=${endpointMode}, payload=${payloadMode}, refMode=${refMode}, sse=${sseEnabled}, refImages=${refImages.length}, runtimeRefs=${runtimeRefImages.length}, url=${redactUrlCredentials(requestUrl).substring(0, 80)}`);
 
     const controller = new AbortController();
     let timedOut = false;
     const proxyTimeoutSeconds = Math.max(30, Math.min(1800, parseIntOr(s.proxyTimeout, 600)));
     const timeoutId = setTimeout(() => { timedOut = true; controller.abort(); }, proxyTimeoutSeconds * 1000);
-    if (signal) signal.addEventListener("abort", () => controller.abort(), { once: true });
+    const abortFromParent = () => controller.abort();
+    if (signal) signal.addEventListener("abort", abortFromParent, { once: true });
 
-    let res;
     try {
         const payload = endpointMode === "chat_completions"
             ? buildProxyChatPayload(prompt, negative, s, refImages, payloadMode, proxySeed)
             : buildProxyImagesPayload(prompt, negative, s, refImages, payloadMode, proxySeed, sseEnabled);
         log(`${endpointMode === "chat_completions" ? "Chat" : "Images"} endpoint payload keys: ${Object.keys(payload).join(", ")}`);
-        res = await fetch(requestUrl, {
+        const res = await fetch(requestUrl, {
             method: "POST",
             headers,
             body: JSON.stringify(payload),
             signal: controller.signal
         });
+
+        if (!res.ok) {
+            const detail = await readProxyErrorResponse(res);
+            throw new Error(`Proxy error ${res.status}: ${detail || res.statusText}`);
+        }
+
+        const contentType = res.headers.get("content-type") || "";
+        const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
+        if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
+            return await imageResponseToDataUrl(res);
+        }
+
+        const responseBaseUrl = res.url || requestUrl;
+        const materializeProxyResult = (source) => materializeProviderImageSource(source, {
+            requestUrl,
+            responseUrl: responseBaseUrl,
+            headers,
+            signal: controller.signal,
+            fetchImpl: corsFetch,
+            allowBrowserFallback: false,
+        });
+        if (endpointMode === "images_generations" && (contentType.includes("text/event-stream") || contentType.includes("text/plain"))) {
+            log(`Parsing ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
+            const text = await readResponseText(res);
+            const responseOptions = { trustedBaseUrl: responseBaseUrl };
+            const direct = extractProxyImageFromString(text, responseOptions);
+            if (direct) return await materializeProxyResult(direct);
+            const streamed = extractProxyImageFromSseText(text, responseOptions);
+            if (streamed) return await materializeProxyResult(streamed);
+            let parsed = null;
+            try {
+                parsed = JSON.parse(text);
+            } catch {
+                // Not JSON; continue to error below.
+            }
+            const parsedImage = extractProxyImageFromJson(parsed, responseOptions);
+            if (parsedImage) return await materializeProxyResult(parsedImage);
+            throw new Error(`No image in ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
+        }
+
+        const data = await readResponseJson(res);
+        log(`Response keys: ${JSON.stringify(Object.keys(data || {}))}`);
+        const imageUrl = extractProxyImageFromJson(data, { trustedBaseUrl: responseBaseUrl });
+        if (imageUrl) return await materializeProxyResult(imageUrl);
+
+        if (endpointMode === "chat_completions") {
+            log(`Full message structure: ${JSON.stringify(data?.choices?.[0]?.message || {}).substring(0, 500)}`);
+            const msgContent = data?.choices?.[0]?.message?.content;
+            throw new Error(msgContent === null
+                ? "Model returned empty response - image generation may not be supported via this proxy"
+                : "No image in response");
+        }
+
+        throw new Error("No image in response");
     } catch (e) {
         if (e.name === "AbortError" && timedOut && !signal?.aborted) {
             throw new Error(`Proxy request timed out after ${proxyTimeoutSeconds} seconds`);
@@ -7777,61 +7869,8 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
         throw e;
     } finally {
         clearTimeout(timeoutId);
+        if (signal) signal.removeEventListener("abort", abortFromParent);
     }
-
-    if (!res.ok) {
-        const detail = await readProxyErrorResponse(res);
-        throw new Error(`Proxy error ${res.status}: ${detail || res.statusText}`);
-    }
-
-    const contentType = res.headers.get("content-type") || "";
-    const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
-    if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
-        return await imageResponseToDataUrl(res);
-    }
-
-    const responseBaseUrl = res.url || requestUrl;
-    const materializeProxyResult = (source) => materializeProviderImageSource(source, {
-        requestUrl,
-        responseUrl: responseBaseUrl,
-        headers,
-        signal,
-        fetchImpl: corsFetch,
-        allowBrowserFallback: false,
-    });
-    if (endpointMode === "images_generations" && (contentType.includes("text/event-stream") || contentType.includes("text/plain"))) {
-        log(`Parsing ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
-        const text = await readResponseText(res);
-        const responseOptions = { trustedBaseUrl: responseBaseUrl };
-        const direct = extractProxyImageFromString(text, responseOptions);
-        if (direct) return await materializeProxyResult(direct);
-        const streamed = extractProxyImageFromSseText(text, responseOptions);
-        if (streamed) return await materializeProxyResult(streamed);
-        let parsed = null;
-        try {
-            parsed = JSON.parse(text);
-        } catch {
-            // Not JSON; continue to error below.
-        }
-        const parsedImage = extractProxyImageFromJson(parsed, responseOptions);
-        if (parsedImage) return await materializeProxyResult(parsedImage);
-        throw new Error(`No image in ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
-    }
-
-    const data = await readResponseJson(res);
-    log(`Response keys: ${JSON.stringify(Object.keys(data || {}))}`);
-    const imageUrl = extractProxyImageFromJson(data, { trustedBaseUrl: responseBaseUrl });
-    if (imageUrl) return await materializeProxyResult(imageUrl);
-
-    if (endpointMode === "chat_completions") {
-        log(`Full message structure: ${JSON.stringify(data?.choices?.[0]?.message || {}).substring(0, 500)}`);
-        const msgContent = data?.choices?.[0]?.message?.content;
-        throw new Error(msgContent === null
-            ? "Model returned empty response - image generation may not be supported via this proxy"
-            : "No image in response");
-    }
-
-    throw new Error("No image in response");
 }
 
 async function genCustomApi(prompt, negative, s, signal) {
@@ -8118,6 +8157,42 @@ async function persistReferenceImageSource(source) {
     return `data:${format.mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
+function getInlineImageBytes(source) {
+    const encoded = String(source || "").match(/^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/i)?.[1];
+    return encoded ? Math.floor(encoded.length * 3 / 4) : 0;
+}
+
+async function readValidatedReferenceFiles(files, existingSources = [], maxCount = 15) {
+    const slots = Math.max(0, maxCount - existingSources.length);
+    const candidates = Array.from(files || []).slice(0, slots);
+    let availableBytes = MAX_IMAGE_BYTES - existingSources.reduce((total, source) => total + getInlineImageBytes(source), 0);
+    const sources = [];
+    const errors = [];
+
+    for (const file of candidates) {
+        try {
+            if (!file || typeof file.arrayBuffer !== "function") throw new Error("Unreadable file");
+            if (Number(file.size) > availableBytes) throw new Error("25 MiB aggregate limit exceeded");
+            const buffer = await file.arrayBuffer();
+            if (buffer.byteLength > availableBytes) throw new Error("25 MiB aggregate limit exceeded");
+            const format = detectImageFormat(buffer);
+            if (!format) throw new Error("Unsupported or invalid image format");
+            sources.push(`data:${format.mime};base64,${arrayBufferToBase64(buffer)}`);
+            availableBytes -= buffer.byteLength;
+        } catch (error) {
+            errors.push(`${file?.name || "file"}: ${error.message}`);
+        }
+    }
+    if (Array.from(files || []).length > candidates.length) errors.push(`Maximum ${maxCount} reference image${maxCount === 1 ? "" : "s"} reached`);
+    return { sources, errors };
+}
+
+function reportReferenceFileErrors(errors) {
+    if (!errors?.length) return;
+    log(`Reference upload skipped: ${errors.join("; ")}`);
+    toastr.warning(`${errors.length} reference image${errors.length === 1 ? " was" : "s were"} skipped. Files must be valid supported images and stay within the 25 MiB total limit.`);
+}
+
 async function useImageAsReference(source, popup) {
     const persistedSource = await persistReferenceImageSource(source);
     const s = getSettings();
@@ -8153,6 +8228,11 @@ async function useImageAsReference(source, popup) {
         if (!Array.isArray(s[key])) s[key] = [];
         if (s[key].length >= 15) {
             toastr.warning("Maximum 15 reference images reached");
+            return;
+        }
+        const inlineBytes = s[key].reduce((total, value) => total + getInlineImageBytes(value), 0) + getInlineImageBytes(persistedSource);
+        if (inlineBytes > MAX_IMAGE_BYTES) {
+            toastr.warning("Reference images are limited to 25 MiB total");
             return;
         }
         s[key].push(persistedSource);
@@ -8365,6 +8445,25 @@ async function maybeAutoSetBackground(results, settings = getSettings(), run = n
     }
 }
 
+function restoreMessageExtra(message, hadExtra, previousExtra) {
+    if (hadExtra) message.extra = previousExtra;
+    else delete message.extra;
+}
+
+function rerenderMessageMedia(ctx, message, index) {
+    if (typeof ctx.appendMediaToMessage !== "function") return;
+    const messageElement = $(`.mes[mesid="${index}"]`);
+    if (messageElement.length) ctx.appendMediaToMessage(message, messageElement, "replace");
+}
+
+function rollbackInsertedMessage(ctx, chat, message, expectedIndex) {
+    const index = chat[expectedIndex] === message ? expectedIndex : chat.lastIndexOf(message);
+    if (index >= 0) chat.splice(index, 1);
+    const renderedIndex = index >= 0 ? index : expectedIndex;
+    const messageElement = $(`.mes[mesid="${renderedIndex}"]`);
+    if (messageElement.length) messageElement.remove();
+}
+
 async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null, options = {}) {
     const ctx = getContext();
     const chat = ctx.chat;
@@ -8387,42 +8486,53 @@ async function insertImageIntoMessage(entryOrUrl, targetMessageIndex = null, opt
     }
     options.commitGuard?.();
 
+    const hadExtra = Object.prototype.hasOwnProperty.call(message, "extra");
+    const previousExtra = hadExtra && message.extra && typeof message.extra === "object"
+        ? snapshotGenerationSettings(message.extra)
+        : message.extra;
     if (!message.extra || typeof message.extra !== 'object') {
         message.extra = {};
     }
 
     const title = entry.prompt || lastPrompt || 'Generated Image';
 
-    // Use modern media API if available
-    if (typeof ctx.appendMediaToMessage === 'function') {
-        if (!Array.isArray(message.extra.media)) {
-            message.extra.media = [];
-        }
-        if (!message.extra.media.length && !message.extra.media_display) {
-            message.extra.media_display = 'gallery';
+    try {
+        // Use modern media API if available
+        if (typeof ctx.appendMediaToMessage === 'function') {
+            if (!Array.isArray(message.extra.media)) {
+                message.extra.media = [];
+            }
+            if (!message.extra.media.length && !message.extra.media_display) {
+                message.extra.media_display = 'gallery';
+            }
+
+            message.extra.media.push({
+                url: url,
+                type: 'image',
+                title: title,
+                source: 'generated',
+            });
+            message.extra.inline_image = true;
+            message.extra.media_index = message.extra.media.length - 1;
+
+            rerenderMessageMedia(ctx, message, idx);
+        } else {
+            // Legacy fallback for older ST versions
+            message.extra.image = url;
+            message.extra.inline_image = true;
+            message.extra.title = title;
         }
 
-        message.extra.media.push({
-            url: url,
-            type: 'image',
-            title: title,
-            source: 'generated',
-        });
-        message.extra.inline_image = true;
-        message.extra.media_index = message.extra.media.length - 1;
-
-        const messageElement = $(`.mes[mesid="${idx}"]`);
-        if (messageElement.length) {
-            ctx.appendMediaToMessage(message, messageElement, 'replace');
+        await ctx.saveChat();
+    } catch (error) {
+        restoreMessageExtra(message, hadExtra, previousExtra);
+        try {
+            rerenderMessageMedia(ctx, message, idx);
+        } catch (rollbackError) {
+            log(`Failed to refresh message after insert rollback: ${rollbackError.message}`);
         }
-    } else {
-        // Legacy fallback for older ST versions
-        message.extra.image = url;
-        message.extra.inline_image = true;
-        message.extra.title = title;
+        throw error;
     }
-
-    await ctx.saveChat();
 }
 
 async function insertImageAsNewMessage(entryOrUrl, options = {}) {
@@ -8452,11 +8562,17 @@ async function insertImageAsNewMessage(entryOrUrl, options = {}) {
         },
     };
 
-    chat.push(message);
-    if (typeof ctx.addOneMessage === 'function') {
-        ctx.addOneMessage(message);
+    const messageIndex = chat.length;
+    try {
+        chat.push(message);
+        if (typeof ctx.addOneMessage === 'function') {
+            ctx.addOneMessage(message);
+        }
+        await ctx.saveChat();
+    } catch (error) {
+        rollbackInsertedMessage(ctx, chat, message, messageIndex);
+        throw error;
     }
-    await ctx.saveChat();
 }
 
 async function insertImageAsHiddenReply(entryOrUrl, options = {}) {
@@ -8486,11 +8602,17 @@ async function insertImageAsHiddenReply(entryOrUrl, options = {}) {
         },
     };
 
-    chat.push(message);
-    if (typeof ctx.addOneMessage === 'function') {
-        ctx.addOneMessage(message);
+    const messageIndex = chat.length;
+    try {
+        chat.push(message);
+        if (typeof ctx.addOneMessage === 'function') {
+            ctx.addOneMessage(message);
+        }
+        await ctx.saveChat();
+    } catch (error) {
+        rollbackInsertedMessage(ctx, chat, message, messageIndex);
+        throw error;
     }
-    await ctx.saveChat();
 }
 
 async function autoInsertInjectImage(entryOrUrl, { messageIndex, insertMode, commitGuard } = {}) {
@@ -8503,6 +8625,16 @@ async function autoInsertInjectImage(entryOrUrl, { messageIndex, insertMode, com
         return await insertImageIntoMessage(entryOrUrl, messageIndex, { commitGuard });
     }
     return await insertImageIntoMessage(entryOrUrl, null, { commitGuard });
+}
+
+function reportAutoInsertOutcome(insertedCount, failedResults) {
+    if (insertedCount > 0) {
+        toastr.success(`${insertedCount === 1 ? "Image" : `${insertedCount} images`} inserted into chat`);
+    }
+    if (!failedResults.length) return;
+    toastr.warning(`${failedResults.length === 1 ? "One image" : `${failedResults.length} images`} could not be inserted and remain available in the result viewer.`);
+    if (failedResults.length === 1) displayImage(failedResults[0]);
+    else displayBatchResults(failedResults);
 }
 
 function normalizeContextMediaUrl(value) {
@@ -9282,6 +9414,10 @@ function scheduleContextMediaForMessage(messageIndex) {
     _contextMediaTimeout = setTimeout(async () => {
         _contextMediaTimeout = null;
         try {
+            if (isGenerating || _paletteInjectActive || _injectProcessingCount > 0 || shouldSuppressAutoGenerateFromInternalLLM(index)) {
+                log(`Context Media: Skipped overlapping internal work for message ${index}`);
+                return;
+            }
             await classifyAndInsertContextMedia({
                 chat,
                 index,
@@ -9417,9 +9553,6 @@ function normalizeGenerationEntry(entryOrUrl, fallback = {}) {
 
 async function finalizeGeneratedEntry(providerResult, prompt, negative, settings, options = {}) {
     const resolvedSeed = settings && Number.isFinite(settings.__qigResolvedSeed) ? settings.__qigResolvedSeed : undefined;
-    if (settings && Object.prototype.hasOwnProperty.call(settings, "__qigResolvedSeed")) {
-        delete settings.__qigResolvedSeed;
-    }
     const normalizedResult = providerResult && typeof providerResult === "object" && typeof providerResult.url === "string"
         ? providerResult
         : normalizeProviderResult(providerResult, settings, {
@@ -9457,6 +9590,24 @@ async function finalizeGeneratedEntry(providerResult, prompt, negative, settings
         const retainedUrl = entry?.url || "";
         if (rawUrl !== retainedUrl) releaseTransientBlobUrl(rawUrl);
         if (finalUrl && finalUrl !== retainedUrl && finalUrl !== rawUrl) releaseTransientBlobUrl(finalUrl);
+    }
+}
+
+async function finalizeGeneratedResults(providerResult, prompt, negative, settings, options = {}) {
+    const providerResults = Array.isArray(providerResult) ? providerResult : [providerResult];
+    try {
+        const outcome = await collectSequentialResults(providerResults, result =>
+            finalizeGeneratedEntry(result, prompt, negative, settings, options)
+        );
+        if (!outcome.results.length && outcome.errors.length) throw outcome.errors[0].error;
+        return attachResultFailures(outcome.results, [
+            ...getResultFailures(providerResult),
+            ...outcome.errors,
+        ]);
+    } finally {
+        if (settings && Object.prototype.hasOwnProperty.call(settings, "__qigResolvedSeed")) {
+            delete settings.__qigResolvedSeed;
+        }
     }
 }
 
@@ -10751,6 +10902,8 @@ async function generateForProvider(prompt, negative, settings, signal, options =
         model: getProviderModelId(settings, settings.provider),
         resolvedSeed: Number.isFinite(settings.__qigResolvedSeed) ? settings.__qigResolvedSeed : undefined,
     });
+    const normalizedResults = Array.isArray(normalized) ? normalized : [normalized];
+    if (!normalizedResults.length) throw new Error("Provider returned no images");
     const trustedLocalBackend = settings.provider === "local" || settings.provider === "comfyui";
     const trustedBaseUrl = settings.provider === "proxy"
         ? settings.proxyUrl
@@ -10763,10 +10916,17 @@ async function generateForProvider(prompt, negative, settings, signal, options =
                 : settings.provider === "nanobanana"
                     ? settings.nanobananaProxyUrl
                     : "";
-    const safeUrl = normalizeProviderImageSource(normalized.url, { trustedLocalBackend, trustedBaseUrl });
-    if (!safeUrl) throw new Error("Provider returned an unsafe or unsupported image URL");
-    await verifyRenderableImage(safeUrl);
-    return { ...normalized, url: safeUrl };
+    const outcome = await collectSequentialResults(normalizedResults, async item => {
+        const safeUrl = normalizeProviderImageSource(item.url, { trustedLocalBackend, trustedBaseUrl });
+        if (!safeUrl) throw new Error("Provider returned an unsafe or unsupported image URL");
+        await verifyRenderableImage(safeUrl);
+        return { ...item, url: safeUrl };
+    });
+    if (!outcome.results.length && outcome.errors.length) throw outcome.errors[0].error;
+    const safeResults = outcome.results;
+    return Array.isArray(normalized)
+        ? attachResultFailures(safeResults, outcome.errors)
+        : safeResults[0];
 }
 
 function reportPartialBatchErrors(label, outcome) {
@@ -10816,17 +10976,26 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
         checkAborted(cancelCheckpoint);
         if (batchCount <= 1) {
             showStatus("🔄 Regenerating...");
-            const result = await generateForProvider(lastPrompt, lastNegative, s, run.signal, providerRuntimeOptions);
+            const result = await generateForProvider(lastPrompt, lastNegative, s, run.signal, {
+                ...providerRuntimeOptions,
+                batchIndex: 0,
+                batchCount: 1,
+            });
             checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
-                const entry = await finalizeGeneratedEntry(result, lastPrompt, lastNegative, s, getGenerationFinalizationOptions(run, {
+                const entries = await finalizeGeneratedResults(result, lastPrompt, lastNegative, s, getGenerationFinalizationOptions(run, {
                     promptWasLLM: lastPromptWasLLM,
                     sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
                 }));
-                if (entry) {
+                reportPartialBatchErrors("Regeneration", {
+                    results: entries,
+                    errors: getResultFailures(entries),
+                });
+                if (entries.length) {
                     assertGenerationCanCommit(run);
-                    displayImage(entry, false, returnFocusElement);
+                    if (entries.length > 1) displayBatchResults(entries, returnFocusElement);
+                    else displayImage(entries[0], false, returnFocusElement);
                 }
             }
         } else {
@@ -10837,9 +11006,13 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
                 showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(lastPrompt);
                 const expandedNegative = expandWildcards(lastNegative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, providerRuntimeOptions);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, {
+                    ...providerRuntimeOptions,
+                    batchIndex: i,
+                    batchCount,
+                });
                 if (result) {
-                    return await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
+                    return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                         promptWasLLM: lastPromptWasLLM,
                         sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
                     }));
@@ -12934,7 +13107,7 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
@@ -12945,6 +13118,8 @@ function getComfyWorkflowSnapshot(s = getSettings()) {
         comfyUpscale: !!s.comfyUpscale,
         comfyUpscaleModel: s.comfyUpscaleModel || "RealESRGAN_x4plus.pth",
         comfyLoras: s.comfyLoras || "",
+        comfyOutputNodeIds: s.comfyOutputNodeIds || "",
+        comfyOutputImageIndex: Number.isInteger(Number(s.comfyOutputImageIndex)) ? Number(s.comfyOutputImageIndex) : -1,
         comfyWorkflow: s.comfyWorkflow || "",
         comfySkipNegativePrompt: !!s.comfySkipNegativePrompt,
         comfyFluxClipModel1: s.comfyFluxClipModel1 || "",
@@ -13681,7 +13856,9 @@ async function commitSettingsImportNow(data) {
             connectionProfiles = mergePreservingPrivateFields(connectionProfiles, data.connectionProfiles);
             normalizeProxyProfileStore(connectionProfiles);
         }
-        if (data.comfyWorkflows !== undefined) comfyWorkflows = data.comfyWorkflows;
+        if (data.comfyWorkflows !== undefined) {
+            log("Skipped imported ComfyUI workflow presets because executable graphs are local trust configuration");
+        }
         if (data.generationPresets !== undefined) {
             generationPresets = data.generationPresets;
             normalizeGenerationPresetStore(generationPresets);
@@ -13715,7 +13892,6 @@ async function commitSettingsImportNow(data) {
 
         const stores = new Map();
         if (data.connectionProfiles !== undefined) stores.set("qig_profiles", connectionProfiles);
-        if (data.comfyWorkflows !== undefined) stores.set("qig_comfy_workflows", comfyWorkflows);
         if (data.generationPresets !== undefined) stores.set("qig_gen_presets", generationPresets);
         if (data.charSettings !== undefined) stores.set("qig_char_settings", charSettings);
         if (data.charRefImages !== undefined) stores.set("qig_char_ref_images", charRefImages);
@@ -13789,7 +13965,7 @@ function importSettings() {
             const legacyPrivateImages = data.charRefImages !== undefined
                 ? " This legacy file includes private reference images."
                 : "";
-            if (!confirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys are kept and keys in the file are ignored.${legacyPrivateImages}`)) return;
+            if (!confirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys and locally trusted executable workflows are kept; credentials and executable workflow bodies in the file are ignored.${legacyPrivateImages}`)) return;
             await commitSettingsImport(data);
             const contextMediaManager = document.getElementById("qig-context-media-manager");
             if (contextMediaManager) hidePopup(contextMediaManager);
@@ -13885,6 +14061,9 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
             ["qig-comfy-clip", "comfyClipSkip"],
             ["qig-comfy-scheduler", "comfyScheduler"],
             ["qig-comfy-timeout", "comfyTimeout"],
+            ["qig-comfy-output-nodes", "comfyOutputNodeIds"],
+            ["qig-comfy-output-index", "comfyOutputImageIndex"],
+            ["qig-comfy-legacy-interrupt", "comfyAllowLegacyInterrupt"],
             ["qig-comfy-upscale", "comfyUpscale"],
             ["qig-comfy-upscale-model", "comfyUpscaleModel"],
             ["qig-comfy-workflow", "comfyWorkflow"],
@@ -14058,6 +14237,11 @@ function addProxyRefImage(src, successMessage = "") {
     }
     if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only" && !isHttpUrl(value)) {
         toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+        return false;
+    }
+    const inlineBytes = s.proxyRefImages.reduce((total, source) => total + getInlineImageBytes(source), 0) + getInlineImageBytes(value);
+    if (inlineBytes > MAX_IMAGE_BYTES) {
+        toastr.warning("Reference images are limited to 25 MiB total");
         return false;
     }
     s.proxyRefImages.push(value);
@@ -14958,7 +15142,7 @@ function createUI() {
                              </select>
                              <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
-                         <div class="form-hint">Click Refresh to load checkpoints (standard mode) or diffusion UNETs (Flux/UNET mode) from ComfyUI, or type a model manually.</div>
+                         <div class="form-hint">Click Refresh to load checkpoints (standard mode) or diffusion UNETs (Flux/UNET mode) from ComfyUI.</div>
                          <div class="qig-row">
                             <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise ?? 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
@@ -14969,6 +15153,14 @@ function createUI() {
                          <label>Timeout (seconds)</label>
                          <input id="qig-comfy-timeout" type="number" value="${esc(s.comfyTimeout || 300)}" min="10" max="1800">
                          <small style="opacity:0.6;font-size:10px;">How long SillyTavern waits for ComfyUI to finish before giving up.</small>
+                         <div class="qig-row">
+                            <div><label>Output Node IDs</label><input id="qig-comfy-output-nodes" type="text" value="${esc(s.comfyOutputNodeIds || "")}" placeholder="9, 42"><small style="opacity:0.6;font-size:10px;">Comma-separated. Empty returns images from every output node.</small></div>
+                            <div><label>Image Index</label><input id="qig-comfy-output-index" type="number" value="${esc(s.comfyOutputImageIndex ?? -1)}" min="-1" step="1"><small style="opacity:0.6;font-size:10px;">-1 returns every image; 0 selects the first.</small></div>
+                         </div>
+                         <label style="display:flex;align-items:flex-start;gap:6px;margin:6px 0;cursor:pointer;">
+                            <input id="qig-comfy-legacy-interrupt" type="checkbox" ${s.comfyAllowLegacyInterrupt ? "checked" : ""}>
+                            <span>Allow targeted legacy interrupt<br><small style="opacity:0.6;font-size:10px;">Off is safest on shared servers. Older ComfyUI versions may treat even a targeted interrupt as global.</small></span>
+                         </label>
                          <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
                             <input id="qig-comfy-upscale" type="checkbox" ${s.comfyUpscale ? "checked" : ""}>
                             <span>Upscale Output</span>
@@ -14998,7 +15190,7 @@ function createUI() {
                             <small style="opacity:0.6;font-size:10px;">From models/vae/. Required for UNET-only models.</small>
                          </div>
                          <label>LoRAs (filename:weight, comma-separated)</label>
-                         <small style="opacity:0.6;font-size:10px;">Always applied. For scene-specific LoRAs, use Contextual Filters. Filename must match your ComfyUI loras folder.</small>
+                         <small style="opacity:0.6;font-size:10px;">Applied only to the built-in workflow. Custom workflows must include their own LoRA nodes. Filename must match your ComfyUI loras folder.</small>
                          <input id="qig-comfy-loras" type="text" value="${esc(s.comfyLoras || "")}" placeholder="my_lora.safetensors:0.8, style_lora.safetensors:0.6">
                          <label>Workflow Preset</label>
                          <div style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;">
@@ -15010,8 +15202,8 @@ function createUI() {
                          </div>
                          <small style="opacity:0.6;font-size:10px;">Use presets for quick graph switching (e.g., with LoRA / without LoRA). Profiles save provider settings; workflow presets focus on Comfy graph fields.</small>
                          <label>Custom Workflow JSON</label>
-                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Use placeholders: %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_skip%, %sampler%, %scheduler%, %model%, %reference_image%'>${esc(s.comfyWorkflow || "")}</textarea>
-                         <div class="form-hint">Optional for standard SD1.5/SDXL checkpoints. Required for non-standard pipelines (Flux/UNET-only, dual-CLIP, custom node graphs). Export from ComfyUI: Save → API Format. Use %reference_image% in a LoadImage node to include the uploaded reference image.</div>
+                         <textarea id="qig-comfy-workflow" rows="3" placeholder='Paste workflow from ComfyUI "Save (API Format)". Tokens include %prompt%, %negative%, %seed%, %width%, %height%, %steps%, %cfg%, %denoise%, %clip_stop_at_layer%, %sampler%, %scheduler%, %model%, %reference_image%'>${esc(s.comfyWorkflow || "")}</textarea>
+                         <div class="form-hint">Optional: built-in standard and Flux/UNET workflows are available without JSON. Custom graphs use only settings represented by placeholders, and all matching output images are returned. Export from ComfyUI using Save (API Format). Executable workflow JSON is omitted from full settings exports for safety.</div>
                     </div>
                     <div id="qig-local-a1111-opts" style="display:${s.localType === "a1111" ? "block" : "none"}">
                          <label>Model</label>
@@ -16144,6 +16336,9 @@ function createUI() {
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-scheduler", "comfyScheduler");
     bind("qig-comfy-timeout", "comfyTimeout", true);
+    bind("qig-comfy-output-nodes", "comfyOutputNodeIds");
+    bind("qig-comfy-output-index", "comfyOutputImageIndex", true);
+    bindCheckbox("qig-comfy-legacy-interrupt", "comfyAllowLegacyInterrupt");
     bindCheckbox("qig-comfy-upscale", "comfyUpscale");
     bind("qig-comfy-upscale-model", "comfyUpscaleModel");
     document.getElementById("qig-comfy-upscale").onchange = (e) => {
@@ -16277,20 +16472,20 @@ function createUI() {
         document.getElementById("qig-a1111-cn-preview").style.display = "none";
         document.getElementById("qig-a1111-cn-clear-btn").style.display = "none";
     };
-    cnUploadInput.onchange = (e) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
-            getSettings().a1111ControlNetImage = ev.target.result;
+    cnUploadInput.onchange = async (e) => {
+        try {
+            const { sources, errors } = await readValidatedReferenceFiles(e.target.files, [], 1);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
+            getSettings().a1111ControlNetImage = sources[0];
             saveSettingsDebounced();
             const preview = document.getElementById("qig-a1111-cn-preview");
-            preview.src = ev.target.result;
+            preview.src = sources[0];
             preview.style.display = "block";
             document.getElementById("qig-a1111-cn-clear-btn").style.display = "block";
-        };
-        reader.readAsDataURL(file);
-        e.target.value = "";
+        } finally {
+            e.target.value = "";
+        }
     };
 
     // A1111 Model dropdown
@@ -16414,21 +16609,21 @@ function createUI() {
         localRefClear.style.display = "none";
         document.getElementById("qig-local-denoise-wrap").style.display = "none";
     };
-    localRefInput.onchange = (e) => {
-        const file = e.target.files[0];
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (ev) => {
+    localRefInput.onchange = async (e) => {
+        try {
+            const { sources, errors } = await readValidatedReferenceFiles(e.target.files, [], 1);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
             const s = getSettings();
-            s.localRefImage = ev.target.result;
+            s.localRefImage = sources[0];
             saveSettingsDebounced();
             document.getElementById("qig-local-ref-preview").src = s.localRefImage;
             document.getElementById("qig-local-ref-preview").style.display = "block";
             localRefClear.style.display = "block";
             document.getElementById("qig-local-denoise-wrap").style.display = s.localType === "a1111" ? "block" : "none";
+        } finally {
             localRefInput.value = "";
-        };
-        reader.readAsDataURL(file);
+        }
     };
 
     bind("qig-proxy-url", "proxyUrl", () => updateProxyCompatibilityUI());
@@ -16491,31 +16686,23 @@ function createUI() {
     const refBtn = getOrCacheElement("qig-proxy-ref-btn");
     if (refBtn) refBtn.onclick = () => refInput.click();
     refInput.onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        const s = getSettings();
-        if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only") {
-            toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+        try {
+            const s = getSettings();
+            if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only") {
+                toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+                return;
+            }
+            if (!s.proxyRefImages) s.proxyRefImages = [];
+            const { sources, errors } = await readValidatedReferenceFiles(e.target.files, s.proxyRefImages, 15);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
+            s.proxyRefImages.push(...sources);
+            saveSettingsDebounced();
+            renderRefImages();
+            updateProxyCompatibilityUI();
+        } finally {
             refInput.value = "";
-            return;
         }
-        if (!s.proxyRefImages) s.proxyRefImages = [];
-        const remaining = 15 - s.proxyRefImages.length;
-        const filesToProcess = files.slice(0, remaining);
-
-        const readPromises = filesToProcess.map(file =>
-            new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => resolve(ev.target.result);
-                reader.readAsDataURL(file);
-            })
-        );
-
-        const results = await Promise.all(readPromises);
-        s.proxyRefImages.push(...results);
-        saveSettingsDebounced();
-        renderRefImages();
-        updateProxyCompatibilityUI();
-        refInput.value = "";
     };
     // URL input for proxy ref images
     const proxyRefUrl = getOrCacheElement("qig-proxy-ref-url");
@@ -16534,38 +16721,18 @@ function createUI() {
     const customRefButton = getOrCacheElement("qig-custom-ref-btn");
     if (customRefButton) customRefButton.onclick = () => customRefInput?.click();
     if (customRefInput) customRefInput.onchange = async (event) => {
-        const s = getSettings();
-        if (!s.customApiRefImages) s.customApiRefImages = [];
-        const remaining = 15 - s.customApiRefImages.length;
-        const files = Array.from(event.target.files || []).slice(0, remaining);
-        let availableBytes = MAX_IMAGE_BYTES;
-        for (const source of s.customApiRefImages) {
-            const encoded = String(source).match(/^data:[^;,]+;base64,([A-Za-z0-9+/]*={0,2})$/i)?.[1];
-            if (encoded) availableBytes -= Math.floor(encoded.length * 3 / 4);
+        try {
+            const s = getSettings();
+            if (!s.customApiRefImages) s.customApiRefImages = [];
+            const { sources, errors } = await readValidatedReferenceFiles(event.target.files, s.customApiRefImages, 15);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
+            s.customApiRefImages.push(...sources);
+            saveSettingsDebounced();
+            renderCustomApiRefImages();
+        } finally {
+            customRefInput.value = "";
         }
-        const oversized = files.filter(file => file.size > MAX_IMAGE_BYTES);
-        if (oversized.length) {
-            toastr.warning(`${oversized.length} reference image(s) exceeded the ${Math.round(MAX_IMAGE_BYTES / (1024 * 1024))} MiB limit and were skipped.`);
-        }
-        const accepted = [];
-        for (const file of files) {
-            if (file.size > MAX_IMAGE_BYTES || !file.type.startsWith("image/") || file.size > availableBytes) continue;
-            accepted.push(file);
-            availableBytes -= file.size;
-        }
-        if (accepted.length < files.length - oversized.length) {
-            toastr.warning("Some references were skipped because the Custom API request is limited to 25 MiB total.");
-        }
-        const results = await Promise.all(accepted.map(file => new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onload = () => resolve(reader.result);
-            reader.onerror = () => reject(reader.error || new Error(`Failed to read ${file.name}`));
-            reader.readAsDataURL(file);
-        })));
-        s.customApiRefImages.push(...results);
-        saveSettingsDebounced();
-        renderCustomApiRefImages();
-        customRefInput.value = "";
     };
     renderCustomApiRefImages();
     updateCustomApiUI();
@@ -16575,25 +16742,18 @@ function createUI() {
     const nanoRefBtn = getOrCacheElement("qig-nanobanana-ref-btn");
     if (nanoRefBtn) nanoRefBtn.onclick = () => nanoRefInput.click();
     nanoRefInput.onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        const s = getSettings();
-        if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
-        const remaining = 15 - s.nanobananaRefImages.length;
-        const filesToProcess = files.slice(0, remaining);
-
-        const readPromises = filesToProcess.map(file =>
-            new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => resolve(ev.target.result);
-                reader.readAsDataURL(file);
-            })
-        );
-
-        const results = await Promise.all(readPromises);
-        s.nanobananaRefImages.push(...results);
-        saveSettingsDebounced();
-        renderNanobananaRefImages();
-        nanoRefInput.value = "";
+        try {
+            const s = getSettings();
+            if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
+            const { sources, errors } = await readValidatedReferenceFiles(e.target.files, s.nanobananaRefImages, 15);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
+            s.nanobananaRefImages.push(...sources);
+            saveSettingsDebounced();
+            renderNanobananaRefImages();
+        } finally {
+            nanoRefInput.value = "";
+        }
     };
     // URL input for nanobanana ref images
     const nanoRefUrl = getOrCacheElement("qig-nanobanana-ref-url");
@@ -16617,25 +16777,18 @@ function createUI() {
     const nanogptRefBtn = getOrCacheElement("qig-nanogpt-ref-btn");
     if (nanogptRefBtn) nanogptRefBtn.onclick = () => nanogptRefInput.click();
     nanogptRefInput.onchange = async (e) => {
-        const files = Array.from(e.target.files);
-        const s = getSettings();
-        if (!s.nanogptRefImages) s.nanogptRefImages = [];
-        const remaining = 15 - s.nanogptRefImages.length;
-        const filesToProcess = files.slice(0, remaining);
-
-        const readPromises = filesToProcess.map(file =>
-            new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onload = (ev) => resolve(ev.target.result);
-                reader.readAsDataURL(file);
-            })
-        );
-
-        const results = await Promise.all(readPromises);
-        s.nanogptRefImages.push(...results);
-        saveSettingsDebounced();
-        renderNanogptRefImages();
-        nanogptRefInput.value = "";
+        try {
+            const s = getSettings();
+            if (!s.nanogptRefImages) s.nanogptRefImages = [];
+            const { sources, errors } = await readValidatedReferenceFiles(e.target.files, s.nanogptRefImages, 15);
+            reportReferenceFileErrors(errors);
+            if (!sources.length) return;
+            s.nanogptRefImages.push(...sources);
+            saveSettingsDebounced();
+            renderNanogptRefImages();
+        } finally {
+            nanogptRefInput.value = "";
+        }
     };
     // URL input for nanogpt ref images
     const nanogptRefUrl = getOrCacheElement("qig-nanogpt-ref-url");
@@ -17262,9 +17415,9 @@ function addInputButton() {
 }
 
 async function generateImageInjectPalette() {
-    if (isGenerating) return;
+    if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return;
+    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
 
     const mySerial = ++_paletteInjectSerial;
     const run = beginGeneration({ settings: initialSettings, disableGenerateButton: true, clearPendingAuto: true });
@@ -17274,6 +17427,8 @@ async function generateImageInjectPalette() {
     let sourceInjectMessage = null;
     let sourceMessageIndex = null;
     const consumedMessagePrompts = new Set();
+    let generatedCount = 0;
+    let failedCount = 0;
 
     try {
         checkAborted(cancelCheckpoint);
@@ -17349,7 +17504,7 @@ async function generateImageInjectPalette() {
                     llmResponse,
                     instruction: fullInstruction,
                 });
-                return;
+                return { status: "failed", generated: 0, failed: 1, message: "No image tags found" };
             }
 
             sourceInjectMessage = null;
@@ -17406,9 +17561,9 @@ async function generateImageInjectPalette() {
                     showStatus(`🖼️ Generating palette-inject image ${i + 1}/${batchCount}...`);
                     const expandedPrompt = expandWildcards(prompt);
                     const expandedNegative = expandWildcards(negative);
-                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal);
+                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
                     if (result) {
-                        return await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
+                        return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                             promptWasLLM: lastPromptWasLLM,
                             sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
                         }));
@@ -17416,6 +17571,8 @@ async function generateImageInjectPalette() {
                     return null;
                 });
                 const { results } = outcome;
+                generatedCount += results.length;
+                failedCount += outcome.errors.length;
                 reportPartialBatchErrors("Palette inject", outcome);
 
                 if (results.length > 0) {
@@ -17448,13 +17605,25 @@ async function generateImageInjectPalette() {
                 setGenerationSeedValue(s, originalSeed);
             }
         }
+        return {
+            status: failedCount > 0 ? "partial" : "success",
+            generated: generatedCount,
+            failed: failedCount,
+        };
     } catch (e) {
         if (e.name === "AbortError") {
             log("Palette inject: Generation cancelled by user");
             toastr.info("Generation cancelled");
+            return { status: "cancelled", generated: generatedCount, failed: failedCount };
         } else {
             log(`Palette inject: Error: ${e.message}`);
             toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+            return {
+                status: generatedCount > 0 ? "partial" : "failed",
+                generated: generatedCount,
+                failed: Math.max(1, failedCount),
+                message: e.message,
+            };
         }
     } finally {
         if (!run.signal.aborted && sourceInjectMessage && consumedMessagePrompts.size > 0) {
@@ -17558,9 +17727,9 @@ async function generateImageFromPlainDescription() {
             showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
             const expandedPrompt = expandWildcards(prompt);
             const expandedNegative = expandWildcards(negative);
-            const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal);
+            const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
             if (result) {
-                return await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
+                return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                     promptWasLLM: lastPromptWasLLM,
                 }));
             }
@@ -17584,6 +17753,8 @@ async function generateImageFromPlainDescription() {
                 }
                 return undefined;
             })();
+            let insertedCount = 0;
+            const failedResults = [];
             for (const r of results) {
                 addToGallery(r);
                 try {
@@ -17592,12 +17763,14 @@ async function generateImageFromPlainDescription() {
                     } else {
                         await insertImageIntoMessage(r, lastCharIdx, { commitGuard: () => assertGenerationCanCommit(run) });
                     }
+                    insertedCount++;
                 } catch (err) {
                     if (err.name === "AbortError") throw err;
                     console.error("[Quick Image Gen] Auto-insert failed:", err);
+                    failedResults.push(r);
                 }
             }
-            toastr.success(`Image${results.length > 1 ? "s" : ""} inserted into chat`);
+            reportAutoInsertOutcome(insertedCount, failedResults);
         } else if (results.length === 1) {
             displayImage(results[0]);
         } else if (results.length > 1) {
@@ -17620,10 +17793,10 @@ async function generateImageFromPlainDescription() {
 }
 
 async function generateImage() {
-    if (isGenerating) return;
+    if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const usingTransientSettingsOverride = !!transientGenerationSettingsOverride;
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return;
+    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
     const ctx = getContext();
     const run = beginGeneration({ settings: initialSettings, context: ctx, disableGenerateButton: true, clearPendingAuto: true });
     const s = run.settings;
@@ -17669,7 +17842,7 @@ async function generateImage() {
             if (s.enableParagraphPicker) {
                 const filtered = await showParagraphPicker(messages, run.signal);
                 if (filtered === null) {
-                    return; // finally block handles cleanup
+                    return { status: "cancelled", generated: 0, failed: 0 }; // finally block handles cleanup
                 }
                 scenePrompt = filtered;
                 basePrompt = filtered;
@@ -17678,7 +17851,7 @@ async function generateImage() {
     }
 
     if (s.provider === "proxy" && useChatMessageScene) {
-        chatContextProxyRefImages = await collectChatContextProxyRefImages(s, ctx);
+        chatContextProxyRefImages = await collectChatContextProxyRefImages(s, ctx, run.signal);
         checkAborted(cancelCheckpoint);
     }
     lastProxyContextRefImages = [...chatContextProxyRefImages];
@@ -17719,7 +17892,7 @@ async function generateImage() {
         if (editedPrompt !== null) {
             prompt = editedPrompt;
         } else {
-            return; // finally block handles cleanup
+            return { status: "cancelled", generated: 0, failed: 0 }; // finally block handles cleanup
         }
     }
 
@@ -17764,9 +17937,13 @@ async function generateImage() {
                 showStatus(`🖼️ Generating image ${i + 1}/${batchCount}...`);
                 const expandedPrompt = expandWildcards(prompt);
                 const expandedNegative = expandWildcards(negative);
-                const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, providerRuntimeOptions);
+                const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, {
+                    ...providerRuntimeOptions,
+                    batchIndex: i,
+                    batchCount,
+                });
                 if (result) {
-                    return await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
+                    return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                         promptWasLLM: lastPromptWasLLM,
                         sourceMessageIndex: Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : undefined,
                     }));
@@ -17790,6 +17967,8 @@ async function generateImage() {
             })();
             if (s.autoInsert) {
                 const autoInsertTarget = Number.isInteger(sourceMessageIndexForEntries) ? sourceMessageIndexForEntries : lastCharIdx;
+                let insertedCount = 0;
+                const failedResults = [];
                 for (const r of results) {
                     addToGallery(r);
                     try {
@@ -17800,24 +17979,33 @@ async function generateImage() {
                         } else {
                             await insertImageIntoMessage(r, autoInsertTarget, { commitGuard: () => assertGenerationCanCommit(run) });
                         }
+                        insertedCount++;
                     } catch (err) {
                         if (err.name === "AbortError") throw err;
                         console.error("[Quick Image Gen] Auto-insert failed:", err);
+                        failedResults.push(r);
                     }
                 }
-            toastr.success(`Image${results.length > 1 ? 's' : ''} inserted into chat`);
-        } else if (results.length === 1) {
-            displayImage(results[0]);
-        } else {
-            displayBatchResults(results);
-        }
+                reportAutoInsertOutcome(insertedCount, failedResults);
+            } else if (results.length === 1) {
+                displayImage(results[0]);
+            } else {
+                displayBatchResults(results);
+            }
+            return {
+                status: outcome.errors.length > 0 ? "partial" : "success",
+                generated: results.length,
+                failed: outcome.errors.length,
+            };
     } catch (e) {
         if (e.name === "AbortError") {
             log("Generation cancelled by user");
             toastr.info("Generation cancelled");
+            return { status: "cancelled", generated: 0, failed: 0 };
         } else {
             log(`Error: ${e.message}`);
             toastr.error("Generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+            return { status: "failed", generated: 0, failed: 1, message: e.message };
         }
     } finally {
         setGenerationSeedValue(s, originalSeed);
@@ -18135,7 +18323,7 @@ function cleanInjectTagsFromMessage(message, regexPattern, promptsToRemove = nul
 }
 
 function onChatCompletionPromptReady(eventData) {
-    if (isGenerating) return; // Don't inject into our own internal LLM calls
+    if (isGenerating || _internalLlmRequestCount > 0) return; // Don't inject into our own internal LLM calls
     const s = getSettings();
     if (!s.injectEnabled || !s.autoGenerate) return;
 
@@ -18318,9 +18506,9 @@ async function processInjectMessage(messageText, messageIndex) {
                     showStatus(`🖼️ Generating inject image ${i + 1}/${batchCount}...`);
                     const expandedPrompt = expandWildcards(prompt);
                     const expandedNegative = expandWildcards(negative);
-                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal);
+                    const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
                     if (result) {
-                        return await finalizeGeneratedEntry(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
+                        return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                             promptWasLLM: lastPromptWasLLM,
                             sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
                         }));
@@ -18436,12 +18624,17 @@ async function runQigSlashGenerateCommand(args = {}, unnamedPrompt = "") {
     };
 
     try {
+        let outcome;
         if (oneOffPrompt && mode !== "inject") {
-            await withTransientGenerationSettings({ prompt: oneOffPrompt, useLastMessage: false }, runGeneration);
+            outcome = await withTransientGenerationSettings({ prompt: oneOffPrompt, useLastMessage: false }, runGeneration);
         } else {
-            await runGeneration();
+            outcome = await runGeneration();
         }
-        return "QIG: generation complete.";
+        if (outcome?.status === "busy") return "QIG: generation is already running.";
+        if (outcome?.status === "cancelled") return "QIG: generation cancelled.";
+        if (outcome?.status === "failed") return `QIG failed: ${outcome.message || "generation failed"}`;
+        if (outcome?.status === "partial") return `QIG: generated ${outcome.generated} image(s); ${outcome.failed} generation(s) failed.`;
+        return `QIG: generation complete${Number.isInteger(outcome?.generated) ? ` (${outcome.generated} image(s))` : ""}.`;
     } catch (e) {
         const message = e?.message || String(e);
         log(`Slash command generation failed: ${message}`);
@@ -18698,7 +18891,7 @@ jQuery(function () {
                             log(`Auto-generate: Discarded stale scheduled work for message ${idx}`);
                             return;
                         }
-                        if (isGenerating) return;
+                        if (isGenerating || _paletteInjectActive || _injectProcessingCount > 0 || shouldSuppressAutoGenerateFromInternalLLM(idx)) return;
                         try {
                             setTransientGenerationTarget(idx);
                             await generateImage();

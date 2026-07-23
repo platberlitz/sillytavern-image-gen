@@ -103,6 +103,30 @@ test("provider results use adapter parameter overrides", () => {
     assert.equal(result.effectiveRequest.parameters.model, "checkpoint.safetensors");
 });
 
+test("provider results preserve every image and merge shared metadata", () => {
+    const results = normalizeProviderResult({
+        images: [
+            "https://images.example/one.png",
+            { url: "https://images.example/two.png", effectiveRequest: { parameters: { outputNode: "12" } } },
+        ],
+        effectiveRequest: { parameters: { seed: 123 } },
+    }, {
+        provider: "local",
+        width: 1024,
+        height: 1024,
+        steps: 20,
+        cfgScale: 7,
+        sampler: "Euler",
+        seed: -1,
+    });
+
+    assert.equal(results.length, 2);
+    assert.equal(results[0].url, "https://images.example/one.png");
+    assert.equal(results[0].effectiveRequest.parameters.seed, 123);
+    assert.equal(results[1].effectiveRequest.parameters.outputNode, "12");
+    assert.equal(results[1].effectiveRequest.parameters.seed, 123);
+});
+
 test("effective requests omit parameters that providers do not receive", () => {
     const settings = {
         width: 768,

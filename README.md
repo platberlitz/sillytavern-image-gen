@@ -190,17 +190,23 @@ Extra controls:
 
 Set Local Type to `ComfyUI`. Start ComfyUI with CORS enabled and note the API port.
 
-QIG drives ComfyUI through the `/prompt` API with the workflow you paste into `Custom Workflow JSON`. Use ComfyUI's `Save (API Format)` export to produce the JSON.
+Without custom JSON, QIG builds a standard checkpoint or Flux/UNET workflow. For an existing graph, paste ComfyUI's `Save (API Format)` export into `Custom Workflow JSON`; regular visual workflow exports are rejected.
 
 Workflow variables: see [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder table and typed-value behavior.
 
+QIG returns every image produced by matching output nodes. Use **Output Node IDs** to select specific nodes and **Image Index** to select one image from each node. Empty node IDs and image index `-1` return all output images.
+
 Extra controls:
 
-- **CLIP skip**, **denoise**, **scheduler**, **timeout**
-- **Upscale model**
-- **LoRAs** (comma-separated `name:weight` pairs)
+- **CLIP skip**, **denoise**, **scheduler**, **timeout**, **output selection**
+- **Upscale model** (built-in workflow)
+- **LoRAs** (comma-separated `name:weight` pairs; built-in workflow)
 - **Flux support**: skip negative prompt, two CLIP models, VAE model, CLIP type
 - **Workflow presets**: save and load custom workflow JSON configs
+
+Custom graphs receive only values represented by placeholders; QIG does not inject its built-in LoRA or upscale nodes into them. Comfy graphs are executable programs and may invoke custom nodes with filesystem or network side effects. Full settings exports omit executable Comfy graph bodies, and settings imports ignore workflow preset records; local trusted presets remain unchanged. Review workflow JSON before saving or running it.
+
+Cancellation first uses ComfyUI's targeted Jobs API when available, then safely removes pending work through the queue API on older servers. QIG never sends a bodyless global interrupt. **Allow targeted legacy interrupt** is an explicit shared-server risk opt-in because older `/interrupt` implementations may still stop another user's work.
 
 ## Reverse Proxy
 
