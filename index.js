@@ -39,6 +39,15 @@ import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
 import { getGeminiCandidateFailure, isEffectivelyBlankPixels } from "./lib/generated-image.js";
 import {
+    buildGptImagePayload,
+    buildNanobananaPayload,
+    extractProviderImageSource,
+    getNanobananaApiUrl,
+    imageResponseToDataUrl,
+    isOpenAIChatCompletionsEndpoint,
+    materializeProviderImageSource,
+} from "./lib/provider-adapters.js";
+import {
     buildContextMediaCandidates,
     canDeleteContextMediaPath,
     normalizeContextMediaLibrary,
@@ -6327,34 +6336,31 @@ async function genGptImage(prompt, negative, s, signal) {
     const quality = normalizeGptImageOption(s.gptImageQuality, ["auto", "low", "medium", "high"]);
     const background = normalizeGptImageOption(s.gptImageBackground, ["auto", "transparent", "opaque"]);
     const moderation = normalizeGptImageOption(s.gptImageModeration, ["auto", "low"]);
-    const effectivePrompt = negative
-        ? `${prompt}\n\nAvoid in the image: ${negative}`
-        : prompt;
-    const payload = {
+    const payload = buildGptImagePayload({
         model,
-        prompt: effectivePrompt,
+        prompt,
+        negative,
         size: getGptImageSize(s),
-        n: 1,
-    };
-
-    if (quality !== "auto") payload.quality = quality;
-    if (outputFormat !== "png") payload.output_format = outputFormat;
-    if (background !== "auto") {
-        if (background === "transparent" && outputFormat === "jpeg") {
-            log("GPT Image: transparent backgrounds require PNG or WebP output; omitting background for JPEG.");
-        } else {
-            payload.background = background;
-        }
+        quality,
+        outputFormat,
+        background,
+        moderation,
+    });
+    if (background === "transparent" && outputFormat === "jpeg") {
+        log("GPT Image: transparent backgrounds require PNG or WebP output; omitting background for JPEG.");
     }
-    if (moderation !== "auto") payload.moderation = moderation;
+    if (s.gptImageProxyUrl && !/\/(?:v1|images(?:\/generations)?)\/?(?:[?#].*)?$/i.test(String(s.gptImageProxyUrl).trim())) {
+        log("GPT Image: proxy URL does not end in /v1 or /images/generations; treating it as the full generation endpoint.");
+    }
 
     log(`GPT Image request to ${apiUrl}: model=${model}, size=${payload.size}, quality=${payload.quality || "auto"}, format=${payload.output_format || "png"}`);
+    const headers = {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+    };
     const res = await fetch(apiUrl, {
         method: "POST",
-        headers: {
-            "Authorization": `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-        },
+        headers,
         body: JSON.stringify(payload),
         signal,
     });
@@ -6364,8 +6370,21 @@ async function genGptImage(prompt, negative, s, signal) {
         throw new Error(`GPT Image error ${res.status}: ${detail || res.statusText}`);
     }
 
+    const contentType = res.headers.get("content-type") || "";
+    const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
+    if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
+        return await imageResponseToDataUrl(res);
+    }
+
+    const responseBaseUrl = res.url || apiUrl;
     const data = await readResponseJson(res);
-    return extractGptImageFromJson(data, outputFormat, { trustedBaseUrl: apiUrl });
+    const source = extractGptImageFromJson(data, outputFormat, { trustedBaseUrl: responseBaseUrl });
+    return await materializeProviderImageSource(source, {
+        requestUrl: apiUrl,
+        responseUrl: responseBaseUrl,
+        headers,
+        signal,
+    });
 }
 
 function findPngStart(bytes) {
@@ -6728,26 +6747,6 @@ async function genCivitAI(prompt, negative, s, signal) {
     throw new Error(`CivitAI job timeout. Last error: ${lastError || 'Still processing'}`);
 }
 
-function getNanobananaApiUrl(proxyUrl = "", model = "gemini-3-pro-image", apiKey = "") {
-    const trimmedProxy = String(proxyUrl || "").trim().replace(/\/$/, "");
-    if (!trimmedProxy) {
-        return `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-    }
-    if (trimmedProxy.includes(":generateContent") || trimmedProxy.includes("/chat/completions")) {
-        let url = trimmedProxy;
-        if (apiKey && !url.includes("key=")) {
-            url += (url.includes("?") ? "&" : "?") + `key=${apiKey}`;
-        }
-        return url;
-    }
-    const path = trimmedProxy.endsWith("/v1beta") ? trimmedProxy : `${trimmedProxy}/v1beta`;
-    let url = `${path}/models/${model}:generateContent`;
-    if (apiKey) {
-        url += `?key=${apiKey}`;
-    }
-    return url;
-}
-
 async function genNanobanana(prompt, negative, s, signal) {
     // Build parts array with reference images and prompt
     const parts = [];
@@ -6804,26 +6803,46 @@ async function genNanobanana(prompt, negative, s, signal) {
 
     const apiKey = s.nanobananaProxyKey || s.nanobananaKey;
     const url = getNanobananaApiUrl(s.nanobananaProxyUrl, s.nanobananaModel, apiKey);
+    const isOpenAIProxy = isOpenAIChatCompletionsEndpoint(url);
     const headers = { "Content-Type": "application/json" };
     if (apiKey) {
         headers["Authorization"] = `Bearer ${apiKey}`;
-        headers["x-goog-api-key"] = apiKey;
+        if (!isOpenAIProxy) headers["x-goog-api-key"] = apiKey;
     }
+    const payload = buildNanobananaPayload({
+        endpointUrl: url,
+        model: s.nanobananaModel,
+        parts,
+        generationConfig,
+        safetySettings,
+    });
+    log(`Nanobanana request mode: ${isOpenAIProxy ? "OpenAI chat/completions" : "native Gemini generateContent"}`);
 
     const res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({
-            contents: [{ role: "user", parts }],
-            generationConfig,
-            safetySettings,
-        }),
+        body: JSON.stringify(payload),
         signal
     });
     if (!res.ok) {
         const errText = await readResponseText(res, 1024 * 1024).catch(() => "");
         throw new Error(`Nanobanana error: ${res.status}${errText ? ` - ${errText.slice(0, 300)}` : ""}`);
     }
+    const contentType = res.headers.get("content-type") || "";
+    const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
+    if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
+        return {
+            url: await imageResponseToDataUrl(res),
+            effectiveRequest: {
+                parameters: {
+                    aspectRatio: generationConfig.imageConfig.aspectRatio,
+                    imageSize: generationConfig.imageConfig.imageSize,
+                },
+            },
+        };
+    }
+
+    const responseBaseUrl = res.url || url;
     const data = await readResponseJson(res);
 
     if (data.promptFeedback?.blockReason) {
@@ -6833,6 +6852,10 @@ async function genNanobanana(prompt, negative, s, signal) {
     const candidates = data.candidates || [];
     const candidateFailures = [];
     const textResponses = [];
+    let imageSource = extractProviderImageSource(data, {
+        defaultMime: "image/png",
+        includeGeminiCandidates: false,
+    });
 
     for (const candidate of candidates) {
         const failure = getGeminiCandidateFailure(candidate);
@@ -6841,57 +6864,32 @@ async function genNanobanana(prompt, negative, s, signal) {
             continue;
         }
         for (const part of candidate.content?.parts || []) {
-            if (part.inlineData?.data) {
-                return {
-                    url: `data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`,
-                    effectiveRequest: {
-                        parameters: {
-                            aspectRatio: generationConfig.imageConfig.aspectRatio,
-                            imageSize: generationConfig.imageConfig.imageSize,
-                        },
-                    },
-                };
-            }
-            if (part.fileData?.fileUri) {
-                return {
-                    url: part.fileData.fileUri,
-                    effectiveRequest: {
-                        parameters: {
-                            aspectRatio: generationConfig.imageConfig.aspectRatio,
-                            imageSize: generationConfig.imageConfig.imageSize,
-                        },
-                    },
-                };
-            }
             if (part.text) {
                 textResponses.push(part.text.trim());
-                const imgMatch = part.text.match(/!\[.*?\]\((https?:\/\/[^\s\)]+|data:image\/[^;]+;base64,[^\s\)]+)\)/i)
-                    || part.text.match(/(https?:\/\/[^\s\)]+\.(?:png|jpe?g|webp|gif|avif))/i)
-                    || part.text.match(/(data:image\/[^;]+;base64,[A-Za-z0-9+/=_]+)/i);
-                if (imgMatch) {
-                    return {
-                        url: imgMatch[1],
-                        effectiveRequest: {
-                            parameters: {
-                                aspectRatio: generationConfig.imageConfig.aspectRatio,
-                                imageSize: generationConfig.imageConfig.imageSize,
-                            },
-                        },
-                    };
-                }
             }
+            imageSource ||= extractProviderImageSource({ candidates: [{ content: { parts: [part] } }] });
         }
-        if (candidate.b64_json) {
-            return {
-                url: `data:image/png;base64,${candidate.b64_json}`,
-                effectiveRequest: {
-                    parameters: {
-                        aspectRatio: generationConfig.imageConfig.aspectRatio,
-                        imageSize: generationConfig.imageConfig.imageSize,
-                    },
+        imageSource ||= extractProviderImageSource({ candidates: [candidate] });
+    }
+
+    if (imageSource) {
+        const safeSource = normalizeProviderImageSource(imageSource, { trustedBaseUrl: responseBaseUrl });
+        if (!safeSource) throw new Error("Nanobanana returned an unsafe or unsupported image URL");
+        const materialized = await materializeProviderImageSource(safeSource, {
+            requestUrl: url,
+            responseUrl: responseBaseUrl,
+            headers,
+            signal,
+        });
+        return {
+            url: materialized,
+            effectiveRequest: {
+                parameters: {
+                    aspectRatio: generationConfig.imageConfig.aspectRatio,
+                    imageSize: generationConfig.imageConfig.imageSize,
                 },
-            };
-        }
+            },
+        };
     }
 
     if (candidateFailures.length) throw new Error(candidateFailures[0]);
@@ -7631,28 +7629,41 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
     }
 
     const contentType = res.headers.get("content-type") || "";
+    const responseMime = contentType.toLowerCase().split(";", 1)[0].trim();
+    if (responseMime.startsWith("image/") || responseMime === "application/octet-stream") {
+        return await imageResponseToDataUrl(res);
+    }
+
+    const responseBaseUrl = res.url || requestUrl;
+    const materializeProxyResult = (source) => materializeProviderImageSource(source, {
+        requestUrl,
+        responseUrl: responseBaseUrl,
+        headers,
+        signal,
+    });
     if (endpointMode === "images_generations" && (contentType.includes("text/event-stream") || contentType.includes("text/plain"))) {
         log(`Parsing ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
         const text = await readResponseText(res);
-        const responseOptions = { trustedBaseUrl: requestUrl };
+        const responseOptions = { trustedBaseUrl: responseBaseUrl };
         const direct = extractProxyImageFromString(text, responseOptions);
-        if (direct) return direct;
+        if (direct) return await materializeProxyResult(direct);
         const streamed = extractProxyImageFromSseText(text, responseOptions);
-        if (streamed) return streamed;
+        if (streamed) return await materializeProxyResult(streamed);
+        let parsed = null;
         try {
-            const parsed = JSON.parse(text);
-            const parsedImage = extractProxyImageFromJson(parsed, responseOptions);
-            if (parsedImage) return parsedImage;
+            parsed = JSON.parse(text);
         } catch {
             // Not JSON; continue to error below.
         }
+        const parsedImage = extractProxyImageFromJson(parsed, responseOptions);
+        if (parsedImage) return await materializeProxyResult(parsedImage);
         throw new Error(`No image in ${contentType.includes("text/event-stream") ? "SSE" : "text"} response`);
     }
 
     const data = await readResponseJson(res);
     log(`Response keys: ${JSON.stringify(Object.keys(data || {}))}`);
-    const imageUrl = extractProxyImageFromJson(data, { trustedBaseUrl: requestUrl });
-    if (imageUrl) return imageUrl;
+    const imageUrl = extractProxyImageFromJson(data, { trustedBaseUrl: responseBaseUrl });
+    if (imageUrl) return await materializeProxyResult(imageUrl);
 
     if (endpointMode === "chat_completions") {
         log(`Full message structure: ${JSON.stringify(data?.choices?.[0]?.message || {}).substring(0, 500)}`);
@@ -10501,7 +10512,7 @@ async function verifyRenderableImage(url) {
                 }
             }
         } catch (e) {
-            if (e.message?.includes("format") || e.message?.includes("corrupted") || e.message?.includes("empty")) throw e;
+            throw new Error(`Provider returned malformed or corrupted image data: ${e?.message || "decode failed"}`);
         }
     }
 
@@ -14571,7 +14582,7 @@ function createUI() {
                         <div>
                             <label for="qig-nanobanana-proxy-url">Reverse Proxy URL (optional)</label>
                             <input id="qig-nanobanana-proxy-url" type="text" value="${esc(s.nanobananaProxyUrl || "")}" placeholder="https://proxy.example.com or https://generativelanguage.googleapis.com">
-                            <small>Custom endpoint domain/path if using an OpenAI/Gemini reverse proxy or API gateway.</small>
+                            <small>Use a Gemini proxy base for native requests, or a full <code>/chat/completions</code> URL for OpenAI-compatible requests.</small>
                         </div>
                         <div>
                             <label for="qig-nanobanana-proxy-key">Reverse Proxy Key (optional)</label>
