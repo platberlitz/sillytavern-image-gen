@@ -2,16 +2,19 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    buildComfyBuiltinWorkflow,
     buildComfyPromptRequest,
     buildComfyViewUrl,
     cancelComfyPrompt,
     getComfyWorkflowCapabilities,
+    normalizeComfyModelLoader,
     parseComfyHistoryEntry,
     parseComfyPromptResponse,
     parseComfyWebSocketMessage,
     parseComfyWorkflow,
     pollComfyHistory,
     renderComfyWorkflow,
+    selectComfyModelList,
     supportsComfyJobsCancel,
 } from "../lib/comfyui-backend.js";
 
@@ -44,6 +47,124 @@ function jsonResponse(value, init = {}) {
         headers: { "Content-Type": "application/json", ...(init.headers || {}) },
     });
 }
+
+function builtinOptions(overrides = {}) {
+    return {
+        modelLoader: "checkpoint",
+        modelName: "sdxl.safetensors",
+        clipSkip: 1,
+        skipNegativePrompt: false,
+        prompt: "a lighthouse",
+        negativePrompt: "fog",
+        seed: 42,
+        steps: 20,
+        cfgScale: 7,
+        samplerName: "euler",
+        schedulerName: "normal",
+        denoise: 1,
+        width: 1024,
+        height: 1024,
+        ...overrides,
+    };
+}
+
+test("normalizes explicit and legacy ComfyUI model loader settings", () => {
+    assert.equal(normalizeComfyModelLoader("unet"), "unet");
+    assert.equal(normalizeComfyModelLoader("checkpoint"), "checkpoint");
+    assert.equal(normalizeComfyModelLoader(undefined, {
+        comfySkipNegativePrompt: true,
+        comfyFluxClipModel1: "t5xxl.safetensors",
+    }), "unet");
+    assert.equal(normalizeComfyModelLoader(undefined, {
+        comfySkipNegativePrompt: false,
+        comfyFluxClipModel1: "t5xxl.safetensors",
+    }), "checkpoint");
+});
+
+test("selects only models belonging to the explicit ComfyUI loader", () => {
+    const catalogs = {
+        checkpoints: ["sdxl.safetensors"],
+        unets: ["flux-dev.safetensors"],
+    };
+    assert.deepEqual(selectComfyModelList(catalogs, "checkpoint"), ["sdxl.safetensors"]);
+    assert.deepEqual(selectComfyModelList(catalogs, "unet"), ["flux-dev.safetensors"]);
+    assert.deepEqual(selectComfyModelList({ checkpoints: [], unets: catalogs.unets }, "checkpoint"), []);
+    assert.deepEqual(selectComfyModelList({ checkpoints: catalogs.checkpoints, unets: [] }, "unet"), []);
+});
+
+test("builds a checkpoint workflow with embedded CLIP and VAE outputs", () => {
+    const result = buildComfyBuiltinWorkflow(builtinOptions());
+    const nodes = result.workflow;
+
+    assert.equal(result.modelLoader, "checkpoint");
+    assert.deepEqual(nodes["4"], {
+        class_type: "CheckpointLoaderSimple",
+        inputs: { ckpt_name: "sdxl.safetensors" },
+    });
+    assert.deepEqual(nodes["3"].inputs.model, ["4", 0]);
+    assert.deepEqual(nodes["6"].inputs.clip, ["4", 1]);
+    assert.deepEqual(nodes["7"].inputs.clip, ["4", 1]);
+    assert.deepEqual(nodes["8"].inputs.vae, ["4", 2]);
+    assert.equal(nodes["11"], undefined);
+});
+
+test("requires external CLIP and VAE files for Diffusion/UNET workflows", () => {
+    assert.throws(() => buildComfyBuiltinWorkflow(builtinOptions({
+        modelLoader: "unet",
+        vaeModel: "ae.safetensors",
+    })), /requires CLIP Model 1/);
+    assert.throws(() => buildComfyBuiltinWorkflow(builtinOptions({
+        modelLoader: "unet",
+        clipModel1: "t5xxl.safetensors",
+    })), /requires a VAE Model/);
+});
+
+test("builds a single-CLIP UNET workflow with negative conditioning and CLIP skip", () => {
+    const nodes = buildComfyBuiltinWorkflow(builtinOptions({
+        modelLoader: "unet",
+        modelName: "flux-dev.safetensors",
+        clipModel1: "t5xxl.safetensors",
+        vaeModel: "ae.safetensors",
+        clipType: "flux2",
+        clipSkip: 2,
+    })).workflow;
+
+    assert.equal(nodes["11"].class_type, "UNETLoader");
+    assert.deepEqual(nodes["11"].inputs, { unet_name: "flux-dev.safetensors", weight_dtype: "default" });
+    assert.deepEqual(nodes["12"], {
+        class_type: "CLIPLoader",
+        inputs: { clip_name: "t5xxl.safetensors", type: "flux2" },
+    });
+    assert.deepEqual(nodes["13"].inputs, { vae_name: "ae.safetensors" });
+    assert.deepEqual(nodes["10"].inputs, { stop_at_clip_layer: -2, clip: ["12", 0] });
+    assert.deepEqual(nodes["6"].inputs.clip, ["10", 0]);
+    assert.deepEqual(nodes["7"].inputs, { text: "fog", clip: ["10", 0] });
+    assert.deepEqual(nodes["3"].inputs.negative, ["7", 0]);
+    assert.equal(nodes["4"], undefined);
+});
+
+test("builds a dual-CLIP UNET workflow that can reuse positive conditioning", () => {
+    const nodes = buildComfyBuiltinWorkflow(builtinOptions({
+        modelLoader: "unet",
+        modelName: "flux-dev.safetensors",
+        clipModel1: "t5xxl.safetensors",
+        clipModel2: "clip_l.safetensors",
+        vaeModel: "ae.safetensors",
+        clipType: "flux",
+        skipNegativePrompt: true,
+    })).workflow;
+
+    assert.deepEqual(nodes["12"], {
+        class_type: "DualCLIPLoader",
+        inputs: {
+            clip_name1: "t5xxl.safetensors",
+            clip_name2: "clip_l.safetensors",
+            type: "flux",
+        },
+    });
+    assert.deepEqual(nodes["3"].inputs.negative, ["6", 0]);
+    assert.equal(nodes["7"], undefined);
+});
 
 test("parses API-format node maps and full prompt envelopes", () => {
     const root = workflow({ text: "%prompt%" });

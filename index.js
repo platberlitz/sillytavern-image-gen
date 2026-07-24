@@ -48,11 +48,14 @@ import {
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
 import {
+    buildComfyBuiltinWorkflow,
     buildComfyPromptRequest,
     cancelComfyPrompt,
     getComfyWorkflowCapabilities,
+    normalizeComfyModelLoader,
     parseComfyPromptResponse,
     pollComfyHistory,
+    selectComfyModelList,
 } from "./lib/comfyui-backend.js";
 import { getGeminiCandidateFailure, isEffectivelyBlankPixels } from "./lib/generated-image.js";
 import {
@@ -1007,6 +1010,7 @@ const defaultSettings = {
     a1111SaveToWebUI: true,
     // ComfyUI specific
     comfyWorkflow: "",
+    comfyModelLoader: "checkpoint",
     comfyClipSkip: 1,
     comfyDenoise: 1.0,
     comfyScheduler: "normal",
@@ -1851,7 +1855,7 @@ const PROVIDER_KEYS = {
     fal: ["falKey", "falModel"],
     together: ["togetherKey", "togetherModel"],
     zai: ["zaiKey", "zaiModel", "zaiQuality"],
-    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyAllowLegacyInterrupt", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
+    local: ["localUrl", "localType", "localModel", "localRefImage", "localDenoise", "a1111Model", "a1111ClipSkip", "a1111Scheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength", "a1111Adetailer", "a1111AdetailerModel", "a1111AdetailerPrompt", "a1111AdetailerNegative", "a1111AdetailerDenoise", "a1111AdetailerConfidence", "a1111AdetailerMaskBlur", "a1111AdetailerDilateErode", "a1111AdetailerInpaintOnlyMasked", "a1111AdetailerInpaintPadding", "a1111Adetailer2", "a1111Adetailer2Model", "a1111Adetailer2Prompt", "a1111Adetailer2Negative", "a1111Adetailer2Denoise", "a1111Adetailer2Confidence", "a1111Adetailer2MaskBlur", "a1111Adetailer2DilateErode", "a1111Adetailer2InpaintOnlyMasked", "a1111Adetailer2InpaintPadding", "a1111Loras", "a1111Vae", "a1111HiresFix", "a1111HiresUpscaler", "a1111HiresScale", "a1111HiresSteps", "a1111HiresDenoise", "a1111HiresSampler", "a1111HiresScheduler", "a1111HiresPrompt", "a1111HiresNegative", "a1111HiresResizeX", "a1111HiresResizeY", "a1111SaveToWebUI", "a1111IpAdapter", "a1111IpAdapterMode", "a1111IpAdapterWeight", "a1111IpAdapterPixelPerfect", "a1111IpAdapterResizeMode", "a1111IpAdapterControlMode", "a1111IpAdapterStartStep", "a1111IpAdapterEndStep", "a1111ControlNet", "a1111ControlNetModel", "a1111ControlNetModule", "a1111ControlNetWeight", "a1111ControlNetResizeMode", "a1111ControlNetControlMode", "a1111ControlNetPixelPerfect", "a1111ControlNetGuidanceStart", "a1111ControlNetGuidanceEnd", "a1111ControlNetImage", "comfyWorkflow", "comfyModelLoader", "comfyClipSkip", "comfyDenoise", "comfyScheduler", "comfyTimeout", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyAllowLegacyInterrupt", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"],
     proxy: ["proxyUrl", "proxyKey", "proxyModel", "proxyLoras", "proxyFacefix", "proxyExtraInstructions", "proxyRefImages", "proxyTimeout", "proxyComfyMode", "proxyComfyTimeout", "proxyComfyNodeId", "proxyComfyWorkflow"],
     custom: ["customApiUrl", "customApiKey", "customApiAuthType", "customApiAuthName", "customApiModel", "customApiPollUrl", "customApiRefImages"]
 };
@@ -2788,10 +2792,6 @@ function normalizeBackgroundMode(value) {
     return value === "locked" ? "locked" : "temporary";
 }
 
-function isComfyFluxMode(s) {
-    return !!s?.comfySkipNegativePrompt && !!(s?.comfyFluxClipModel1 || "").trim();
-}
-
 const QIG_RELAY_BASE = "/api/plugins/quick-image-gen-relay";
 const CORS_PROXY_BASIC_AUTH_MESSAGE = "SillyTavern basicAuthMode is blocking the CORS proxy for requests that need their own Authorization header. Install the optional Quick Image Gen server plugin (see README), or disable basicAuthMode to use CivitAI/Replicate.";
 
@@ -3055,7 +3055,7 @@ async function fetchComfyNodeModelList(baseUrl, nodeClass, inputKey) {
     return Array.isArray(values) ? values : [];
 }
 
-async function fetchComfyUIModels(url, preferUnet = false) {
+async function fetchComfyUIModels(url, modelLoader = "checkpoint") {
     const rethrow403 = (e) => { if (e.message?.includes("403 Forbidden")) throw e; return []; };
     try {
         const baseUrl = url.replace(/\/$/, "");
@@ -3064,20 +3064,7 @@ async function fetchComfyUIModels(url, preferUnet = false) {
             fetchComfyNodeModelList(baseUrl, "UNETLoader", "unet_name").catch(rethrow403)
         ]);
 
-        if (preferUnet) {
-            if (unets.length > 0) return unets;
-            if (ckpts.length > 0) {
-                log("ComfyUI: UNET list unavailable, falling back to checkpoints");
-                return ckpts;
-            }
-        } else {
-            if (ckpts.length > 0) return ckpts;
-            if (unets.length > 0) {
-                log("ComfyUI: Checkpoint list unavailable, falling back to UNET models");
-                return unets;
-            }
-        }
-        return [];
+        return selectComfyModelList({ checkpoints: ckpts, unets }, modelLoader);
     } catch (e) {
         log("Failed to fetch ComfyUI models: " + e.message);
         if (e.message?.includes("403 Forbidden")) throw e;
@@ -3409,6 +3396,9 @@ async function loadSettings() {
     const saved = extension_settings[extensionName];
     extension_settings[extensionName] = { ...defaultSettings, ...saved };
     const s = extension_settings[extensionName];
+    const comfyModelLoaderNeedsMigration = !!saved
+        && !["checkpoint", "unet"].includes(saved.comfyModelLoader);
+    s.comfyModelLoader = normalizeComfyModelLoader(saved?.comfyModelLoader, saved || s);
     // Existing installs keep their current behavior: no first-run wizard, no starter presets.
     if (saved && Object.keys(saved).length > 0) {
         if (saved.setupWizardSeen === undefined) s.setupWizardSeen = true;
@@ -3467,7 +3457,7 @@ async function loadSettings() {
         serverCacheId: savedCacheId,
         localCacheId,
     });
-    let serverSettingsNeedSave = false;
+    let serverSettingsNeedSave = comfyModelLoaderNeedsMigration;
     if (!savedCacheId) {
         s._syncCacheId = generateUUID();
         serverSettingsNeedSave = true;
@@ -7277,75 +7267,29 @@ async function genLocal(prompt, negative, s, signal, options = {}) {
         }
 
         // ComfyUI API - Default workflow
-        const skipNeg = !!s.comfySkipNegativePrompt;
-        const fluxMode = isComfyFluxMode(s);
-
-        let workflowNodes;
-        if (fluxMode) {
-            // Flux/UNET-only workflow: separate UNETLoader + CLIP loader(s) + VAELoader
-            const hasDualClip = !!(s.comfyFluxClipModel2 || "").trim();
-            const clipType = (s.comfyFluxClipType || "flux").trim();
-            const clipRef = clipSkip > 1 ? ["10", 0] : ["12", 0];
-            workflowNodes = {
-                "3": {
-                    class_type: "KSampler",
-                    inputs: {
-                        seed: seed,
-                        steps: s.steps,
-                        cfg: s.cfgScale,
-                        sampler_name: samplerName,
-                        scheduler: schedulerName,
-                        denoise: denoise,
-                        model: ["11", 0],
-                        positive: ["6", 0],
-                        negative: ["6", 0],
-                        latent_image: ["5", 0]
-                    }
-                },
-                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
-                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipRef } },
-                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["13", 0] } },
-                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } },
-                "11": { class_type: "UNETLoader", inputs: { unet_name: s.localModel || "model.safetensors", weight_dtype: "default" } },
-                "12": hasDualClip
-                    ? { class_type: "DualCLIPLoader", inputs: { clip_name1: s.comfyFluxClipModel1, clip_name2: s.comfyFluxClipModel2, type: clipType } }
-                    : { class_type: "CLIPLoader", inputs: { clip_name: s.comfyFluxClipModel1, type: clipType } },
-                "13": { class_type: "VAELoader", inputs: { vae_name: s.comfyFluxVaeModel || "ae.safetensors" } }
-            };
-            if (clipSkip > 1) {
-                workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["12", 0] } };
-            }
-            log(`ComfyUI: Using Flux/UNET workflow (UNETLoader + ${hasDualClip ? 'DualCLIPLoader' : 'CLIPLoader'} + VAELoader)`);
-        } else {
-            // Standard checkpoint workflow
-            workflowNodes = {
-                "3": {
-                    class_type: "KSampler",
-                    inputs: {
-                        seed: seed,
-                        steps: s.steps,
-                        cfg: s.cfgScale,
-                        sampler_name: samplerName,
-                        scheduler: schedulerName,
-                        denoise: denoise,
-                        model: ["4", 0],
-                        positive: ["6", 0],
-                        negative: skipNeg ? ["6", 0] : ["7", 0],
-                        latent_image: ["5", 0]
-                    }
-                },
-                "4": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: s.localModel || "model.safetensors" } },
-                "5": { class_type: "EmptyLatentImage", inputs: { width: s.width, height: s.height, batch_size: 1 } },
-                "6": { class_type: "CLIPTextEncode", inputs: { text: prompt, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } },
-                "8": { class_type: "VAEDecode", inputs: { samples: ["3", 0], vae: ["4", 2] } },
-                "9": { class_type: "SaveImage", inputs: { filename_prefix: "qig", images: ["8", 0] } }
-            };
-            if (!skipNeg) {
-                workflowNodes["7"] = { class_type: "CLIPTextEncode", inputs: { text: negative, clip: clipSkip > 1 ? ["10", 0] : ["4", 1] } };
-            }
-            if (clipSkip > 1) {
-                workflowNodes["10"] = { class_type: "CLIPSetLastLayer", inputs: { stop_at_clip_layer: -clipSkip, clip: ["4", 1] } };
-            }
+        const builtInWorkflow = buildComfyBuiltinWorkflow({
+            modelLoader: s.comfyModelLoader,
+            modelName: s.localModel,
+            clipModel1: s.comfyFluxClipModel1,
+            clipModel2: s.comfyFluxClipModel2,
+            vaeModel: s.comfyFluxVaeModel,
+            clipType: s.comfyFluxClipType,
+            skipNegativePrompt: s.comfySkipNegativePrompt,
+            clipSkip,
+            prompt,
+            negativePrompt: negative,
+            seed,
+            steps: s.steps,
+            cfgScale: s.cfgScale,
+            samplerName,
+            schedulerName,
+            denoise,
+            width: s.width,
+            height: s.height,
+        });
+        const workflowNodes = builtInWorkflow.workflow;
+        if (builtInWorkflow.modelLoader === "unet") {
+            log(`ComfyUI: Using Diffusion/UNET workflow (UNETLoader + ${builtInWorkflow.hasDualClip ? "DualCLIPLoader" : "CLIPLoader"} + VAELoader)`);
         }
         let nextOptionalNodeId = Math.max(...Object.keys(workflowNodes).map(id => Number(id)).filter(Number.isFinite)) + 1;
         const allocateComfyNodeId = () => String(nextOptionalNodeId++);
@@ -7354,8 +7298,8 @@ async function genLocal(prompt, negative, s, signal, options = {}) {
 
         // LoRA injection for ComfyUI default workflow
         if (s.comfyLoras && s.comfyLoras.trim()) {
-            let lastModelRef = fluxMode ? ["11", 0] : ["4", 0];
-            let lastClipRef = fluxMode ? ["12", 0] : ["4", 1];
+            let lastModelRef = builtInWorkflow.refs.model;
+            let lastClipRef = builtInWorkflow.refs.clip;
             const loras = s.comfyLoras.split(",").map(l => l.trim()).filter(l => l);
             let injectedCount = 0;
             loras.forEach((l) => {
@@ -7403,7 +7347,7 @@ async function genLocal(prompt, negative, s, signal, options = {}) {
                 inputs: { image: uploadedName },
             };
             const vaeEncodeNodeId = allocateComfyNodeId();
-            const vaeRef = fluxMode ? ["13", 0] : ["4", 2];
+            const vaeRef = builtInWorkflow.refs.vae;
             workflowNodes[vaeEncodeNodeId] = {
                 class_type: "VAEEncode",
                 inputs: { pixels: ["5", 0], vae: vaeRef },
@@ -13060,6 +13004,9 @@ function loadConnectionProfile(name) {
     for (const key of PROVIDER_KEYS[provider] || []) {
         if (profile[key] !== undefined) s[key] = profile[key];
     }
+    if (provider === "local") {
+        s.comfyModelLoader = normalizeComfyModelLoader(profile.comfyModelLoader, profile);
+    }
     if (provider === "proxy") {
         s.proxyEndpointMode = normalizeProxyEndpointSetting(s.proxyEndpointMode);
         normalizeProxyChatImageSettings(s, s);
@@ -13107,11 +13054,12 @@ function renderProfileSelect(selectedName = "") {
     if (delBtn) delBtn.onclick = () => { const dd = document.getElementById("qig-profile-dropdown"); if (dd?.value) deleteConnectionProfile(dd.value); };
 }
 
-const COMFY_WORKFLOW_KEYS = ["localModel", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
+const COMFY_WORKFLOW_KEYS = ["localModel", "comfyModelLoader", "comfyDenoise", "comfyClipSkip", "comfyScheduler", "comfyUpscale", "comfyUpscaleModel", "comfyLoras", "comfyOutputNodeIds", "comfyOutputImageIndex", "comfyWorkflow", "comfySkipNegativePrompt", "comfyFluxClipModel1", "comfyFluxClipModel2", "comfyFluxVaeModel", "comfyFluxClipType"];
 
 function getComfyWorkflowSnapshot(s = getSettings()) {
     return {
         localModel: s.localModel || "",
+        comfyModelLoader: normalizeComfyModelLoader(s.comfyModelLoader, s),
         comfyDenoise: s.comfyDenoise ?? 1.0,
         comfyClipSkip: s.comfyClipSkip ?? 1,
         comfyScheduler: s.comfyScheduler || "normal",
@@ -13134,6 +13082,7 @@ function applyComfyWorkflowSnapshot(snapshot) {
     COMFY_WORKFLOW_KEYS.forEach(k => {
         if (snapshot[k] !== undefined) s[k] = snapshot[k];
     });
+    s.comfyModelLoader = normalizeComfyModelLoader(snapshot.comfyModelLoader, snapshot);
     s.localType = "comfyui";
 }
 
@@ -14055,6 +14004,7 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
         local: [
             ["qig-local-url", "localUrl"],
             ["qig-local-type", "localType"],
+            ["qig-comfy-model-loader", "comfyModelLoader"],
             ["qig-local-model", "localModel"],
             ["qig-local-denoise", "localDenoise"],
             ["qig-comfy-denoise", "comfyDenoise"],
@@ -14155,7 +14105,7 @@ function refreshProviderInputs(provider, { updateProviderVisibility = true } = {
         syncLocalTypeSections(s.localType);
         syncA1111VisibilityFromSettings(s);
         const fluxOpts = document.getElementById("qig-comfy-flux-opts");
-        if (fluxOpts) fluxOpts.style.display = s.comfySkipNegativePrompt ? "block" : "none";
+        if (fluxOpts) fluxOpts.style.display = normalizeComfyModelLoader(s.comfyModelLoader, s) === "unet" ? "block" : "none";
         const upscaleOpts = document.getElementById("qig-comfy-upscale-opts");
         if (upscaleOpts) upscaleOpts.style.display = s.comfyUpscale ? "block" : "none";
         const localDenoise = document.getElementById("qig-local-denoise-val");
@@ -15135,6 +15085,11 @@ function createUI() {
                         <option value="comfyui" ${s.localType === "comfyui" ? "selected" : ""}>ComfyUI</option>
                     </select>
                     <div id="qig-local-comfyui-opts" style="display:${s.localType === "comfyui" ? "block" : "none"}">
+                         <label>Model Loader</label>
+                         <select id="qig-comfy-model-loader">
+                             <option value="checkpoint" ${normalizeComfyModelLoader(s.comfyModelLoader, s) === "checkpoint" ? "selected" : ""}>Checkpoint (embedded CLIP + VAE)</option>
+                             <option value="unet" ${normalizeComfyModelLoader(s.comfyModelLoader, s) === "unet" ? "selected" : ""}>Diffusion/UNET (external CLIP + VAE)</option>
+                         </select>
                          <label>Model</label>
                          <div style="display:flex;gap:4px;align-items:center;">
                              <select id="qig-local-model" style="flex:1;">
@@ -15142,7 +15097,7 @@ function createUI() {
                              </select>
                              <button id="qig-comfy-model-refresh" class="menu_button" style="padding:4px 8px;" title="Refresh model list">🔄</button>
                          </div>
-                         <div class="form-hint">Click Refresh to load checkpoints (standard mode) or diffusion UNETs (Flux/UNET mode) from ComfyUI.</div>
+                         <div class="form-hint">Click Refresh to load only models supported by the selected loader.</div>
                          <div class="qig-row">
                             <div><label>Denoise</label><input id="qig-comfy-denoise" type="number" value="${esc(s.comfyDenoise ?? 1.0)}" min="0" max="1" step="0.05"><small style="opacity:0.6;font-size:10px;">1.0 = full txt2img. For img2img: upload a Reference Image below and set Denoise &lt; 1.0</small></div>
                             <div><label>CLIP Skip</label><input id="qig-comfy-clip" type="number" value="${esc(s.comfyClipSkip || 1)}" min="1" max="12" step="1"><small style="opacity:0.6;font-size:10px;">1 for most models, 2 for anime/NAI-based</small></div>
@@ -15172,12 +15127,12 @@ function createUI() {
                              <small style="opacity:0.6;font-size:10px;">Must match filename in ComfyUI models/upscale_models/</small>
                          </div>
                          <label style="display:flex;align-items:center;gap:6px;margin:6px 0;cursor:pointer;">
-                            <input id="qig-comfy-skip-neg" type="checkbox" ${s.comfySkipNegativePrompt ? "checked" : ""}>
-                            <span>Skip Negative Prompt</span>
-                            <small style="opacity:0.6;font-size:10px;">(for Flux/UNET-only models that don't use negative conditioning)</small>
+                             <input id="qig-comfy-skip-neg" type="checkbox" ${s.comfySkipNegativePrompt ? "checked" : ""}>
+                             <span>Skip Negative Prompt</span>
+                             <small style="opacity:0.6;font-size:10px;">(reuse positive conditioning for models that do not use negatives)</small>
                          </label>
-                         <div id="qig-comfy-flux-opts" style="display:${s.comfySkipNegativePrompt ? 'block' : 'none'}; margin-left:24px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
-                            <div class="form-hint">UNET-only models need separate CLIP and VAE loaders. Leave blank if your checkpoint already includes CLIP+VAE (full Flux checkpoints).</div>
+                         <div id="qig-comfy-flux-opts" style="display:${normalizeComfyModelLoader(s.comfyModelLoader, s) === "unet" ? "block" : "none"}; margin-left:24px; border-left:2px solid rgba(255,255,255,0.1); padding-left:10px;">
+                            <div class="form-hint">Diffusion/UNET models require separate CLIP and VAE filenames before generation.</div>
                             <div class="qig-row">
                                 <div><label>CLIP Model 1</label><input id="qig-comfy-flux-clip1" type="text" value="${esc(s.comfyFluxClipModel1 || "")}" placeholder="t5xxl_fp16.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/</small></div>
                                 <div><label>CLIP Model 2</label><input id="qig-comfy-flux-clip2" type="text" value="${esc(s.comfyFluxClipModel2 || "")}" placeholder="clip_l.safetensors"><small style="opacity:0.6;font-size:10px;">From models/text_encoders/ (leave blank if single-CLIP)</small></div>
@@ -16279,10 +16234,10 @@ function createUI() {
     bind("qig-local-model", "localModel");
     document.getElementById("qig-local-model").addEventListener("change", (e) => {
         const val = (e.target.value || "").toLowerCase();
-        if (/flux|unet|\.gguf/.test(val) && !getSettings().comfySkipNegativePrompt) {
+        if (/flux|unet|\.gguf/.test(val) && normalizeComfyModelLoader(getSettings().comfyModelLoader) !== "unet") {
             toastr.warning(
-                'This looks like a Flux/UNET model. Enable "Skip Negative Prompt" and set your CLIP/VAE model names for UNET-only models, or paste a custom workflow.',
-                "Flux/UNET Model Detected",
+                'This looks like a diffusion model. Select the "Diffusion/UNET" model loader and set its CLIP/VAE filenames, or paste a custom workflow.',
+                "Diffusion/UNET Model Detected",
                 { timeOut: 8000 }
             );
         }
@@ -16302,7 +16257,7 @@ function createUI() {
         replaceSelectOptions(modelSelect, [{ value: "", label: "Loading..." }]);
         let models;
         try {
-            models = await fetchComfyUIModels(s.localUrl, isComfyFluxMode(s));
+            models = await fetchComfyUIModels(s.localUrl, s.comfyModelLoader);
         } catch (e) {
             if (e.message?.includes("403 Forbidden")) {
                 replaceSelectOptions(modelSelect, [{ value: "", label: "-- 403 Forbidden (see error) --" }]);
@@ -16313,10 +16268,10 @@ function createUI() {
         }
         if (models.length > 0) {
             const cur = s.localModel || "";
-            replaceSelectOptions(modelSelect, models.map(model => ({ value: model, label: model })), cur);
-            if (!cur && models.length > 0) {
-                s.localModel = models[0];
-                modelSelect.value = models[0];
+            const selectedModel = models.includes(cur) ? cur : models[0];
+            replaceSelectOptions(modelSelect, models.map(model => ({ value: model, label: model })), selectedModel);
+            if (s.localModel !== selectedModel) {
+                s.localModel = selectedModel;
                 saveSettingsDebounced();
             }
         } else {
@@ -16332,6 +16287,16 @@ function createUI() {
         document.getElementById("qig-local-denoise-val").textContent = value;
     });
     // ComfyUI specific bindings
+    document.getElementById("qig-comfy-model-loader").onchange = (e) => {
+        const s = getSettings();
+        s.comfyModelLoader = normalizeComfyModelLoader(e.target.value);
+        s.localModel = "";
+        replaceSelectOptions(document.getElementById("qig-local-model"), [{ value: "", label: "Loading..." }]);
+        const fluxOpts = document.getElementById("qig-comfy-flux-opts");
+        if (fluxOpts) fluxOpts.style.display = s.comfyModelLoader === "unet" ? "block" : "none";
+        saveSettingsDebounced();
+        document.getElementById("qig-comfy-model-refresh").click();
+    };
     bind("qig-comfy-denoise", "comfyDenoise", true);
     bind("qig-comfy-clip", "comfyClipSkip", true);
     bind("qig-comfy-scheduler", "comfyScheduler");
@@ -16351,8 +16316,6 @@ function createUI() {
     document.getElementById("qig-comfy-skip-neg").onchange = (e) => {
         getSettings().comfySkipNegativePrompt = e.target.checked;
         saveSettingsDebounced();
-        const fluxOpts = document.getElementById("qig-comfy-flux-opts");
-        if (fluxOpts) fluxOpts.style.display = e.target.checked ? "block" : "none";
     };
     bind("qig-comfy-flux-clip1", "comfyFluxClipModel1");
     bind("qig-comfy-flux-clip2", "comfyFluxClipModel2");

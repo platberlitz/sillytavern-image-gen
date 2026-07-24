@@ -190,7 +190,7 @@ Extra controls:
 
 Set Local Type to `ComfyUI`. Start ComfyUI with CORS enabled and note the API port.
 
-Without custom JSON, QIG builds a standard checkpoint or Flux/UNET workflow. For an existing graph, paste ComfyUI's `Save (API Format)` export into `Custom Workflow JSON`; regular visual workflow exports are rejected.
+Without custom JSON, QIG builds a workflow based on **Model Loader**: choose **Checkpoint** for files with embedded CLIP and VAE models, or **Diffusion/UNET** for diffusion-only files that require external CLIP and VAE filenames. Model refresh lists only files supported by the selected loader. For an existing graph, paste ComfyUI's `Save (API Format)` export into `Custom Workflow JSON`; regular visual workflow exports are rejected.
 
 Workflow variables: see [`docs/comfyui-workflow-variables.md`](docs/comfyui-workflow-variables.md) for the full placeholder table and typed-value behavior.
 
@@ -201,7 +201,7 @@ Extra controls:
 - **CLIP skip**, **denoise**, **scheduler**, **timeout**, **output selection**
 - **Upscale model** (built-in workflow)
 - **LoRAs** (comma-separated `name:weight` pairs; built-in workflow)
-- **Flux support**: skip negative prompt, two CLIP models, VAE model, CLIP type
+- **Diffusion/UNET support**: explicit model loader, optional negative-prompt skipping, one or two CLIP models, VAE model, CLIP type
 - **Workflow presets**: save and load custom workflow JSON configs
 
 Custom graphs receive only values represented by placeholders; QIG does not inject its built-in LoRA or upscale nodes into them. Comfy graphs are executable programs and may invoke custom nodes with filesystem or network side effects. Full settings exports omit executable Comfy graph bodies, and settings imports ignore workflow preset records; local trusted presets remain unchanged. Review workflow JSON before saving or running it.
