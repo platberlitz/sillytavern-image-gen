@@ -8,6 +8,7 @@ import {
     cancelComfyPrompt,
     getComfyWorkflowCapabilities,
     normalizeComfyModelLoader,
+    normalizeComfySettings,
     parseComfyHistoryEntry,
     parseComfyPromptResponse,
     parseComfyWebSocketMessage,
@@ -79,6 +80,50 @@ test("normalizes explicit and legacy ComfyUI model loader settings", () => {
         comfySkipNegativePrompt: false,
         comfyFluxClipModel1: "t5xxl.safetensors",
     }), "checkpoint");
+});
+
+test("migrates only legacy inferred UNET settings to the shipped VAE fallback", () => {
+    const legacy = {
+        comfySkipNegativePrompt: true,
+        comfyFluxClipModel1: "t5xxl.safetensors",
+        comfyFluxVaeModel: "",
+    };
+    assert.deepEqual(normalizeComfySettings(legacy), {
+        ...legacy,
+        comfyModelLoader: "unet",
+        comfyFluxVaeModel: "ae.safetensors",
+    });
+    assert.equal(legacy.comfyModelLoader, undefined);
+    assert.equal(legacy.comfyFluxVaeModel, "");
+
+    assert.equal(normalizeComfySettings({
+        ...legacy,
+        comfyModelLoader: "legacy",
+    }).comfyFluxVaeModel, "ae.safetensors");
+    assert.deepEqual(normalizeComfySettings({
+        ...legacy,
+        comfyModelLoader: "legacy",
+        comfyFluxVaeModel: "custom-vae.safetensors",
+    }), {
+        ...legacy,
+        comfyModelLoader: "unet",
+        comfyFluxVaeModel: "custom-vae.safetensors",
+    });
+});
+
+test("does not supply a VAE fallback for an explicit UNET configuration", () => {
+    const normalized = normalizeComfySettings({
+        comfyModelLoader: "unet",
+        comfyFluxClipModel1: "t5xxl.safetensors",
+        comfyFluxVaeModel: "",
+    });
+    assert.equal(normalized.comfyModelLoader, "unet");
+    assert.equal(normalized.comfyFluxVaeModel, "");
+    assert.throws(() => buildComfyBuiltinWorkflow(builtinOptions({
+        modelLoader: normalized.comfyModelLoader,
+        clipModel1: normalized.comfyFluxClipModel1,
+        vaeModel: normalized.comfyFluxVaeModel,
+    })), /requires a VAE Model/);
 });
 
 test("selects only models belonging to the explicit ComfyUI loader", () => {
@@ -461,6 +506,34 @@ test("polls empty history, retries transient HTTP statuses, and returns all imag
     assert.equal(calls[0].init.redirect, "error");
 });
 
+test("cancels transient history response bodies before retrying", async () => {
+    let cancelled = false;
+    let calls = 0;
+    const transientBody = new ReadableStream({
+        cancel() {
+            cancelled = true;
+        },
+    });
+    const result = await pollComfyHistory(promptId, {
+        baseUrl,
+        pollIntervalMs: 1,
+        sleep: async () => assert.equal(cancelled, true),
+        fetchImpl: async () => {
+            calls += 1;
+            if (calls === 1) return new Response(transientBody, { status: 503 });
+            return jsonResponse({
+                [promptId]: completedHistory({
+                    "9": { images: [{ filename: "result.png" }] },
+                }),
+            });
+        },
+    });
+
+    assert.equal(result.state, "success");
+    assert.equal(cancelled, true);
+    assert.equal(calls, 2);
+});
+
 test("propagates authentication failures without retrying", async () => {
     let calls = 0;
     await assert.rejects(() => pollComfyHistory(promptId, {
@@ -580,6 +653,7 @@ test("deletes pending work from the queue when targeted jobs cancellation is una
     });
 
     assert.equal(result.strategy, "queue-delete");
+    assert.equal(result.cancelled, true);
     assert.match(request.url, /\/api\/queue$/);
     assert.deepEqual(JSON.parse(request.init.body), { delete: [promptId] });
 });
@@ -614,9 +688,32 @@ test("falls back to queue deletion when the jobs cancellation route is unavailab
     });
 
     assert.equal(result.strategy, "queue-delete");
+    assert.equal(result.cancelled, false);
+    assert.match(result.reason, /prompt state was unknown/);
     assert.equal(requests.length, 2);
     assert.equal(new URL(requests[1].url).pathname, "/queue");
     assert.deepEqual(JSON.parse(requests[1].init.body), { delete: [promptId] });
+});
+
+test("uses explicit queued and running states for safe legacy cancellation", async () => {
+    const queued = await cancelComfyPrompt(promptId, {
+        baseUrl,
+        state: "queued",
+        allowLegacyInterrupt: true,
+        fetchImpl: async url => {
+            assert.equal(new URL(url).pathname, "/api/queue");
+            return new Response(null, { status: 200 });
+        },
+    });
+    assert.deepEqual(queued, { strategy: "queue-delete", cancelled: true });
+
+    const running = await cancelComfyPrompt(promptId, {
+        baseUrl,
+        promptState: "running",
+        fetchImpl: async () => assert.fail("running work must not use queue deletion"),
+    });
+    assert.equal(running.strategy, "none");
+    assert.equal(running.cancelled, false);
 });
 
 test("uses only an explicit targeted legacy interrupt and never sends it bodyless", async () => {

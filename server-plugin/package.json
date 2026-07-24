@@ -1,8 +1,11 @@
 {
   "name": "quick-image-gen-relay",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Optional SillyTavern server plugin for Quick Image Gen CivitAI/Replicate relay support.",
   "main": "index.js",
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  }
 }

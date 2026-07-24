@@ -6,7 +6,7 @@ Image generation in SillyTavern. 18 backends plus configurable custom APIs, 44 s
 Extensions -> Install from URL -> https://github.com/platberlitz/sillytavern-image-gen
 ```
 
-Requires SillyTavern 1.12+ (extension manifest v3). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
+Requires SillyTavern 1.12.0 or newer (extension manifest v3). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
 
 ## Providers
 
@@ -42,7 +42,7 @@ QIG synchronizes active settings, Connection Profiles, generation presets, Comfy
 - **GPT Image**: Default `gpt-image-2`. Quality, output format, background, and moderation controls are configurable. A proxy URL ending in `/v1` expands to `/images/generations`; any other path is tried as the exact POST endpoint first. Comfy-style `/proxy/openai` namespaces that report a missing proxy route are retried once at `/proxy/openai/images/generations`.
 - **Nanobanana (Gemini)**: Four models ranging from Gemini 2.0 Flash Exp through Nano Banana Pro (Gemini 3 Pro Image). NBP mode adds optional director presets and negative guidance. Native Gemini proxy bases use `generateContent`; full `/chat/completions` URLs use an OpenAI-compatible request body.
 - **Navy.ai / Routeway**: Model ID suggestions with custom model support. Base64 image responses.
-- **Z.AI**: Default `cogview-4`. HD quality default.
+- **Z.AI**: Default `cogview-4-250304`. HD quality default.
 - **Reverse Proxy**: See [Reverse Proxy](#reverse-proxy) below.
 - **Custom API**: Browser-direct declarative requests for OpenAI-compatible endpoints, simple JSON REST, multipart uploads, and bounded async jobs. See [Custom API](#custom-api).
 
@@ -50,7 +50,7 @@ QIG synchronizes active settings, Connection Profiles, generation presets, Comfy
 
 1. Open the QIG panel in SillyTavern. On a fresh install a Quick Setup wizard opens: pick a provider, paste a key if needed, choose a style. Re-open it any time with the `Quick Setup` button.
 2. Fresh installs also get three starter presets (free Pollinations recipes) in the Preset dropdown.
-3. Type a prompt, or set **Prompt source** to `Chat scene` to pull context from the current chat.
+3. Fresh installs default **Prompt source** to `Chat scene`, which pulls context from the current chat. Switch it to `Manual` to type your own prompt.
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
 5. Save the generation recipe as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
 
@@ -277,7 +277,7 @@ Use RFC 6901 JSON Pointers such as `/data/0/url` for the image, job ID, and job 
 
 Authentication is limited to no auth, Bearer, a named header, a named query parameter, or Basic auth (`username:password`). Credentials cannot be embedded in request templates. Custom requests run directly in the browser, reject redirects, enforce bounded JSON/image responses, and never use a generic SillyTavern server relay. The endpoint must allow your SillyTavern origin through CORS.
 
-All Custom API fields stay local, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are omitted from settings exports, reproducible image metadata, and imported presets so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions locally.
+Custom API fields are synchronized to the current SillyTavern account, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are excluded from portable settings exports, reproducible image metadata, and imported presets so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions in each account instead of relying on an export.
 
 ## Slash Commands
 
@@ -387,16 +387,17 @@ An active preset is highlighted only while the covered settings still match it. 
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-The optional `server-plugin/` directory relays only the CivitAI consumer-jobs endpoint and Replicate predictions endpoints used by this extension.
+Quick Image Gen `2.8.0` ships optional server relay protocol `0.2.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
 
 Setup:
 
 1. Copy `server-plugin/` to your SillyTavern install as `plugins/quick-image-gen-relay/`.
 2. Set `enableServerPlugins: true` in SillyTavern `config.yaml`.
-3. Restart SillyTavern.
-4. Open `/api/plugins/quick-image-gen-relay/healthz` while logged in. A blank response with HTTP 204 means the plugin is loaded.
+3. Apply the mandatory pre-parser integration documented in `server-plugin/README.md`. The current host plugin API mounts too late to precede SillyTavern/SillyBunny's global 500 MiB JSON parser, so the relay deliberately returns HTTP 503 without this host integration rather than claiming that its local 1 MiB limit protects the route. That 503 occurs after the host parser and is not itself resource protection; do not expose the host until the pre-parser is mounted.
+4. Restart SillyTavern.
+5. Open `/api/plugins/quick-image-gen-relay/healthz` while logged in. A blank response with HTTP 204 means the plugin and required pre-parser installer are registered; HTTP 503 means the relay is disabled. Relay POSTs additionally detect and reject a pre-parser mounted after the host parser.
 
-SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs and does not store or log provider API keys.
+SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs and does not store or log provider API keys. CivitAI cancellation follows the current live v2 OpenAPI and official JavaScript client contract: authenticated `DELETE /v2/consumer/workflows/{workflowId}` (`DeleteWorkflow` / `deleteWorkflow()`).
 
 ## Migration Notes
 
@@ -408,7 +409,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 ## Development
 
-Requires Node.js 20 or newer.
+Supported Node.js ranges are `^20.19.0 || ^22.13.0 || >=24.0.0`, matching the locked development tooling.
 
 ```bash
 npm ci
@@ -416,7 +417,7 @@ npm run verify
 npm audit --audit-level=high
 ```
 
-CI runs syntax checks, the Node test suite, and a high-severity dependency audit for pull requests and pushes to `main` or `staging`.
+CI runs syntax checks and the Node test suite on Node.js 20.19 and 22.13. The newer matrix job also runs a high-severity dependency audit for pull requests and pushes to `main` or `staging`.
 
 ## Credits
 

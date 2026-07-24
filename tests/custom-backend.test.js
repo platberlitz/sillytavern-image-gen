@@ -11,6 +11,8 @@ import {
     resolveJsonPointer,
 } from "../lib/custom-backend.js";
 
+const JPEG_BYTES = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q==", "base64");
+
 const baseConfig = {
     mode: "json",
     url: "https://images.example.test/generate",
@@ -110,7 +112,7 @@ test("executes a simple JSON backend", async () => {
         fetchImpl: async (url, init) => {
             calls.push({ url, init });
             if (calls.length === 2) {
-                return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+                return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
             }
             return new Response(JSON.stringify({ result: { image: "https://cdn.example.test/result.png" } }), {
                 headers: { "Content-Type": "application/json" },
@@ -120,6 +122,9 @@ test("executes a simple JSON backend", async () => {
     assert.ok(result.buffer instanceof ArrayBuffer);
     assert.equal(calls.length, 2);
     assert.equal(calls[0].init.redirect, "error");
+    assert.equal(calls[0].init.credentials, "omit");
+    assert.equal(calls[1].init.credentials, "omit");
+    assert.equal(calls[1].init.referrerPolicy, "no-referrer");
 });
 
 test("applies configured header auth to same-origin final image requests", async () => {
@@ -132,7 +137,7 @@ test("applies configured header auth to same-origin final image requests", async
                     headers: { "Content-Type": "application/json" },
                 });
             }
-            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+            return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
         },
     });
     assert.equal(calls[1].url, "https://images.example.test/result.jpg");
@@ -154,7 +159,7 @@ test("safely adds query auth to same-origin final image URLs", async () => {
                     headers: { "Content-Type": "application/json" },
                 });
             }
-            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+            return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
         },
     });
     const finalUrl = new URL(calls[1].url);
@@ -165,7 +170,7 @@ test("safely adds query auth to same-origin final image URLs", async () => {
 
 test("never forwards configured auth to cross-origin final image URLs", async () => {
     for (const authType of ["bearer", "header", "basic", "query"]) {
-        const apiKey = `credential-${authType}`;
+        const apiKey = authType === "basic" ? "user:credential-basic" : `credential-${authType}`;
         const calls = [];
         await executeCustomBackend({
             ...baseConfig,
@@ -180,7 +185,7 @@ test("never forwards configured auth to cross-origin final image URLs", async ()
                         headers: { "Content-Type": "application/json" },
                     });
                 }
-                return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+                return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
             },
         });
         assert.equal(calls[1].url, "https://cdn.example.test/result.jpg?size=large");
@@ -220,7 +225,7 @@ test("resolves relative output URLs against the response and validates bytes", a
                     headers: { "Content-Type": "application/json" },
                 });
             }
-            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+            return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
         },
     });
     assert.ok(result.buffer instanceof ArrayBuffer);
@@ -229,7 +234,7 @@ test("resolves relative output URLs against the response and validates bytes", a
 
 test("accepts direct image responses and rejects fake image bodies", async () => {
     const direct = await executeCustomBackend(baseConfig, {}, {
-        fetchImpl: async () => new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } }),
+        fetchImpl: async () => new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } }),
     });
     assert.equal(direct.contentType, "image/jpeg");
     await assert.rejects(() => executeCustomBackend(baseConfig, {}, {
@@ -240,6 +245,18 @@ test("accepts direct image responses and rejects fake image bodies", async () =>
 test("extracts images from arrays and common inline-data shapes", () => {
     const encoded = "YWJj".repeat(40);
     assert.equal(extractCustomBackendImage({ output: [{ inlineData: { data: encoded } }] }), `data:image/png;base64,${encoded}`);
+});
+
+test("bounds iterative response image extraction without recursive stack overflow", () => {
+    const encoded = "YWJj".repeat(40);
+    let bounded = { image: encoded };
+    for (let depth = 0; depth < 40; depth++) bounded = { data: bounded };
+    assert.equal(extractCustomBackendImage({ output: [bounded] }), `data:image/png;base64,${encoded}`);
+
+    let excessive = { image: encoded };
+    for (let depth = 0; depth < 20_000; depth++) excessive = { data: excessive };
+    assert.doesNotThrow(() => extractCustomBackendImage({ output: [excessive] }));
+    assert.equal(extractCustomBackendImage({ output: [excessive] }), null);
 });
 
 test("submits and polls bounded async jobs", async () => {
@@ -263,7 +280,7 @@ test("submits and polls bounded async jobs", async () => {
                 return new Response(JSON.stringify({ id: "job/1" }), { headers: { "Content-Type": "application/json" } });
             }
             if (calls.length === 4) {
-                return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+                return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
             }
             const status = statuses.shift();
             return new Response(JSON.stringify({
@@ -379,11 +396,154 @@ test("recognizes falsey terminal polling statuses", async () => {
                     headers: { "Content-Type": "application/json" },
                 });
             }
-            return new Response(Uint8Array.from([0xff, 0xd8, 0xff, 0xd9]), { headers: { "Content-Type": "image/jpeg" } });
+            return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
         },
     });
     assert.ok(result.buffer instanceof ArrayBuffer);
     assert.equal(call, 3);
+});
+
+
+test("rejects reserved auth headers and UTF-8 encodes Basic credentials", () => {
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authName: "Content-Type",
+    }), /reserved request header/);
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authName: "Sec-Fetch-Site",
+    }), /reserved request header/);
+
+    const credential = "用户:päss";
+    const request = buildCustomBackendRequest({
+        ...baseConfig,
+        authType: "basic",
+        apiKey: credential,
+    });
+    assert.equal(request.headers.Authorization, `Basic ${Buffer.from(credential, "utf8").toString("base64")}`);
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authType: "basic",
+        apiKey: "missing-colon",
+    }), /username:password/);
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authType: "basic",
+        apiKey: ":missing-user",
+    }), /username:password/);
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authType: "basic",
+        apiKey: "",
+    }), /username:password/);
+    assert.doesNotThrow(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        authType: "basic",
+        apiKey: "user:",
+    }));
+});
+
+test("blocks normalized credential fields in Custom request templates", () => {
+    for (const field of ["auth_token", "authToken", "client-secret", "privateKey", "refresh_token", "idToken", "bearerToken"]) {
+        assert.throws(() => normalizeCustomBackendConfig({
+            ...baseConfig,
+            requestTemplate: JSON.stringify({ [field]: "{{prompt}}" }),
+        }), /reserved for authentication/, field);
+    }
+});
+
+test("permits authenticated HTTP on canonical loopback addresses", () => {
+    assert.equal(normalizeCustomBackendConfig({
+        ...baseConfig,
+        url: "http://127.0.0.2/generate",
+    }).url, "http://127.0.0.2/generate");
+    assert.equal(normalizeCustomBackendConfig({
+        ...baseConfig,
+        url: "http://localhost./generate",
+    }).url, "http://localhost./generate");
+});
+
+test("rejects expanded request bodies that amplify repeated reference tokens", () => {
+    const repeated = {};
+    for (let index = 0; index < 1_200; index++) repeated[`ref${index}`] = "{{firstReferenceImage}}";
+    const reference = `data:image/png;base64,${"A".repeat(40_000)}`;
+    assert.throws(() => buildCustomBackendRequest({
+        ...baseConfig,
+        requestTemplate: JSON.stringify(repeated),
+    }, { referenceImages: [reference] }), /Expanded Custom API request exceeds/);
+});
+
+test("requires polling placeholders in the transmitted URL rather than fragments", () => {
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        mode: "async",
+        jobIdPath: "/id",
+        pollUrl: "https://images.example.test/jobs#{{jobId}}",
+        statusPath: "/status",
+    }), /path or query/);
+    assert.throws(() => normalizeCustomBackendConfig({
+        ...baseConfig,
+        mode: "async",
+        jobIdPath: "/id",
+        pollUrl: "https://images.example.test/jobs/{{jobId}}#{{jobId}}",
+        statusPath: "/status",
+    }), /fragment/);
+});
+
+test("rejects non-scalar and oversized async job IDs before polling", async () => {
+    const config = {
+        ...baseConfig,
+        mode: "async",
+        jobIdPath: "/id",
+        pollUrl: "https://images.example.test/jobs/{{jobId}}",
+        statusPath: "/status",
+    };
+    for (const id of [{ nested: true }, ["job"], "x".repeat(1_025)]) {
+        let calls = 0;
+        await assert.rejects(() => executeCustomBackend(config, {}, {
+            sleep: async () => {},
+            fetchImpl: async () => {
+                calls += 1;
+                return new Response(JSON.stringify({ id }), { headers: { "Content-Type": "application/json" } });
+            },
+        }), /job ID (?:must be|is too long)/);
+        assert.equal(calls, 1);
+    }
+});
+
+test("rejects cross-origin private-style output hosts before fetching them", async () => {
+    let calls = 0;
+    await assert.rejects(() => executeCustomBackend(baseConfig, {}, {
+        fetchImpl: async () => {
+            calls += 1;
+            return new Response(JSON.stringify({ result: { image: "https://renderer.internal/output.jpg" } }), {
+                headers: { "Content-Type": "application/json" },
+            });
+        },
+    }), /safe public HTTPS URL/);
+    assert.equal(calls, 1);
+});
+
+test("rejects credential-bearing custom image URLs", async () => {
+    let calls = 0;
+    await assert.rejects(() => executeCustomBackend(baseConfig, {}, {
+        fetchImpl: async () => {
+            calls += 1;
+            return new Response(JSON.stringify({ result: { image: "https://user:secret@images.example.test/output.jpg" } }), {
+                headers: { "Content-Type": "application/json" },
+            });
+        },
+    }), /invalid image source|must not contain credentials/);
+    assert.equal(calls, 1);
+});
+
+test("treats direct image MIME types case-insensitively", async () => {
+    const result = await executeCustomBackend(baseConfig, {}, {
+        fetchImpl: async () => new Response(JPEG_BYTES, {
+            headers: { "Content-Type": "Image/JPEG; charset=binary" },
+        }),
+    });
+    assert.equal(result.contentType, "image/jpeg");
 });
 
 test("rejects deeply nested templates with a controlled validation error", () => {

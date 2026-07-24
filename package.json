@@ -1,10 +1,10 @@
 {
   "name": "sillytavern-quick-image-gen",
-  "version": "2.7.1",
+  "version": "2.8.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "node --check index.js && node --check server-plugin/index.js",
+    "check": "node scripts/check-js-syntax.js",
     "lint": "eslint index.js lib tests server-plugin",
     "test": "node --test --test-reporter=spec",
     "verify": "npm run check && npm run lint && npm test"
@@ -16,6 +16,17 @@
     "jsdom": "29.1.1"
   },
   "engines": {
-    "node": ">=20"
-  }
+    "node": "^20.19.0 || ^22.13.0 || >=24.0.0"
+  },
+  "files": [
+    "index.js",
+    "style.css",
+    "manifest.json",
+    "README.md",
+    "docs/comfyui-workflow-variables.md",
+    "lib/",
+    "server-plugin/",
+    "scripts/",
+    "tests/"
+  ]
 }

@@ -13,8 +13,15 @@ permissions:
 
 jobs:
   verify:
+    name: Verify (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version:
+          - "20.19"
+          - "22.13"
 
     steps:
       - name: Check out repository
@@ -23,7 +30,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node-version }}
           cache: npm
 
       - name: Install dependencies
@@ -33,4 +40,5 @@ jobs:
         run: npm run verify
 
       - name: Audit dependencies
+        if: matrix.node-version == '22.13'
         run: npm audit --audit-level=high

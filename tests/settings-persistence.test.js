@@ -4,6 +4,7 @@ import test from "node:test";
 import {
     canSeedSynchronizedStoreFromLocal,
     persistSynchronizedStore,
+    persistSynchronizedStores,
     reconcileSynchronizedStore,
 } from "../lib/settings-persistence.js";
 
@@ -191,4 +192,37 @@ test("immediate saves are serialized so a failed write cannot roll back a later 
     await second;
     assert.deepEqual(settings._backupProfiles, { second: true });
     assert.deepEqual(JSON.parse(storage.values.get("qig_profiles")), { second: true });
+});
+
+test("related synchronized stores commit with one acknowledgement and roll back together", async () => {
+    const previousFilters = [{ id: "old-filter" }];
+    const previousPools = [{ id: "old-pool" }];
+    const storage = createStorage({
+        qig_contextual_filters: JSON.stringify(previousFilters),
+        qig_filter_pools: JSON.stringify(previousPools),
+    });
+    const settings = {
+        _backupContextualFilters: structuredClone(previousFilters),
+        _backupFilterPools: structuredClone(previousPools),
+    };
+    let saves = 0;
+
+    await assert.rejects(() => persistSynchronizedStores({
+        storage,
+        settings,
+        stores: [
+            { localKey: "qig_contextual_filters", backupKey: "_backupContextualFilters", value: [{ id: "new-filter" }] },
+            { localKey: "qig_filter_pools", backupKey: "_backupFilterPools", value: [{ id: "new-pool" }] },
+        ],
+        save: async () => {
+            saves += 1;
+            throw new Error("account save failed");
+        },
+    }), /account save failed/);
+
+    assert.equal(saves, 1);
+    assert.deepEqual(settings._backupContextualFilters, previousFilters);
+    assert.deepEqual(settings._backupFilterPools, previousPools);
+    assert.deepEqual(JSON.parse(storage.values.get("qig_contextual_filters")), previousFilters);
+    assert.deepEqual(JSON.parse(storage.values.get("qig_filter_pools")), previousPools);
 });

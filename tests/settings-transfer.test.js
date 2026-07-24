@@ -5,6 +5,7 @@ import {
     createSettingsExport,
     MAX_SETTINGS_IMPORT_BYTES,
     mergePreservingPrivateFields,
+    mergeSettingsImportStores,
     parseSettingsImport,
     SETTINGS_TRANSFER_VERSION,
     stageStorageTransaction,
@@ -37,6 +38,24 @@ test("settings exports include active state but omit secrets and private images"
     assert.equal(exported.contextualFilters[0].cardKey, "character:one");
     assert.equal(exported.charRefImages, undefined);
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles|internal-cache-owner/);
+});
+
+test("settings transfer fails closed for normalized credential fields and malformed credential strings", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            width: 768,
+            clientSecret: "client-canary",
+            private_key: "private-canary",
+            refreshToken: "refresh-canary",
+            id_token: "id-canary",
+            bearerToken: "bearer-canary",
+            unsafeModel: "auth_token=inline-canary",
+            unsafePathModel: "https://models.example/api%5Fkey%3Dpath-canary/model",
+            safeModel: "checkpoint.safetensors",
+        },
+    });
+    assert.deepEqual(exported.activeSettings, { width: 768, safeModel: "checkpoint.safetensors" });
+    assert.doesNotMatch(JSON.stringify(exported), /canary/);
 });
 
 test("Comfy executable graphs are omitted and workflow presets are not imported", () => {
@@ -186,6 +205,7 @@ test("custom API trust and executable mappings never cross settings exports", ()
     const exported = createSettingsExport({
         activeSettings: {
             provider: "custom",
+            model: "private-custom-model",
             customApiUrl: "https://untrusted.example/generate",
             customApiPollUrl: "https://untrusted.example/jobs/{{jobId}}",
             customApiKey: "custom-canary",
@@ -200,6 +220,7 @@ test("custom API trust and executable mappings never cross settings exports", ()
     assert.equal(exported.activeSettings.customApiKey, undefined);
     assert.equal(exported.activeSettings.customApiRefImages, undefined);
     assert.equal(exported.activeSettings.customApiRequestTemplate, undefined);
+    assert.equal(exported.activeSettings.model, undefined);
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64/);
 
     const imported = parseSettingsImport(JSON.stringify(exported));
@@ -331,6 +352,44 @@ test("imports retain locally trusted endpoints instead of pairing file URLs with
         proxyKey: "local-secret",
         proxyModel: "new-model",
     });
+});
+
+test("export parse and commit merge preserve local Custom records while replacing portable records", () => {
+    const current = {
+        connectionProfiles: {
+            custom: {
+                Private: {
+                    customApiUrl: "https://trusted.local/generate",
+                    customApiKey: "local-custom-secret",
+                    customApiRequestTemplate: '{"prompt":"{{prompt}}"}',
+                },
+            },
+            proxy: { Old: { proxyModel: "old-model", proxyKey: "old-secret" } },
+        },
+        generationPresets: [
+            { id: "custom-private", name: "Private", provider: "custom", customApiKey: "preset-secret", customApiRequestTemplate: "{}" },
+            { id: "portable-old", name: "Old", provider: "proxy" },
+        ],
+    };
+    const exported = createSettingsExport({
+        connectionProfiles: {
+            custom: { ExportCanary: { customApiKey: "must-not-export" } },
+            proxy: { Imported: { proxyModel: "new-model" } },
+        },
+        generationPresets: [
+            { id: "custom-export", name: "Custom", provider: "custom", customApiKey: "must-not-export" },
+            { id: "portable-new", name: "New", provider: "proxy" },
+        ],
+    });
+    const parsed = parseSettingsImport(JSON.stringify(exported));
+    const committed = mergeSettingsImportStores(current, parsed);
+
+    assert.deepEqual(Object.keys(committed.connectionProfiles), ["proxy", "custom"]);
+    assert.deepEqual(committed.connectionProfiles.proxy, { Imported: { proxyModel: "new-model" } });
+    assert.deepEqual(committed.connectionProfiles.custom, current.connectionProfiles.custom);
+    assert.deepEqual(committed.generationPresets.map(record => record.id), ["portable-new", "custom-private"]);
+    assert.equal(committed.generationPresets[1].customApiKey, "preset-secret");
+    assert.doesNotMatch(JSON.stringify(exported), /must-not-export|custom-export|ExportCanary/);
 });
 
 test("storage staging rolls back every key when a write fails", () => {
