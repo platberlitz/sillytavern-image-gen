@@ -48,6 +48,7 @@ import {
     MAX_INJECT_MATCHES,
 } from "./lib/inject-regex.js";
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
+import { createDialogHost, DEFAULT_DIALOG_TITLE } from "./lib/st-dialogs.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
 import {
     buildComfyBuiltinWorkflow,
@@ -160,6 +161,31 @@ const extensionName = "quick-image-gen";
 let extension_settings, getContext, saveSettingsDebounced, saveSettings, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, substituteParams, getRequestHeaders;
 let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
+
+// Dialogs route through SillyTavern's Popup API once `popup.js` is imported during
+// init. Until then — and if that import fails — the browser dialogs stand in, so a
+// confirmation is never silently skipped.
+let dialogHost = createDialogHost({
+    nativeConfirm: (message) => globalThis.confirm?.(message),
+    nativeAlert: (message) => globalThis.alert?.(message),
+    nativePrompt: (message, value) => globalThis.prompt?.(message, value),
+});
+
+function qigConfirm(message, options = {}) {
+    return dialogHost.confirmDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigNotice(message, options = {}) {
+    return dialogHost.messageDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigInput(message, options = {}) {
+    return dialogHost.inputDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigChoice(message, choices, options = {}) {
+    return dialogHost.choiceDialog(message, choices, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
 
 function normalizeGeneratedImageSource(value) {
     return normalizeImageSource(value, { allowHttp: true, allowRelative: true });
@@ -3869,7 +3895,7 @@ async function loadSettings() {
     const hasUnownedLegacyData = !savedCacheId
         && !localCacheId
         && (hasUnownedSynchronizedData || hasUnownedLegacyReplacementData);
-    const legacySeedApproved = hasUnownedLegacyData && confirm("Quick Image Gen found legacy browser-only settings that are not linked to a SillyTavern account. Import them into the current server user? They may include API keys and private reference images. Choose Cancel if this browser data belongs to another user.");
+    const legacySeedApproved = hasUnownedLegacyData && await qigConfirm("Quick Image Gen found legacy browser-only settings that are not linked to a SillyTavern account. Import them into the current server user? They may include API keys and private reference images. Choose Cancel if this browser data belongs to another user.", { okButton: "Import", wide: true });
     const legacySeedDeclined = hasUnownedLegacyData && !legacySeedApproved;
     const maySeedFromLocal = cacheOwnerMatches || legacySeedApproved;
     const quarantinedLegacyCacheKeys = new Set();
@@ -8660,8 +8686,8 @@ function showPromptHistory() {
             };
         });
 
-        document.getElementById("qig-clear-history").onclick = () => {
-            if (confirm("Clear all prompt history?")) {
+        document.getElementById("qig-clear-history").onclick = async () => {
+            if (await qigConfirm("Clear all prompt history?", { okButton: "Clear History" })) {
                 promptHistory = [];
                 localStorage.removeItem("qig_prompt_history");
                 container.innerHTML = '<p class="qig-muted">No prompts yet</p>';
@@ -9779,41 +9805,41 @@ function showContextMediaManager() {
                 const folder = selectedProfile.folders.find((item) => item.id === button.dataset.folderId);
                 const owner = getOwner(button.dataset.nodeId);
                 if (action === "add-folder") {
-                    const label = prompt("Folder name (for example Fighting or Sunsets)");
+                    const label = await qigInput("Folder name (for example Fighting or Sunsets)", { okButton: "Add Folder" });
                     if (!label?.trim()) return;
                     selectedProfile.folders.push({ id: generateUUID(), label: label.trim(), description: "", media: [], subfolders: [] });
                 } else if (action === "add-subfolder" && folder) {
-                    const label = prompt("Context name (for example Swimsuit or Working)");
+                    const label = await qigInput("Context name (for example Swimsuit or Working)", { okButton: "Add Context" });
                     if (!label?.trim()) return;
-                    const description = prompt("Semantic description (optional)", "") || "";
+                    const description = await qigInput("Semantic description (optional)", { okButton: "Continue" }) || "";
                     folder.subfolders.push({ id: generateUUID(), label: label.trim(), description: description.trim(), media: [] });
                 } else if (action === "rename-profile") {
-                    const label = prompt("Profile name", selectedProfile.label);
+                    const label = await qigInput("Profile name", { defaultValue: selectedProfile.label, okButton: "Rename" });
                     if (!label?.trim()) return;
                     selectedProfile.label = label.trim();
                 } else if (action === "edit-folder" && folder) {
-                    const label = prompt("Folder name", folder.label);
+                    const label = await qigInput("Folder name", { defaultValue: folder.label, okButton: "Continue" });
                     if (!label?.trim()) return;
                     folder.label = label.trim();
-                    folder.description = (prompt("Semantic description", folder.description || "") || "").trim();
+                    folder.description = (await qigInput("Semantic description", { defaultValue: folder.description || "" }) || "").trim();
                 } else if (action === "edit-subfolder" && owner) {
-                    const label = prompt("Context name", owner.label);
+                    const label = await qigInput("Context name", { defaultValue: owner.label, okButton: "Continue" });
                     if (!label?.trim()) return;
                     owner.label = label.trim();
-                    owner.description = (prompt("Semantic description", owner.description || "") || "").trim();
+                    owner.description = (await qigInput("Semantic description", { defaultValue: owner.description || "" }) || "").trim();
                 } else if (action === "delete-subfolder" && folder && owner) {
                     if (owner.media.length) return toastr?.warning?.("Remove media items before deleting this context.");
-                    if (!confirm(`Delete empty context "${owner.label}"?`)) return;
+                    if (!(await qigConfirm(`Delete empty context "${owner.label}"?`, { okButton: "Delete Context" }))) return;
                     folder.subfolders = folder.subfolders.filter((item) => item.id !== owner.id);
                 } else if (action === "delete-folder" && folder) {
                     const hasMedia = folder.media.length || folder.subfolders.some((item) => item.media.length);
                     if (hasMedia) return toastr?.warning?.("Remove all media items before deleting this folder.");
-                    if (!confirm(`Delete empty folder "${folder.label}" and its empty contexts?`)) return;
+                    if (!(await qigConfirm(`Delete empty folder "${folder.label}" and its empty contexts?`, { okButton: "Delete Folder" }))) return;
                     selectedProfile.folders = selectedProfile.folders.filter((item) => item.id !== folder.id);
                 } else if (action === "delete-profile") {
                     const hasMedia = contextMediaNodeOptions(selectedProfile).some((option) => option.owner.media.length);
                     if (hasMedia) return toastr?.warning?.("Remove media items before deleting this profile.");
-                    if (!confirm(`Delete empty profile "${selectedProfile.label}"?`)) return;
+                    if (!(await qigConfirm(`Delete empty profile "${selectedProfile.label}"?`, { okButton: "Delete Profile" }))) return;
                     contextMediaLibrary.profiles = contextMediaLibrary.profiles.filter((profile) => profile.id !== selectedProfile.id);
                     for (const [key, value] of Object.entries(contextMediaLibrary.chatMap)) {
                         if (value === selectedProfile.id) delete contextMediaLibrary.chatMap[key];
@@ -9878,7 +9904,7 @@ function showContextMediaManager() {
                 } else if (action === "delete-media" && owner) {
                     const media = owner.media.find((item) => item.id === button.dataset.mediaId);
                     const cleanup = media?.source === "remote" ? "library? The third-party file will not be changed." : "library and server when unshared?";
-                    if (!media || !confirm(`Delete "${media.label}" from the ${cleanup}`)) return;
+                    if (!media || !(await qigConfirm(`Delete "${media.label}" from the ${cleanup}`, { okButton: "Delete Media" }))) return;
                     try {
                         await deleteContextMediaItem(media, owner);
                         render();
@@ -9903,9 +9929,9 @@ function showContextMediaManager() {
             selectedProfileId = event.target.value;
             render();
         };
-        popupElement.querySelector("#qig-context-media-add-profile").onclick = () => {
+        popupElement.querySelector("#qig-context-media-add-profile").onclick = async () => {
             if (_contextMediaMutationPending) return toastr?.info?.("Wait for the current Context Media change to finish.");
-            const label = prompt("Profile name", "Default");
+            const label = await qigInput("Profile name", { defaultValue: "Default", okButton: "Add Profile" });
             if (!label?.trim()) return;
             const previous = snapshotGenerationSettings(contextMediaLibrary);
             const profile = { id: generateUUID(), label: label.trim(), description: "", folders: [] };
@@ -11017,7 +11043,7 @@ async function showGallery(returnFocusElement = null) {
         };
 
         gallery.querySelector("#qig-gallery-clear").onclick = async () => {
-            if (!confirm("Clear entire gallery?")) return;
+            if (!(await qigConfirm("Clear entire gallery?", { okButton: "Clear Gallery" }))) return;
             try {
                 if (galleryRepository) {
                     await galleryRepository.clear();
@@ -12257,7 +12283,7 @@ async function addFilterPool(scope = FILTER_SCOPE_GLOBAL) {
         toastr.warning("Open a character chat to create a character pool.");
         return;
     }
-    const rawName = prompt(`New ${isCardScope ? "card" : isCharScope ? "character" : "global"} pool name:`);
+    const rawName = await qigInput(`New ${isCardScope ? "card" : isCharScope ? "character" : "global"} pool name:`, { okButton: "Create Pool" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
@@ -12283,7 +12309,7 @@ async function renameFilterPool(poolId) {
     if (blockFilterStoreMutation()) return;
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
-    const rawName = prompt("Rename pool:", pool.name || "");
+    const rawName = await qigInput("Rename pool:", { defaultValue: pool.name || "", okButton: "Rename" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
@@ -12304,7 +12330,7 @@ async function deleteFilterPool(poolId) {
     }
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
-    if (!confirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`)) return;
+    if (!(await qigConfirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`, { okButton: "Delete Pool" }))) return;
     const previousState = snapshotFilterPoolState();
     filterPools = filterPools.filter(p => p.id !== poolId);
     activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => id !== poolId);
@@ -12520,6 +12546,7 @@ function showFilterDialog(filter) {
                     <small class="qig-help">LoRA removals match by name only, so &lt;lora:foo&gt; removes any &lt;lora:foo:*&gt; variant.</small>
                 </section>
 
+                <p id="qig-fd-error" class="qig-field-error" role="alert" hidden></p>
                 <div class="qig-dialog-actions">
                     <button id="qig-fd-cancel" class="menu_button">Cancel</button>
                     <button id="qig-fd-save" class="menu_button">Save</button>
@@ -12601,27 +12628,48 @@ function showFilterDialog(filter) {
             };
             bindPopupDismiss(popup, close);
             document.getElementById("qig-fd-cancel").onclick = close;
+            // Validation stays inside the dialog so the offending field keeps focus and
+            // the message is announced without a second modal on top of this one.
+            const errorEl = document.getElementById("qig-fd-error");
+            let invalidField = null;
+            const clearFieldError = () => {
+                errorEl.hidden = true;
+                errorEl.textContent = "";
+                invalidField?.removeAttribute("aria-invalid");
+                invalidField = null;
+            };
+            const failValidation = (message, fieldId) => {
+                errorEl.textContent = message;
+                errorEl.hidden = false;
+                invalidField = fieldId ? document.getElementById(fieldId) : null;
+                if (invalidField) {
+                    invalidField.setAttribute("aria-invalid", "true");
+                    invalidField.focus();
+                }
+                return false;
+            };
+
             document.getElementById("qig-fd-save").onclick = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
                 if (blockFilterStoreMutation()) return;
+                clearFieldError();
                 const name = document.getElementById("qig-fd-name").value.trim();
                 const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
                 const description = document.getElementById("qig-fd-description").value.trim();
                 const seedInput = document.getElementById("qig-fd-seed").value.trim();
-                if (!name) { alert("Name is required."); return; }
-                if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
-                if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
+                if (!name) return failValidation("Name is required.", "qig-fd-name");
+                if (mode === "LLM" && !description) return failValidation("Concept description is required for LLM mode.", "qig-fd-description");
+                if (mode !== "LLM" && !keywords) return failValidation("Keywords are required.", "qig-fd-keywords");
                 const seedOverride = seedInput === "" ? null : normalizeSeedOverride(seedInput);
                 if (seedInput !== "" && seedOverride == null) {
-                    alert("Seed Override must be a non-negative integer or left blank.");
-                    return;
+                    return failValidation("Seed Override must be a non-negative integer or left blank.", "qig-fd-seed");
                 }
                 const selected = [...popup.querySelectorAll(".qig-fd-pool-cb:checked")].map(cb => String(cb.value));
                 const selectedScope = getSelectedScopeInfo();
                 const poolIds = normalizePoolIdList(selected);
-                if (!poolIds.length) { alert("Select at least one pool."); return; }
+                if (!poolIds.length) return failValidation("Select at least one pool.", "qig-fd-scope");
                 hidePopup(popup);
                 resolve({
                     name,
@@ -12709,45 +12757,41 @@ async function clearContextualFilters() {
     const previousState = snapshotFilterPoolState();
     if (currentCard.cardKey || currentCharId != null) {
         const options = [
-            { value: 1, label: "All filters" },
-            { value: 2, label: "Global filters only" },
+            { kind: "all", label: "All filters" },
+            { kind: "global", label: "Global filters only" },
         ];
         if (currentCard.cardKey) {
             options.push({
-                value: 3,
+                kind: "card",
                 label: `${currentCard.cardLabel || "Current card"} card-only filters`,
             });
         }
         if (currentCharId != null) {
             options.push({
-                value: currentCard.cardKey ? 4 : 3,
+                kind: "char",
                 label: `${charName || "This character"} character-wide filters`,
             });
         }
-        const choice = prompt(
-            `Clear filters — type a number:\n${options.map(option => `${option.value}) ${option.label}`).join("\n")}\n\nCancel to abort.`
-        );
-        if (!choice) return;
-        const n = parseInt(choice);
-        if (n === 1) {
+        const picked = await qigChoice("Clear which filters?", options.map(option => option.label));
+        if (picked == null) return;
+        const scopeToClear = options[picked].kind;
+        if (scopeToClear === "all") {
             contextualFilters = [];
-        } else if (n === 2) {
+        } else if (scopeToClear === "global") {
             contextualFilters = contextualFilters.filter(filter => getScopedRecordFromEntity(filter).scope !== FILTER_SCOPE_GLOBAL);
-        } else if (currentCard.cardKey && n === 3) {
+        } else if (scopeToClear === "card") {
             contextualFilters = contextualFilters.filter(filter => {
                 const scopeInfo = getScopedRecordFromEntity(filter);
                 return scopeInfo.scope !== FILTER_SCOPE_CARD || scopeInfo.cardKey !== currentCard.cardKey;
             });
-        } else if ((currentCard.cardKey && n === 4) || (!currentCard.cardKey && n === 3)) {
+        } else {
             contextualFilters = contextualFilters.filter(filter => {
                 const scopeInfo = getScopedRecordFromEntity(filter);
                 return scopeInfo.scope !== FILTER_SCOPE_CHAR || String(scopeInfo.charId) !== String(currentCharId);
             });
-        } else {
-            return;
         }
     } else {
-        if (!confirm("Clear all contextual filters?")) return;
+        if (!(await qigConfirm("Clear all contextual filters?", { okButton: "Clear Filters" }))) return;
         contextualFilters = [];
     }
     await commitFilterPoolStateMutation(previousState);
@@ -13903,7 +13947,7 @@ async function saveCharSettings() {
 async function resetCharSettings() {
     const charId = getCurrentCharId();
     if (charId == null || !getCurrentCharOverride()) return;
-    if (!confirm(`Remove the QIG override for ${getCurrentCharName() || "this character"}?`)) return;
+    if (!(await qigConfirm(`Remove the QIG override for ${getCurrentCharName() || "this character"}?`, { okButton: "Remove Override" }))) return;
     const legacyKey = getLegacyCurrentCharStorageKey();
     const nextSettings = { ...charSettings };
     const nextRefs = { ...charRefImages };
@@ -14089,7 +14133,7 @@ function loadCharSettings() {
 async function saveConnectionProfileNow() {
     const s = getSettings();
     const provider = s.provider;
-    const rawName = prompt("Profile name:");
+    const rawName = await qigInput("Profile name:", { okButton: "Save Profile" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
@@ -14100,7 +14144,7 @@ async function saveConnectionProfileNow() {
     const profile = {};
     keys.forEach(k => profile[k] = cloneSynchronizedValue(s[k]));
     const existing = !!connectionProfiles[provider]?.[name];
-    if (existing && !confirm(`Profile "${name}" already exists. Overwrite it?`)) return;
+    if (existing && !(await qigConfirm(`Profile "${name}" already exists. Overwrite it?`, { okButton: "Overwrite" }))) return;
     const nextProfiles = cloneSynchronizedValue(connectionProfiles);
     if (!nextProfiles[provider]) nextProfiles[provider] = {};
     nextProfiles[provider][name] = profile;
@@ -14143,7 +14187,7 @@ function loadConnectionProfile(name) {
 
 async function deleteConnectionProfileNow(name) {
     const provider = getSettings().provider;
-    if (!confirm(`Delete profile "${name}"?`)) return;
+    if (!(await qigConfirm(`Delete profile "${name}"?`, { okButton: "Delete Profile" }))) return;
     const nextProfiles = cloneSynchronizedValue(connectionProfiles);
     delete nextProfiles[provider]?.[name];
     if (!await saveLocalStoreBackupNow("qig_profiles", nextProfiles, "Failed to delete profile from your SillyTavern account.")) return;
@@ -14264,7 +14308,7 @@ function loadSelectedComfyWorkflowPreset() {
 }
 
 async function saveComfyWorkflowPresetAsNow() {
-    const rawName = prompt("Workflow preset name:");
+    const rawName = await qigInput("Workflow preset name:", { okButton: "Save Preset" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
@@ -14274,7 +14318,7 @@ async function saveComfyWorkflowPresetAsNow() {
     const existing = comfyWorkflows.find(w => w.name === name);
     const snapshot = getComfyWorkflowSnapshot();
     if (existing) {
-        if (!confirm(`Workflow preset "${name}" already exists. Overwrite it?`)) return;
+        if (!(await qigConfirm(`Workflow preset "${name}" already exists. Overwrite it?`, { okButton: "Overwrite" }))) return;
         const nextStore = comfyWorkflows.map(workflow => workflow.id === existing.id
             ? { ...workflow, ...snapshot, updatedAt: new Date().toISOString() }
             : workflow);
@@ -14302,7 +14346,7 @@ async function updateSelectedComfyWorkflowPresetNow() {
         toastr.warning("Select a workflow preset first");
         return;
     }
-    if (!confirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`)) return;
+    if (!(await qigConfirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`, { okButton: "Overwrite" }))) return;
     const nextStore = comfyWorkflows.map(workflow => workflow.id === preset.id
         ? { ...workflow, ...getComfyWorkflowSnapshot(), updatedAt: new Date().toISOString() }
         : workflow);
@@ -14322,7 +14366,7 @@ async function deleteSelectedComfyWorkflowPresetNow() {
         toastr.warning("Select a workflow preset first");
         return;
     }
-    if (!confirm(`Delete workflow preset "${preset.name}"?`)) return;
+    if (!(await qigConfirm(`Delete workflow preset "${preset.name}"?`, { okButton: "Delete Preset" }))) return;
     const nextStore = comfyWorkflows.filter(w => w.id !== preset.id);
     if (!await commitComfyWorkflowStore(nextStore)) return;
     renderComfyWorkflowPresets("");
@@ -14515,7 +14559,7 @@ function syncGenerationPresetIndicators() {
 }
 
 async function savePresetNow() {
-    const name = prompt("Preset name:");
+    const name = await qigInput("Preset name:", { okButton: "Save Preset" });
     if (!name) return;
     ensureFilterPoolsState();
     const s = getSettings();
@@ -14602,7 +14646,7 @@ function deletePreset(i) {
 }
 
 async function clearPresetsNow() {
-    if (confirm("Clear all presets?")) {
+    if (await qigConfirm("Clear all presets?", { okButton: "Clear Presets" })) {
         const settings = getSettings();
         const previousActiveId = String(settings.lastLoadedPresetId || "");
         settings.lastLoadedPresetId = "";
@@ -14704,7 +14748,7 @@ function showSetupWizard() {
         const finishWizard = ({ generate = false } = {}) => {
             hidePopup(popup, { restoreFocus: false });
             createUI();
-            document.getElementById("qig-wizard-btn")?.focus();
+            document.querySelector(".qig-wizard-btn")?.focus();
             if (generate) runConfiguredPaletteGeneration();
         };
         popup.querySelector("#qig-wizard-skip").onclick = () => hidePopup(popup);
@@ -15157,7 +15201,7 @@ function importSettings() {
             const legacyPrivateImages = data.charRefImages !== undefined
                 ? " This legacy file includes private reference images."
                 : "";
-            if (!confirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys and locally trusted executable workflows are kept; credentials and executable workflow bodies in the file are ignored.${legacyPrivateImages}`)) return;
+            if (!(await qigConfirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys and locally trusted executable workflows are kept; credentials and executable workflow bodies in the file are ignored.${legacyPrivateImages}`, { okButton: "Import Settings", wide: true }))) return;
             await commitSettingsImport(data);
             const contextMediaManager = document.getElementById("qig-context-media-manager");
             if (contextMediaManager) hidePopup(contextMediaManager);
@@ -16097,11 +16141,6 @@ function createUI() {
                         <select id="qig-style">${styleOpts}</select>
                         <small>Visual style preset applied to the prompt.</small>
                     </div>
-                </div>
-
-                <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
-                    <button class="menu_button qig-btn-prominent qig-wizard-btn" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup Wizard</span></button>
-                    <button class="menu_button qig-btn-prominent qig-logs-btn" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Generation Logs</span></button>
                 </div>
 
                 <div class="qig-collapsible qig-setup-shell">
@@ -18311,7 +18350,7 @@ function createUI() {
             ? `Found ${detection.matches.length} tag(s):\n${detection.matches.map(match => `[${match.sources.join(", ")}] ${match.prompt}`).join("\n")}`
             : `No tags found in last AI message or reasoning.\n\nScanned sources: ${sourceSummary}\n\nMessage preview:\n${visiblePreview}...\n\nRegex used:\n${detection.regexPattern}`;
 
-        alert(result);
+        await qigNotice(result, { title: "Inject tag detection", wide: true });
     };
 
     // LLM Override bindings
@@ -18699,7 +18738,7 @@ function addInputButton() {
 async function generateImageInjectPalette() {
     if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
+    if (initialSettings.confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return { status: "cancelled", generated: 0, failed: 0 };
 
     const mySerial = ++_paletteInjectSerial;
     const run = beginGeneration({ settings: initialSettings, disableGenerateButton: true, clearPendingAuto: true });
@@ -18936,7 +18975,7 @@ async function generateImageFromPlainDescription() {
         toastr.warning("Generation already in progress");
         return;
     }
-    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+    if (getSettings().confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return;
 
     let run = null;
     let s = null;
@@ -19089,7 +19128,7 @@ async function generateImage() {
     if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const usingTransientSettingsOverride = !!transientGenerationSettingsOverride;
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
+    if (initialSettings.confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return { status: "cancelled", generated: 0, failed: 0 };
     const ctx = getContext();
     const activeMessageTarget = getTransientGenerationTarget(ctx);
     if (activeMessageTarget?.stale) {
@@ -20191,6 +20230,24 @@ jQuery(function () {
                 console.warn("[ImageGen] Could not import RossAscends-mods:", e.message);
             }
 
+            // Imported before loadSettings() so the legacy-import question uses a
+            // native dialog rather than the browser one.
+            try {
+                const popupModule = await import("../../../popup.js");
+                dialogHost = createDialogHost({
+                    callGenericPopup: popupModule.callGenericPopup,
+                    popupType: popupModule.POPUP_TYPE,
+                    popupResult: popupModule.POPUP_RESULT,
+                    escapeHtml,
+                    nativeConfirm: (message) => globalThis.confirm?.(message),
+                    nativeAlert: (message) => globalThis.alert?.(message),
+                    nativePrompt: (message, value) => globalThis.prompt?.(message, value),
+                    onError: (error) => log(`Popup dialog failed, used browser dialog instead: ${error.message}`),
+                });
+            } catch (e) {
+                console.warn("[ImageGen] Could not import popup module, using browser dialogs:", e.message);
+            }
+
             await loadSettings();
             galleryInitializationPromise = initializeGalleryRepository();
             installLifecycleCleanup();
@@ -20290,9 +20347,39 @@ jQuery(function () {
             }
         } catch (err) {
             console.error("[Quick Image Gen] Initialization failed:", err);
+            reportInitializationFailure(err);
         }
     })();
 });
+
+/**
+ * A failed init used to leave nothing but a console line, so the drawer simply never
+ * appeared. Surface it in the extensions panel — where the drawer should have been —
+ * and as a sticky toast, so the failure is attributable instead of looking like the
+ * extension was never installed.
+ */
+function reportInitializationFailure(err) {
+    const detail = err?.message ? String(err.message) : "Unknown error";
+    try {
+        toastr?.error?.(
+            `Quick Image Gen could not start: ${detail}. Check the browser console for details.`,
+            "Quick Image Gen",
+            { timeOut: 0, extendedTimeOut: 0, escapeHtml: true },
+        );
+    } catch { /* toastr may not be loaded this early; the panel notice below still shows. */ }
+    try {
+        const mount = document.getElementById("extensions_settings");
+        if (!mount || document.getElementById("qig-init-error")) return;
+        const notice = document.createElement("div");
+        notice.id = "qig-init-error";
+        notice.className = "qig-field-error";
+        notice.setAttribute("role", "alert");
+        notice.textContent = `Quick Image Gen failed to load: ${detail}. Reload SillyTavern to retry; if it persists, check the browser console and report the error.`;
+        mount.appendChild(notice);
+    } catch (reportError) {
+        console.error("[Quick Image Gen] Could not display the initialization failure:", reportError);
+    }
+}
 
 
 let _saveToServerToastTs = 0;
@@ -20641,7 +20728,7 @@ async function handleMetadataDrop(e) {
             if (importedBackend && importedBackend !== s.localType) {
                 identityChanges.push(`local backend ${s.localType || "a1111"} → ${importedBackend}`);
             }
-            if (identityChanges.length && !confirm(`Importing this metadata will change ${identityChanges.join(", ")}. Continue?`)) {
+            if (identityChanges.length && !(await qigConfirm(`Importing this metadata will change ${identityChanges.join(", ")}. Continue?`, { okButton: "Import Metadata" }))) {
                 showStatus("Metadata import cancelled");
                 setTimeout(() => showStatus(null), 2000);
                 return;
