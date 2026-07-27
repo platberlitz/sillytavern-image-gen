@@ -40,7 +40,7 @@ test('manifest metadata and package versions are valid and aligned', async () =>
   assert.match(manifest.version, semverPattern);
   assert.match(packageJson.version, semverPattern);
   assert.equal(manifest.version, packageJson.version);
-  assert.equal(packageJson.version, '2.8.0');
+  assert.equal(packageJson.version, '2.9.0');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
   assert.equal(packageJson.engines.node, '^20.19.0 || ^22.13.0 || >=24.0.0');
@@ -52,7 +52,7 @@ test('manifest metadata and package versions are valid and aligned', async () =>
   assert.match(serverPackage.version, semverPattern);
   assert.match(readmeText, /server relay protocol `0\.2\.0`/);
   assert.match(serverReadmeText, /protocol version `0\.2\.0`/);
-  assert.match(serverReadmeText, /Quick Image Gen `2\.8\.0`/);
+  assert.match(serverReadmeText, /Quick Image Gen `2\.9\.0`/);
 
   for (const releasePath of ['lib/', 'server-plugin/', 'scripts/', 'tests/']) {
     assert.ok(packageJson.files.includes(releasePath), `package files must include ${releasePath}`);
