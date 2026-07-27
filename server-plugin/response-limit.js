@@ -1,5 +1,30 @@
 const DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024;
 const MAX_IMAGE_RESPONSE_BYTES = 25 * 1024 * 1024;
+const MAX_IN_FLIGHT_RESPONSE_BYTES = 4 * MAX_IMAGE_RESPONSE_BYTES;
+
+function createResponseByteBudget(maxBytes = MAX_IN_FLIGHT_RESPONSE_BYTES) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+        throw new TypeError("Response byte budget must be a positive safe integer");
+    }
+
+    let reservedBytes = 0;
+    function tryReserve(bytes) {
+        if (!Number.isSafeInteger(bytes) || bytes <= 0) {
+            throw new TypeError("Response byte reservation must be a positive safe integer");
+        }
+        if (bytes > maxBytes - reservedBytes) return null;
+
+        reservedBytes += bytes;
+        let released = false;
+        return function release() {
+            if (released) return;
+            released = true;
+            reservedBytes = Math.max(0, reservedBytes - bytes);
+        };
+    }
+
+    return { tryReserve };
+}
 
 async function readResponseBufferWithLimit(response, maxBytes = MAX_IMAGE_RESPONSE_BYTES) {
     const declaredLength = Number(response.headers?.get?.("content-length"));
@@ -66,6 +91,8 @@ async function readResponseTextWithLimit(response, maxBytes = DEFAULT_MAX_RESPON
 module.exports = {
     DEFAULT_MAX_RESPONSE_BYTES,
     MAX_IMAGE_RESPONSE_BYTES,
+    MAX_IN_FLIGHT_RESPONSE_BYTES,
+    createResponseByteBudget,
     readResponseBufferWithLimit,
     readResponseTextWithLimit,
 };

@@ -29,7 +29,7 @@ try {
 class FakeRouter {
     constructor() {
         this.middleware = [];
-        this.routes = new Map();
+        this.routes = [];
     }
 
     use(handler) {
@@ -37,25 +37,36 @@ class FakeRouter {
     }
 
     get(path, ...handlers) {
-        this.routes.set(`GET ${path}`, handlers);
+        this.routes.push({ method: "GET", path, handlers });
     }
 
     post(path, ...handlers) {
-        this.routes.set(`POST ${path}`, handlers);
+        this.routes.push({ method: "POST", path, handlers });
+    }
+
+    match(method, path) {
+        const requestedPath = String(path).toLowerCase();
+        return this.routes.find(route => route.method === method
+            && (requestedPath === route.path.toLowerCase() || requestedPath === `${route.path.toLowerCase()}/`))?.handlers || [];
     }
 }
 
 class MockRequest extends EventEmitter {
-    constructor(body, contentType = "application/json", user = "route-test-user") {
+    constructor(body, contentType = "application/json", user = "route-test-user", {
+        headers = {},
+        ip = "127.0.0.1",
+    } = {}) {
         super();
         this.method = "POST";
         this.body = undefined;
         this.rawBody = body;
-        this.headers = { "content-type": contentType };
+        this.headers = { "content-type": contentType, ...headers };
         this.user = user == null ? undefined : { profile: { handle: user } };
-        this.ip = "127.0.0.1";
+        this.ip = ip;
         this.aborted = false;
         this.destroyed = false;
+        this.hostBodyParserRan = false;
+        this.hostBodyParserReadBody = false;
     }
 
     get(name) {
@@ -64,13 +75,14 @@ class MockRequest extends EventEmitter {
 }
 
 class MockResponse extends EventEmitter {
-    constructor() {
+    constructor({ autoFinish = true } = {}) {
         super();
         this.statusCode = 200;
         this.body = "";
         this.destroyed = false;
         this.writableEnded = false;
         this.headers = {};
+        this.autoFinish = autoFinish;
     }
 
     status(value) {
@@ -91,7 +103,7 @@ class MockResponse extends EventEmitter {
     send(value) {
         this.body = value;
         this.writableEnded = true;
-        this.emit("finish");
+        if (this.autoFinish) this.emit("finish");
         return this;
     }
 
@@ -103,23 +115,36 @@ class MockResponse extends EventEmitter {
     end() {
         this.body = "";
         this.writableEnded = true;
-        this.emit("finish");
+        if (this.autoFinish) this.emit("finish");
         return this;
     }
 }
 
 const hostPreParser = preParser.createRelayPreParser();
 
+function hostBodyParser(req, _res, next) {
+    req.hostBodyParserRan = true;
+    if (req.body === undefined) {
+        req.hostBodyParserReadBody = true;
+        req.body = req.rawBody;
+    }
+    next();
+}
+
 async function invoke(router, path, body, contentType = "application/json", {
     authenticatedUser = "route-test-user",
+    autoFinishResponse = true,
+    headers = {},
     includePreParser = true,
+    ip = "127.0.0.1",
 } = {}) {
-    const req = new MockRequest(body, contentType, authenticatedUser);
+    const req = new MockRequest(body, contentType, authenticatedUser, { headers, ip });
     req.path = path;
-    const res = new MockResponse();
-    const route = router.routes.get(`POST ${path}`) || [];
+    const res = new MockResponse({ autoFinish: autoFinishResponse });
+    const route = router.match("POST", path);
     const stack = [
         ...(includePreParser ? hostPreParser : []),
+        hostBodyParser,
         ...router.middleware,
         ...route,
     ];
@@ -278,6 +303,59 @@ test("relay routes enforce guards and forward only bounded fixed-provider reques
     }
 });
 
+test("relay pre-parser covers Express case and trailing-slash route aliases", async () => {
+    const router = new FakeRouter();
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+        await plugin.init(router);
+    } finally {
+        console.log = originalLog;
+    }
+
+    const calls = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async url => {
+        calls.push(String(url));
+        return new Response('{"ok":true}', {
+            status: 201,
+            headers: { "Content-Type": "application/json" },
+        });
+    };
+    try {
+        const replicate = await invoke(router, "/RePlIcAtE", {
+            action: "createPrediction",
+            apiKey: "secret",
+            authScheme: "Bearer",
+            body: { version: "model-version", input: {} },
+        });
+        assert.equal(replicate.res.statusCode, 201);
+        assert.equal(replicate.req.hostBodyParserReadBody, false);
+
+        const civitai = await invoke(router, "/civitai/", {
+            action: "createWorkflow",
+            apiKey: "secret",
+            body: { steps: [] },
+        });
+        assert.equal(civitai.res.statusCode, 201);
+        assert.equal(civitai.req.hostBodyParserReadBody, false);
+        assert.deepEqual(calls, [
+            "https://api.replicate.com/v1/predictions",
+            "https://orchestration.civitai.com/v2/consumer/workflows?wait=0",
+        ]);
+    } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("relay pre-parser bounds unknown POST routes before the host parser", async () => {
+    const result = await invoke(new FakeRouter(), "/future-provider", {}, "application/json", {
+        headers: { "content-length": String(1024 * 1024 + 1) },
+    });
+    assert.equal(result.res.statusCode, 413);
+    assert.equal(result.req.hostBodyParserRan, false);
+});
+
 test("relay validates auth schemes and limits output authorization to explicit API origins", async () => {
     const router = new FakeRouter();
     const originalLog = console.log;
@@ -355,6 +433,74 @@ test("relay validates auth schemes and limits output authorization to explicit A
         assert.match(result.res.body, /Unsupported authorization scheme/);
         assert.equal(calls.length, 5);
     } finally {
+        globalThis.fetch = originalFetch;
+    }
+});
+
+test("relay enforces an aggregate in-flight response byte budget", async () => {
+    const router = new FakeRouter();
+    const originalLog = console.log;
+    console.log = () => {};
+    try {
+        await plugin.init(router);
+    } finally {
+        console.log = originalLog;
+    }
+
+    const originalFetch = globalThis.fetch;
+    let fetchCount = 0;
+    const imageResponse = () => new Response(Buffer.from([137, 80, 78, 71]), {
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+    });
+    globalThis.fetch = async () => {
+        fetchCount += 1;
+        return imageResponse();
+    };
+
+    const buffered = [];
+    try {
+        buffered.push(...await Promise.all(Array.from({ length: 4 }, (_, index) => invoke(router, "/replicate", {
+            action: "getOutput",
+            apiKey: "secret",
+            authScheme: "Bearer",
+            url: `https://pbxt.replicate.delivery/output-${index}.png`,
+        }, "application/json", {
+            authenticatedUser: `response-user-${index}`,
+            autoFinishResponse: false,
+            ip: `192.0.2.${index + 1}`,
+        }))));
+        assert.ok(buffered.every(result => result.res.statusCode === 200));
+        assert.equal(fetchCount, 4);
+
+        const blocked = await invoke(router, "/replicate", {
+            action: "getOutput",
+            apiKey: "secret",
+            authScheme: "Bearer",
+            url: "https://pbxt.replicate.delivery/blocked.png",
+        }, "application/json", {
+            authenticatedUser: "response-user-blocked",
+            ip: "192.0.2.50",
+        });
+        assert.equal(blocked.res.statusCode, 503);
+        assert.match(blocked.res.body, /relay is busy/);
+        assert.equal(fetchCount, 4);
+
+        buffered.forEach(result => result.res.emit("finish"));
+
+        const afterRelease = await invoke(router, "/replicate", {
+            action: "getOutput",
+            apiKey: "secret",
+            authScheme: "Bearer",
+            url: "https://pbxt.replicate.delivery/after-release.png",
+        }, "application/json", {
+            authenticatedUser: "response-user-after-release",
+            ip: "192.0.2.51",
+        });
+        assert.equal(afterRelease.res.statusCode, 200);
+        assert.equal(fetchCount, 5);
+    } finally {
+        buffered.forEach(result => result.res.emit("close"));
         globalThis.fetch = originalFetch;
     }
 });

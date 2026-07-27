@@ -5,13 +5,17 @@ import {
     buildContextMediaCandidates,
     canDeleteContextMediaPath,
     CONTEXT_MEDIA_LIBRARY_VERSION,
+    contextMediaBytesMatchFormat,
     countContextMediaPathReferences,
     DEFAULT_CONTEXT_MEDIA_MAX_BYTES,
+    DEFAULT_CONTEXT_MEDIA_MAX_FILES,
+    DEFAULT_CONTEXT_MEDIA_MAX_TOTAL_BYTES,
     normalizeContextMediaLibrary,
     parseContextMediaClassifierResponse,
     selectContextMedia,
     SUPPORTED_CONTEXT_MEDIA_FORMATS,
     validateContextMediaFile,
+    validateContextMediaFileSelection,
     validateContextMediaRemoteUrl,
 } from "../lib/context-media.js";
 
@@ -52,6 +56,85 @@ function libraryFixture() {
             }],
         }],
     };
+}
+
+function joinBytes(...parts) {
+    const output = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+    let offset = 0;
+    for (const part of parts) {
+        output.set(part, offset);
+        offset += part.length;
+    }
+    return output;
+}
+
+function mp4Box(type, data = new Uint8Array()) {
+    const output = new Uint8Array(8 + data.length);
+    new DataView(output.buffer).setUint32(0, output.length);
+    output.set(new TextEncoder().encode(type), 4);
+    output.set(data, 8);
+    return output;
+}
+
+function validMp4() {
+    const ftypData = new Uint8Array(16);
+    ftypData.set(new TextEncoder().encode("isom"));
+    ftypData.set(new TextEncoder().encode("isommp42"), 8);
+    const handler = new Uint8Array(24);
+    handler.set(new TextEncoder().encode("vide"), 8);
+    const mediaInfo = mp4Box("minf", mp4Box("stbl"));
+    const media = mp4Box("mdia", joinBytes(mp4Box("mdhd", new Uint8Array(24)), mp4Box("hdlr", handler), mediaInfo));
+    const track = mp4Box("trak", joinBytes(mp4Box("tkhd", new Uint8Array(84)), media));
+    const movie = mp4Box("moov", joinBytes(mp4Box("mvhd", new Uint8Array(100)), track));
+    return joinBytes(mp4Box("ftyp", ftypData), movie, mp4Box("mdat", Uint8Array.of(1)));
+}
+
+function encodeEbmlSize(size) {
+    for (let length = 1; length <= 4; length += 1) {
+        const maximum = (2 ** (7 * length)) - 2;
+        if (size > maximum) continue;
+        const output = new Uint8Array(length);
+        let remaining = size;
+        for (let index = length - 1; index >= 0; index -= 1) {
+            output[index] = remaining & 0xff;
+            remaining = Math.floor(remaining / 256);
+        }
+        output[0] |= 1 << (8 - length);
+        return output;
+    }
+    throw new Error("Test EBML element is too large");
+}
+
+function ebmlElement(id, data = new Uint8Array()) {
+    return joinBytes(Uint8Array.from(id), encodeEbmlSize(data.length), data);
+}
+
+function ebmlUnsigned(id, value) {
+    const bytes = [];
+    let remaining = value;
+    do {
+        bytes.unshift(remaining & 0xff);
+        remaining = Math.floor(remaining / 256);
+    } while (remaining > 0);
+    return ebmlElement(id, Uint8Array.from(bytes));
+}
+
+function validWebm() {
+    const header = ebmlElement([0x1a, 0x45, 0xdf, 0xa3], ebmlElement([0x42, 0x82], new TextEncoder().encode("webm")));
+    const info = ebmlElement([0x15, 0x49, 0xa9, 0x66], ebmlUnsigned([0x2a, 0xd7, 0xb1], 1_000_000));
+    const video = ebmlElement([0xe0], joinBytes(ebmlUnsigned([0xb0], 1), ebmlUnsigned([0xba], 1)));
+    const track = ebmlElement([0xae], joinBytes(
+        ebmlUnsigned([0xd7], 1),
+        ebmlUnsigned([0x83], 1),
+        ebmlElement([0x86], new TextEncoder().encode("V_VP8")),
+        video,
+    ));
+    const tracks = ebmlElement([0x16, 0x54, 0xae, 0x6b], track);
+    const cluster = ebmlElement([0x1f, 0x43, 0xb6, 0x75], joinBytes(
+        ebmlUnsigned([0xe7], 0),
+        ebmlElement([0xa3], Uint8Array.from([0x81, 0, 0, 0x80, 0])),
+    ));
+    return joinBytes(header, ebmlElement([0x18, 0x53, 0x80, 0x67], joinBytes(info, tracks, cluster)));
 }
 
 test("normalizes the versioned hierarchy without mutating input", () => {
@@ -220,6 +303,58 @@ test("rejects unsupported, mismatched, malformed, and oversized media", () => {
     assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 11 }, { maxBytes: 10 }).errors.join(" "), /10 byte limit/);
     assert.throws(() => validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 1 }, { maxBytes: -1 }), /maxBytes/);
     assert.equal(DEFAULT_CONTEXT_MEDIA_MAX_BYTES, 50 * 1024 * 1024);
+});
+
+test("validates bounded Context Media file selections before reading files", () => {
+    const accepted = validateContextMediaFileSelection([{ name: "a.mp4", size: 4 }, { name: "b.webm", size: 6 }], {
+        maxFiles: 2,
+        maxTotalBytes: 10,
+    });
+    assert.equal(accepted.valid, true);
+    assert.equal(accepted.totalBytes, 10);
+    assert.equal(accepted.files.length, 2);
+
+    const tooMany = validateContextMediaFileSelection(Array.from({ length: DEFAULT_CONTEXT_MEDIA_MAX_FILES + 1 }, (_, index) => ({
+        name: `${index}.png`,
+        size: 1,
+    })));
+    assert.equal(tooMany.valid, false);
+    assert.match(tooMany.errors[0], /no more than 20/);
+
+    const tooLarge = validateContextMediaFileSelection([{ name: "a.mp4", size: 6 }, { name: "b.mp4", size: 5 }], {
+        maxTotalBytes: 10,
+    });
+    assert.equal(tooLarge.valid, false);
+    assert.match(tooLarge.errors[0], /aggregate limit/);
+
+    let yielded = 0;
+    const generated = validateContextMediaFileSelection((function* files() {
+        while (true) {
+            yielded += 1;
+            yield { name: `${yielded}.png`, size: 1 };
+        }
+    })(), { maxFiles: 2 });
+    assert.equal(generated.valid, false);
+    assert.equal(yielded, 3);
+    assert.match(generated.errors[0], /no more than 2/);
+
+    assert.equal(DEFAULT_CONTEXT_MEDIA_MAX_TOTAL_BYTES, 100 * 1024 * 1024);
+    assert.throws(() => validateContextMediaFileSelection([], { maxFiles: -1 }), /maxFiles/);
+});
+
+test("requires bounded MP4 and WebM container structure, not header magic", () => {
+    const mp4Format = { mimeType: "video/mp4", type: "video" };
+    const webmFormat = { mimeType: "video/webm", type: "video" };
+    assert.equal(contextMediaBytesMatchFormat(validMp4(), mp4Format), true);
+    assert.equal(contextMediaBytesMatchFormat(validWebm(), webmFormat), true);
+
+    const ftypData = new Uint8Array(12);
+    ftypData.set(new TextEncoder().encode("isom"));
+    ftypData.set(new TextEncoder().encode("isom"), 8);
+    assert.equal(contextMediaBytesMatchFormat(mp4Box("ftyp", ftypData), mp4Format), false);
+    const webmHeaderOnly = ebmlElement([0x1a, 0x45, 0xdf, 0xa3], ebmlElement([0x42, 0x82], new TextEncoder().encode("webm")));
+    assert.equal(contextMediaBytesMatchFormat(webmHeaderOnly, webmFormat), false);
+    assert.equal(contextMediaBytesMatchFormat(Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]), webmFormat), false);
 });
 
 test("accepts credential-free public HTTPS media URLs", () => {

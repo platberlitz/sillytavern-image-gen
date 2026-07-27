@@ -22,7 +22,7 @@ const { installRelayPreParser } = relayPlugin.default ?? relayPlugin;
 installRelayPreParser(app);
 ```
 
-The relative path assumes the standard `src/server-main.js` and `plugins/quick-image-gen-relay/` layout. The installer mounts the middleware on the exact relay prefix and records that installation for the health check. The middleware applies only to `POST /civitai` and `POST /replicate`, acquires global and per-address upload concurrency before reading, rejects non-JSON and declared oversized requests, and parses at most 1 MiB. The normal host authentication chain still runs afterward. The plugin routes independently require an authenticated `req.user` and apply a separate per-account concurrency limit. Mounting after the global parser is detected on relay POSTs and rejected; omitting this integration leaves relay POSTs and health checks at HTTP 503.
+The relative path assumes the standard `src/server-main.js` and `plugins/quick-image-gen-relay/` layout. The installer mounts the middleware on the exact relay prefix and records that installation for the health check. The middleware applies to every POST under that prefix, including Express case and trailing-slash aliases and unknown routes, acquires global and per-address upload concurrency before reading, rejects non-JSON and declared oversized requests, and parses at most 1 MiB. The normal host authentication chain still runs afterward. The plugin routes independently require an authenticated `req.user` and apply a separate per-account concurrency limit. Mounting after the global parser is detected on relay POSTs and rejected; omitting this integration leaves relay POSTs and health checks at HTTP 503.
 
 ## Security
 
@@ -31,7 +31,7 @@ SillyTavern server plugins are not sandboxed. Only install plugins from develope
 This plugin is intentionally narrow:
 
 - It only relays CivitAI v2 consumer workflow creation, status, and `DELETE` cancellation, plus Replicate prediction creation, status, and cancellation. CivitAI's [live v2 OpenAPI](https://orchestration.civitai.com/openapi/v2-consumers.json) names `DELETE /v2/consumer/workflows/{workflowId}` `DeleteWorkflow`; its [official JavaScript client](https://github.com/civitai/civitai-client-javascript/blob/main/src/generated/sdk.gen.ts) exposes the same operation as `deleteWorkflow()`.
-- Provider output retrieval is limited to trusted CivitAI/Replicate HTTPS hosts and a 25 MiB streamed response; JSON relay bodies and responses have separate bounded limits.
+- Provider output retrieval is limited to trusted CivitAI/Replicate HTTPS hosts and a 25 MiB response; JSON relay bodies and responses have separate bounded limits. All buffered upstream responses share a 100 MiB in-flight reservation budget.
 - Provider API credentials are always sent to the fixed create/status/cancel API origins. Output requests are unauthenticated by default and can receive credentials only when explicitly requested and the output URL has the exact CivitAI orchestration or Replicate API origin.
 - It does not accept arbitrary target URLs, so it is not a general-purpose open proxy.
 - It does not store or log provider API keys. Keys are only used to build the upstream `Authorization` header for the current request.

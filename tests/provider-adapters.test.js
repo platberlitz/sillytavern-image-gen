@@ -300,6 +300,33 @@ test('provider image extraction accepts OpenAI and Gemini response envelopes', (
   );
 });
 
+test('NovelAI-compatible extraction handles strings, content parts, and message images', () => {
+  const imageUrl = 'https://proxy.example/result.png';
+  assert.equal(extractProviderImageSource({
+    choices: [{ message: { content: `![generated](${imageUrl})` } }],
+  }), imageUrl);
+  assert.equal(extractProviderImageSource({
+    choices: [{ message: { content: [
+      { type: 'text', text: 'Generation complete' },
+      { type: 'image_url', image_url: { url: imageUrl } },
+    ] } }],
+  }), imageUrl);
+  assert.equal(extractProviderImageSource({
+    choices: [{ message: { content: [{ type: 'text', text: `Image: ${imageUrl}` }] } }],
+  }), imageUrl);
+  assert.equal(extractProviderImageSource({
+    choices: [{ message: { images: [{ image_url: imageUrl }] } }],
+  }), imageUrl);
+});
+
+test('provider image extraction tolerates malformed compatible envelopes', () => {
+  assert.doesNotThrow(() => extractProviderImageSource({ candidates: { content: { parts: {} } } }));
+  assert.equal(extractProviderImageSource({ candidates: { content: { parts: {} } } }), null);
+  assert.equal(extractProviderImageSource({
+    choices: [{ message: { content: { type: 'text', text: 'No image was generated' }, images: {} } }],
+  }), null);
+});
+
 test('provider image extraction accepts complete output envelopes', () => {
   const imageUrl = 'https://cdn.example.test/output.png';
   assert.equal(extractProviderImageSource({ output: imageUrl }), imageUrl);

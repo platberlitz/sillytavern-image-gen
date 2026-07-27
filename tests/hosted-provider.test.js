@@ -19,12 +19,14 @@ import {
     readSseDataStream,
 } from "../lib/hosted-provider.js";
 import {
+    buildNanoGptReferenceFields,
     getFalEffectiveSteps,
     getFalEffectiveGuidance,
     getNanoGptEffectiveResolution,
     getNanoGptModelCapabilities,
     getNanoGptReferenceConstraints,
     getNanoGptResolution,
+    getNanoGptStrengthParameter,
     getGlmImageResolution,
     getProviderGenerationCapabilities,
     pollinationsModelRequiresAuth,
@@ -201,11 +203,37 @@ test("hosted retry, trust, auth, and capability policies are conservative", asyn
         architecture: { input_modalities: ["text", "image"] },
         supported_parameters: { steps: {}, guidance_scale: {}, seed: {} },
     }).referenceImages, true);
+    assert.equal(getNanoGptStrengthParameter({
+        endpoints: [{ supported_parameters: { strength: { minimum: 0, maximum: 1 } } }],
+    }), "strength");
+    assert.equal(getNanoGptStrengthParameter({
+        endpoints: [{ supported_parameters: { denoising_strength: {} } }],
+    }), null);
+    assert.equal(getNanoGptStrengthParameter({
+        endpoints: [{ supported_parameters: {}, allowed_passthrough_parameters: ["strength"] }],
+    }), "strength");
+    assert.deepEqual(buildNanoGptReferenceFields(["data:image/png;base64,ref"], 0.6, {
+        endpoints: [{ supported_parameters: { strength: {} } }],
+    }), {
+        input_references: ["data:image/png;base64,ref"],
+        strength: 0.6,
+    });
+    assert.deepEqual(buildNanoGptReferenceFields(["data:image/png;base64,ref"], 0.6, {
+        endpoints: [{ supported_parameters: {} }],
+    }), {
+        input_references: ["data:image/png;base64,ref"],
+    });
     assert.equal(getNanoGptResolution(512, 512), "1024x1024");
     assert.equal(getNanoGptResolution(768, 1024), "768x1024");
     assert.deepEqual(getNanoGptReferenceConstraints({
         endpoints: [{ input_reference_constraints: { max_images: 2, formats: [".png", "image/jpeg"] } }],
     }), { maxImages: 2, mimeTypes: ["image/png", "image/jpeg"], maxBytes: null });
+    assert.deepEqual(getNanoGptReferenceConstraints({
+        endpoints: [{ supported_parameters: {
+            max_input_images: 1,
+            input_image_constraints: { max_items: 1, route: { formats: ["png"], max_bytes: 1024 } },
+        } }],
+    }), { maxImages: 1, mimeTypes: ["image/png"], maxBytes: 1024 });
     assert.equal(getNanoGptResolution(1000, 700, {
         supported_parameters: { resolution: { values: ["640x640", "1280x768"] } },
     }), "1280x768");

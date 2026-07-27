@@ -17,7 +17,9 @@ const RELAY_PREFIX = "/api/plugins/quick-image-gen-relay";
 const relayConcurrency = createRelayConcurrencyLimiter({ getKey: getAddressKey });
 
 function isRelayPost(req) {
-    return req.method === "POST" && (req.path === "/civitai" || req.path === "/replicate");
+    // This middleware is mounted on RELAY_PREFIX, so cover every POST that can
+    // reach the plugin, including Express case/trailing-slash route aliases.
+    return req.method === "POST";
 }
 
 function relayOnly(handler) {

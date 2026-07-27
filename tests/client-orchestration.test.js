@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     applyStateBeforePersistence,
+    createAccountStorageScope,
     createAbortableSerializedRunner,
     createConversationCheckpoint,
     createLatestWinsAsyncRunner,
@@ -13,14 +14,21 @@ import {
     isConversationCheckpointCurrent,
     isGeneratedImageMessage,
     materializeAndValidateProviderOutput,
+    MAX_PROMPT_HISTORY_NEGATIVE_LENGTH,
+    MAX_PROMPT_HISTORY_PROMPT_LENGTH,
+    MAX_PROMPT_HISTORY_SERIALIZED_LENGTH,
     normalizeCharacterReferenceRecord,
     normalizeMessageSourceIdentity,
     normalizePromptHistory,
+    persistIfCurrent,
+    persistPromptHistory,
     readConstrainedNumber,
     registerConversationCheckpointInsertion,
     rethrowAfterRollbackPersistence,
+    restoreMutableMessageState,
     sendIsolatedConnectionManagerRequest,
     setCharacterProviderReferences,
+    snapshotMutableMessageState,
     summarizeOperationOutcomes,
     unregisterConversationCheckpointInsertion,
 } from "../lib/client-orchestration.js";
@@ -187,12 +195,84 @@ test("Connection Manager cancellation waits for abort-ignoring official work to 
 
 test("prompt history rejects malformed stores and bounds validated entries", () => {
     assert.deepEqual(normalizePromptHistory({ prompt: "bad" }), []);
+    assert.deepEqual(normalizePromptHistory([{ prompt: "none" }], 0), []);
     assert.deepEqual(normalizePromptHistory([
         null,
         { prompt: "" },
         { prompt: "one", negative: 4, time: null },
         { prompt: "two", negative: "no", time: "now" },
     ], 1), [{ prompt: "one", negative: "", time: "" }]);
+
+    const oversized = normalizePromptHistory(Array.from({ length: 50 }, (_, index) => ({
+        prompt: `${index}${"\0".repeat(MAX_PROMPT_HISTORY_PROMPT_LENGTH + 100)}`,
+        negative: "\0".repeat(MAX_PROMPT_HISTORY_NEGATIVE_LENGTH + 100),
+        time: "t".repeat(500),
+    })));
+    assert.ok(oversized.length > 0);
+    assert.ok(oversized.every(entry => entry.prompt.length <= MAX_PROMPT_HISTORY_PROMPT_LENGTH));
+    assert.ok(oversized.every(entry => entry.negative.length <= MAX_PROMPT_HISTORY_NEGATIVE_LENGTH));
+    assert.ok(JSON.stringify(oversized).length <= MAX_PROMPT_HISTORY_SERIALIZED_LENGTH);
+});
+
+test("account browser-storage names are isolated and require an identity", () => {
+    const first = createAccountStorageScope("account-a");
+    const second = createAccountStorageScope("account-b");
+    assert.equal(createAccountStorageScope(""), null);
+    assert.notEqual(first.galleryDbName, second.galleryDbName);
+    assert.notEqual(first.galleryManifestKey, second.galleryManifestKey);
+    assert.notEqual(first.promptHistoryKey, second.promptHistoryKey);
+    assert.notEqual(first.galleryDbName, "qig-gallery");
+    assert.notEqual(first.galleryManifestKey, "qig_gallery_manifest_v2");
+    assert.notEqual(first.promptHistoryKey, "qig_prompt_history");
+});
+
+test("prompt history quota failure never erases the previously stored history", () => {
+    const key = "scoped-history";
+    const previous = JSON.stringify([{ prompt: "previous", negative: "", time: "then" }]);
+    const values = new Map([[key, previous]]);
+    const attempts = [];
+    const storage = {
+        getItem: name => values.get(name) ?? null,
+        setItem(name, value) {
+            attempts.push(value);
+            if (value.length > 100) throw new DOMException("full", "QuotaExceededError");
+            values.set(name, value);
+        },
+    };
+    const next = [
+        { prompt: "n".repeat(200), negative: "", time: "now" },
+        { prompt: "previous", negative: "", time: "then" },
+    ];
+
+    const result = persistPromptHistory(storage, key, next);
+
+    assert.equal(result.saved, false);
+    assert.equal(storage.getItem(key), previous);
+    assert.equal(attempts.includes("[]"), false);
+    assert.equal(result.history[0].prompt, "n".repeat(200));
+});
+
+test("prompt history quota recovery drops oldest entries before the newest", () => {
+    const key = "scoped-history";
+    const newest = { prompt: "new", negative: "", time: "now" };
+    const oldest = { prompt: "old", negative: "", time: "then" };
+    const newestSerialized = JSON.stringify([newest]);
+    const storage = {
+        value: "",
+        setItem(name, value) {
+            assert.equal(name, key);
+            if (value.length > newestSerialized.length) {
+                throw new DOMException("full", "QuotaExceededError");
+            }
+            this.value = value;
+        },
+    };
+
+    const result = persistPromptHistory(storage, key, [newest, oldest]);
+
+    assert.equal(result.saved, true);
+    assert.deepEqual(result.history, [newest]);
+    assert.equal(storage.value, newestSerialized);
 });
 
 test("character references remain owned by their provider", () => {
@@ -242,6 +322,33 @@ test("storage probes fall back cleanly and state rolls back when persistence fai
     assert.equal(state.value, "override");
 });
 
+test("identity-bound persistence rejects failed saves and skips stale compensation", async () => {
+    let current = false;
+    let calls = 0;
+    const persist = async () => { calls += 1; };
+
+    assert.equal(await persistIfCurrent({ persist, isCurrent: () => current, skipIfStale: true }), false);
+    assert.equal(calls, 0);
+    await assert.rejects(
+        persistIfCurrent({ persist, isCurrent: () => current, staleMessage: "chat changed" }),
+        error => error?.name === "AbortError" && error.message === "chat changed",
+    );
+
+    current = true;
+    await assert.rejects(
+        persistIfCurrent({ persist: async () => false, isCurrent: () => current, failureMessage: "save failed" }),
+        /save failed/,
+    );
+    await assert.rejects(
+        persistIfCurrent({
+            persist: async () => { current = false; },
+            isCurrent: () => current,
+            staleMessage: "chat changed after save",
+        }),
+        error => error?.name === "AbortError" && error.message === "chat changed after save",
+    );
+});
+
 test("rollback persistence preserves the original failure and aggregates compensation failures", async () => {
     const original = new DOMException("commit cancelled", "AbortError");
     let persisted = 0;
@@ -257,6 +364,33 @@ test("rollback persistence preserves the original failure and aggregates compens
             && error.errors[0] === original
             && error.errors[1] === rollback,
     );
+});
+
+test("mutable message state is restored exactly after a failed persistence attempt", () => {
+    const message = {
+        mes: "<image>keep me</image>",
+        extra: { display_text: "display", nested: { value: 1 } },
+        swipes: ["first", "<image>current</image>"],
+        swipe_id: 1,
+        untouched: "preserved",
+    };
+    const snapshot = snapshotMutableMessageState(message);
+
+    message.mes = "";
+    message.extra.display_text = "";
+    message.extra.consumed = true;
+    message.swipes[1] = "";
+    delete message.swipe_id;
+    message.untouched = "newer unrelated value";
+
+    assert.equal(restoreMutableMessageState(message, snapshot), true);
+    assert.deepEqual(message, {
+        mes: "<image>keep me</image>",
+        extra: { display_text: "display", nested: { value: 1 } },
+        swipes: ["first", "<image>current</image>"],
+        swipe_id: 1,
+        untouched: "newer unrelated value",
+    });
 });
 
 test("conversation checkpoints detect append-only advancement and generated image messages", () => {

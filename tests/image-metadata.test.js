@@ -6,7 +6,14 @@ import {
   detectImageFormat,
   embedPngMetadata,
   embedPngMetadataBundle,
+  MAX_ANIMATED_FRAME_PIXELS,
+  MAX_ISO_BOXES,
+  MAX_PNG_CHUNKS,
   MAX_PNG_METADATA_BYTES,
+  MAX_TIFF_IFD_ENTRIES,
+  MAX_TIFF_REFERENCED_BYTES,
+  MAX_TIFF_VALUE_COUNT,
+  MAX_TIFF_VALUE_BYTES,
   parseGenerationParameters,
   parseStructuredGenerationMetadata,
   readPngMetadata,
@@ -78,6 +85,162 @@ function pngWithImageData({ width = 1, height = 1, raw = Uint8Array.from([0, 255
   return output;
 }
 
+function joinBytes(...parts) {
+  const bytes = parts.map((part) => part instanceof Uint8Array ? part : new Uint8Array(part));
+  const output = new Uint8Array(bytes.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of bytes) {
+    output.set(part, offset);
+    offset += part.length;
+  }
+  return output;
+}
+
+function isoBox(type, data = new Uint8Array()) {
+  const output = new Uint8Array(8 + data.length);
+  new DataView(output.buffer).setUint32(0, output.length);
+  output.set(new TextEncoder().encode(type), 4);
+  output.set(data, 8);
+  return output;
+}
+
+function writeTiffEntry(view, offset, tag, type, count, value) {
+  view.setUint16(offset, tag, true);
+  view.setUint16(offset + 2, type, true);
+  view.setUint32(offset + 4, count, true);
+  view.setUint32(offset + 8, value, true);
+}
+
+function tiffWithEntryCount(count) {
+  const output = new Uint8Array(8 + 2 + count * 12 + 4);
+  const view = new DataView(output.buffer);
+  output.set([0x49, 0x49]);
+  view.setUint16(2, 42, true);
+  view.setUint32(4, 8, true);
+  view.setUint16(8, count, true);
+  return output;
+}
+
+function tiffWithSharedTagValues() {
+  const extraEntries = 128;
+  const sharedLength = Math.floor(MAX_TIFF_VALUE_BYTES / extraEntries) + 1;
+  const entryCount = 4 + extraEntries;
+  const sharedStart = 8 + 2 + entryCount * 12 + 4;
+  const pixelStart = sharedStart + sharedLength;
+  const output = new Uint8Array(pixelStart + 1);
+  const view = new DataView(output.buffer);
+  output.set([0x49, 0x49]);
+  view.setUint16(2, 42, true);
+  view.setUint32(4, 8, true);
+  view.setUint16(8, entryCount, true);
+  let entryOffset = 10;
+  writeTiffEntry(view, entryOffset, 256, 4, 1, 1); entryOffset += 12;
+  writeTiffEntry(view, entryOffset, 257, 4, 1, 1); entryOffset += 12;
+  writeTiffEntry(view, entryOffset, 273, 4, 1, pixelStart); entryOffset += 12;
+  writeTiffEntry(view, entryOffset, 279, 4, 1, 1); entryOffset += 12;
+  for (let index = 0; index < extraEntries; index += 1) {
+    writeTiffEntry(view, entryOffset, 1_000 + index, 1, sharedLength, sharedStart);
+    entryOffset += 12;
+  }
+  return output;
+}
+
+function tiffWithExcessiveValueCount() {
+  const sharedCount = Math.floor(MAX_TIFF_VALUE_COUNT / 2) + 1;
+  const entryCount = 6;
+  const sharedStart = 8 + 2 + entryCount * 12 + 4;
+  const pixelStart = sharedStart + sharedCount;
+  const output = new Uint8Array(pixelStart + 1);
+  const view = new DataView(output.buffer);
+  output.set([0x49, 0x49]);
+  view.setUint16(2, 42, true);
+  view.setUint32(4, 8, true);
+  view.setUint16(8, entryCount, true);
+  writeTiffEntry(view, 10, 256, 4, 1, 1);
+  writeTiffEntry(view, 22, 257, 4, 1, 1);
+  writeTiffEntry(view, 34, 273, 4, 1, pixelStart);
+  writeTiffEntry(view, 46, 279, 4, 1, 1);
+  writeTiffEntry(view, 58, 1_000, 1, sharedCount, sharedStart);
+  writeTiffEntry(view, 70, 1_001, 1, sharedCount, sharedStart);
+  return output;
+}
+
+function tiffWithRepeatedStripRange() {
+  const stripLength = 64 * 1024;
+  const stripCount = Math.floor(MAX_TIFF_REFERENCED_BYTES / stripLength) + 1;
+  const entryCount = 4;
+  const offsetsStart = 8 + 2 + entryCount * 12 + 4;
+  const pixelStart = offsetsStart + stripCount * 4;
+  const output = new Uint8Array(pixelStart + stripLength);
+  const view = new DataView(output.buffer);
+  output.set([0x49, 0x49]);
+  view.setUint16(2, 42, true);
+  view.setUint32(4, 8, true);
+  view.setUint16(8, entryCount, true);
+  writeTiffEntry(view, 10, 256, 4, 1, 1);
+  writeTiffEntry(view, 22, 257, 4, 1, 1);
+  writeTiffEntry(view, 34, 273, 4, stripCount, offsetsStart);
+  writeTiffEntry(view, 46, 279, 4, 1, stripLength);
+  for (let index = 0; index < stripCount; index += 1) view.setUint32(offsetsStart + index * 4, pixelStart, true);
+  return output;
+}
+
+function animatedGif(frameCount, width, height) {
+  const header = new Uint8Array(13);
+  header.set(new TextEncoder().encode("GIF89a"));
+  const headerView = new DataView(header.buffer);
+  headerView.setUint16(6, width, true);
+  headerView.setUint16(8, height, true);
+  const frame = new Uint8Array(14);
+  frame[0] = 0x2c;
+  const frameView = new DataView(frame.buffer);
+  frameView.setUint16(5, width, true);
+  frameView.setUint16(7, height, true);
+  frame.set([2, 1, 0, 0], 10);
+  return joinBytes(header, ...Array.from({ length: frameCount }, () => frame), Uint8Array.of(0x3b));
+}
+
+function riffChunk(type, data) {
+  const output = new Uint8Array(8 + data.length + (data.length & 1));
+  output.set(new TextEncoder().encode(type), 0);
+  new DataView(output.buffer).setUint32(4, data.length, true);
+  output.set(data, 8);
+  return output;
+}
+
+function animatedWebp(frameCount, width, height) {
+  const source = VALID_IMAGES.webp;
+  const sourceView = new DataView(source.buffer, source.byteOffset, source.byteLength);
+  const vp8 = Uint8Array.from(source.subarray(20, 20 + sourceView.getUint32(16, true)));
+  const vp8View = new DataView(vp8.buffer);
+  vp8View.setUint16(6, width, true);
+  vp8View.setUint16(8, height, true);
+
+  const extended = new Uint8Array(10);
+  extended[0] = 0x02;
+  for (const [offset, value] of [[4, width - 1], [7, height - 1]]) {
+    extended[offset] = value & 0xff;
+    extended[offset + 1] = (value >>> 8) & 0xff;
+    extended[offset + 2] = (value >>> 16) & 0xff;
+  }
+  const nestedImage = riffChunk("VP8 ", vp8);
+  const frameHeader = new Uint8Array(16);
+  for (const [offset, value] of [[6, width - 1], [9, height - 1]]) {
+    frameHeader[offset] = value & 0xff;
+    frameHeader[offset + 1] = (value >>> 8) & 0xff;
+    frameHeader[offset + 2] = (value >>> 16) & 0xff;
+  }
+  const parts = [riffChunk("VP8X", extended), riffChunk("ANIM", new Uint8Array(6))];
+  for (let index = 0; index < frameCount; index += 1) parts.push(riffChunk("ANMF", joinBytes(frameHeader, nestedImage)));
+  const body = joinBytes(...parts);
+  const output = new Uint8Array(12 + body.length);
+  output.set(new TextEncoder().encode("RIFF"), 0);
+  new DataView(output.buffer).setUint32(4, output.length - 8, true);
+  output.set(new TextEncoder().encode("WEBP"), 8);
+  output.set(body, 12);
+  return output;
+}
+
 test('detects real supported images and rejects header-only lookalikes', () => {
   const jpeg = Buffer.from('/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AVN//2Q==', 'base64');
   assert.equal(detectImageFormat(jpeg).mime, 'image/jpeg');
@@ -110,6 +273,31 @@ test('detects real supported images and rejects header-only lookalikes', () => {
 test('rejects excessive dimensions and pixel counts before decoding image data', () => {
   assert.equal(detectImageFormat(pngWithImageData({ width: 16_385 })), null);
   assert.equal(detectImageFormat(pngWithImageData({ width: 10_000, height: 5_000 })), null);
+});
+
+test('bounds PNG chunks and cumulative AVIF box traversal', () => {
+  const emptyPngChunks = Array.from({ length: MAX_PNG_CHUNKS }, () => chunk('aaAa'));
+  assert.equal(detectImageFormat(png(...emptyPngChunks)), null);
+
+  const emptyIsoBoxes = Array.from({ length: MAX_ISO_BOXES }, () => isoBox('free'));
+  assert.equal(detectImageFormat(joinBytes(...emptyIsoBoxes, VALID_IMAGES.avif)), null);
+});
+
+test('bounds TIFF entry, shared value, and repeated byte-range work', () => {
+  assert.equal(detectImageFormat(tiffWithEntryCount(MAX_TIFF_IFD_ENTRIES + 1)), null);
+  assert.equal(detectImageFormat(tiffWithExcessiveValueCount()), null);
+  assert.equal(detectImageFormat(tiffWithSharedTagValues()), null);
+  assert.equal(detectImageFormat(tiffWithRepeatedStripRange()), null);
+});
+
+test('bounds aggregate animated GIF and WebP frame pixels', () => {
+  const width = 10_000;
+  const height = 4_000;
+  const excessiveFrames = Math.floor(MAX_ANIMATED_FRAME_PIXELS / (width * height)) + 1;
+  assert.equal(detectImageFormat(animatedGif(1, width, height))?.ext, 'gif');
+  assert.equal(detectImageFormat(animatedGif(excessiveFrames, width, height)), null);
+  assert.equal(detectImageFormat(animatedWebp(1, width, height))?.ext, 'webp');
+  assert.equal(detectImageFormat(animatedWebp(excessiveFrames, width, height)), null);
 });
 
 test('validates PNG compressed scanlines with bounded decoder output', async () => {

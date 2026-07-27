@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { IDBFactory } from 'fake-indexeddb';
+import { IDBFactory, IDBObjectStore } from 'fake-indexeddb';
 
 import {
-  clearGalleryRepositoryStorage,
-  GalleryRepository,
-  GALLERY_MANIFEST_VERSION,
+    clearGalleryRepositoryStorage,
+    GalleryRepository,
+    GALLERY_MANIFEST_VERSION,
 } from '../lib/gallery-repository.js';
+import { createAccountStorageScope } from '../lib/client-orchestration.js';
 
 const PNG_BYTES = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 
@@ -35,10 +36,13 @@ function createRepository(options = {}) {
     indexedDB: options.indexedDB || new IDBFactory(),
     storage: options.storage || new MemoryStorage(),
     dbName: options.dbName || `gallery-${Math.random()}`,
+    manifestKey: options.manifestKey,
+    legacyKey: options.legacyKey,
     createId: options.createId || (() => `entry-${++nextId}`),
     createObjectURL: options.createObjectURL || (blob => `blob:test/${blob.size}/${++nextId}`),
     revokeObjectURL: options.revokeObjectURL || (url => revoked.push(url)),
     maxEntries: options.maxEntries,
+    onEvict: options.onEvict,
   });
   return { repository, revoked };
 }
@@ -159,6 +163,40 @@ test('stores image bytes in IndexedDB and only metadata in localStorage', async 
   assert.equal(entries[0].sourceMessageId, 'message-456');
   assert.equal(entries[0].sourceMessageSignature, 'signature-789');
   assert.match(entries[0].url, /^blob:test\//);
+  await reloaded.close();
+});
+
+test('account-scoped gallery storage never loads another account or unscoped legacy data', async () => {
+  const storage = new MemoryStorage({
+    qig_gallery: JSON.stringify([{ prompt: 'unowned legacy', date: 3, url: 'data:image/png;base64,old' }]),
+    qig_prompt_history: JSON.stringify([{ prompt: 'unowned history' }]),
+  });
+  const indexedDB = new IDBFactory();
+  const accountA = createAccountStorageScope('account-a');
+  const accountB = createAccountStorageScope('account-b');
+  const optionsFor = scope => ({
+    storage,
+    indexedDB,
+    dbName: scope.galleryDbName,
+    manifestKey: scope.galleryManifestKey,
+    legacyKey: scope.galleryLegacyKey,
+  });
+
+  const first = createRepository(optionsFor(accountA)).repository;
+  await first.init(assetFor);
+  await first.add({ prompt: 'account A only', date: 4, url: 'https://example.com/a.png' }, assetFor);
+  await first.close();
+
+  const second = createRepository(optionsFor(accountB)).repository;
+  assert.deepEqual(await second.init(assetFor), []);
+  await second.close();
+  assert.notEqual(storage.getItem(accountA.galleryManifestKey), null);
+  assert.equal(storage.getItem(accountB.galleryManifestKey), null);
+  assert.notEqual(storage.getItem('qig_gallery'), null);
+  assert.notEqual(storage.getItem('qig_prompt_history'), null);
+
+  const reloaded = createRepository(optionsFor(accountA)).repository;
+  assert.deepEqual((await reloaded.init(assetFor)).map(entry => entry.prompt), ['account A only']);
   await reloaded.close();
 });
 
@@ -460,6 +498,28 @@ test('a valid manifest does not restore committed assets removed by trimming', a
   await reloaded.close();
 });
 
+test('notifies observers when the retention limit evicts gallery entries', async () => {
+  const evictions = [];
+  const { repository } = createRepository({
+    maxEntries: 2,
+    onEvict: event => evictions.push(event),
+  });
+  await repository.init(assetFor);
+
+  await repository.addMany([
+    { prompt: 'newest', date: 3, url: 'https://example.com/newest.png' },
+    { prompt: 'middle', date: 2, url: 'https://example.com/middle.png' },
+    { prompt: 'evicted', date: 1, url: 'https://example.com/evicted.png' },
+  ], assetFor);
+
+  assert.deepEqual(repository.list().map(entry => entry.prompt), ['newest', 'middle']);
+  assert.equal(evictions.length, 1);
+  assert.equal(evictions[0].reason, 'retention-limit');
+  assert.equal(evictions[0].limit, 2);
+  assert.deepEqual(evictions[0].entries.map(entry => entry.prompt), ['evicted']);
+  await repository.close();
+});
+
 test('legacy numeric-only source targets are not materialized as safe targets', async () => {
   const storage = new MemoryStorage();
   const indexedDB = new IDBFactory();
@@ -593,6 +653,62 @@ test('recovery independently drops an invalid thumbnail and retains its original
   await repository.close();
 });
 
+test('startup enumerates keys and loads a retained manifest blob only once', async () => {
+  const storage = new MemoryStorage();
+  const indexedDB = new IDBFactory();
+  const dbName = 'key-first-recovery';
+  const original = createRepository({ storage, indexedDB, dbName }).repository;
+  await original.init(assetFor);
+  await original.add({ prompt: 'retained', date: 10, url: 'https://example.com/retained.png' }, assetFor);
+  await original.close();
+
+  const retainedId = JSON.parse(storage.getItem('qig_gallery_manifest_v2')).entries[0].assetId;
+  for (let index = 0; index < 3; index++) {
+    const id = `stale-${index}`;
+    await putStoredAsset(indexedDB, dbName, {
+      id,
+      blob: new Blob([PNG_BYTES], { type: 'image/png' }),
+      thumbnailBlob: null,
+      metadata: { id, assetId: id, prompt: id, date: index },
+    });
+  }
+
+  const originalGet = IDBObjectStore.prototype.get;
+  const originalGetAll = IDBObjectStore.prototype.getAll;
+  const originalArrayBuffer = Blob.prototype.arrayBuffer;
+  const loadedKeys = [];
+  let getAllCalls = 0;
+  let validationCalls = 0;
+  IDBObjectStore.prototype.get = function trackedGet(...args) {
+    loadedKeys.push(args[0]);
+    return originalGet.apply(this, args);
+  };
+  IDBObjectStore.prototype.getAll = function trackedGetAll(...args) {
+    getAllCalls += 1;
+    return originalGetAll.apply(this, args);
+  };
+  Blob.prototype.arrayBuffer = async function trackedArrayBuffer() {
+    validationCalls += 1;
+    return originalArrayBuffer.call(this);
+  };
+
+  let reloaded;
+  try {
+    reloaded = createRepository({ storage, indexedDB, dbName }).repository;
+    assert.deepEqual((await reloaded.init(assetFor)).map(entry => entry.prompt), ['retained']);
+    assert.deepEqual(loadedKeys, [retainedId]);
+    assert.equal(validationCalls, 1);
+    assert.equal(getAllCalls, 0);
+  } finally {
+    IDBObjectStore.prototype.get = originalGet;
+    IDBObjectStore.prototype.getAll = originalGetAll;
+    Blob.prototype.arrayBuffer = originalArrayBuffer;
+    await reloaded?.close();
+  }
+
+  assert.deepEqual((await getStoredAssets(indexedDB, dbName)).map(asset => asset.id), [retainedId]);
+});
+
 test('recovery validates stored assets sequentially', async () => {
   const storage = new MemoryStorage({ qig_gallery_manifest_v2: '{broken' });
   const indexedDB = new IDBFactory();
@@ -609,7 +725,9 @@ test('recovery validates stored assets sequentially', async () => {
   const originalArrayBuffer = Blob.prototype.arrayBuffer;
   let active = 0;
   let peak = 0;
+  let calls = 0;
   Blob.prototype.arrayBuffer = async function trackedArrayBuffer() {
+    calls += 1;
     active += 1;
     peak = Math.max(peak, active);
     try {
@@ -623,6 +741,7 @@ test('recovery validates stored assets sequentially', async () => {
     const { repository } = createRepository({ storage, indexedDB, dbName });
     assert.equal((await repository.init(assetFor)).length, 4);
     assert.equal(peak, 1);
+    assert.equal(calls, 4);
     await repository.close();
   } finally {
     Blob.prototype.arrayBuffer = originalArrayBuffer;

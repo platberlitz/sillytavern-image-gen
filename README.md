@@ -6,7 +6,7 @@ Image generation in SillyTavern. 18 backends plus configurable custom APIs, 44 s
 Extensions -> Install from URL -> https://github.com/platberlitz/sillytavern-image-gen
 ```
 
-Requires SillyTavern 1.12.0 or newer (extension manifest v3). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
+Requires SillyTavern 1.14.0 or newer (extension manifest v3 and media-array support). Browser-only for most providers; CivitAI and Replicate users running `basicAuthMode: true` need the optional [server plugin](#server-plugin).
 
 ## Providers
 
@@ -33,7 +33,7 @@ Requires SillyTavern 1.12.0 or newer (extension manifest v3). Browser-only for m
 
 Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. This account data is not end-to-end encrypted by QIG. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
 
-QIG synchronizes active settings, Connection Profiles, generation presets, Comfy workflows, character overrides and references, Contextual Filters, filter pools, and Context Media through the current SillyTavern server user. Browser storage is only a local cache for those stores. Gallery images, prompt history, and runtime logs remain local to each browser and do not follow you to another device.
+QIG synchronizes active settings, Connection Profiles, generation presets, Comfy workflows, character overrides and references, Contextual Filters, filter pools, and Context Media through the current SillyTavern server user. Browser storage is only a local cache for those stores. Gallery images and prompt history remain local to each browser, are isolated by the current SillyTavern account, and do not follow you to another device. Runtime logs are session-local.
 
 ### Provider notes
 
@@ -163,14 +163,14 @@ Inject is auto-only. It activates when **Prompt source** is set to `AI-tagged (a
 1. QIG injects instructions asking your Text AI to emit image tags inside chat replies.
 2. QIG extracts those tags from the AI reply.
 3. QIG generates images from the extracted prompts.
-4. Optionally removes the tags from the stored message (`Auto-clean`).
+4. Delivers each image according to **Tag handling**. **Replace tag and attach to tagged message** removes the used tag and attaches the image to that source message. **Separate generated-image message** creates a distinct chat message; `Auto-clean` controls whether the source tag is removed.
 
 Supported tag formats:
 
 - `<image>prompt text</image>` (tag name configurable, default `image`)
 - `<pic prompt="prompt text">` (legacy)
 
-Inject settings: tag name, inject prompt template, extraction regex, injection position (`afterScenario`), tag handling, auto-clean. `Test Inject Detection` checks current chat messages for extractable tags without generating.
+Inject settings: tag name, inject prompt template, extraction regex, injection position (`afterScenario`), tag handling, auto-clean. Legacy `inline` settings migrate to source-message replacement because that was their prior runtime behavior. `Test Inject Detection` checks current chat messages for extractable tags without generating.
 
 ## Local Generation (A1111 / ComfyUI)
 
@@ -345,8 +345,8 @@ SillyTavern Style composition follows SillyTavern's order: common prefix, charac
 
 ## Gallery and History
 
-- **Gallery**: image blobs are stored in IndexedDB; localStorage contains only a compact versioned manifest. Legacy `qig_gallery` data is migrated only after all image bytes are durable. Failed persistence is shown as session-only instead of silently deleting entries.
-- **Prompt History**: stored in `qig_prompt_history` (localStorage). Reuse past prompts. Clear all option.
+- **Gallery**: image blobs are stored in account-scoped IndexedDB; localStorage contains only an account-scoped compact manifest. The newest 50 images are retained. QIG logs retention evictions and shows a warning when older images are removed. Failed persistence is shown as session-only instead of silently deleting entries.
+- **Prompt History**: stored in account-scoped localStorage with bounded entry and total sizes. Reuse past prompts. Clear all option.
 - **Logs**: generation and provider diagnostics shown in the QIG panel.
 
 ## Backgrounds
@@ -405,7 +405,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
 - Settings exports use schema v7 and omit credentials, private/reference images, and all Custom API trust or request-definition fields. Schema v5 imports remain supported and retain local credentials.
-- Legacy localStorage gallery entries migrate transactionally to IndexedDB. Legacy data is retained if any asset cannot be migrated.
+- Unscoped legacy `qig_gallery` and `qig_prompt_history` data is left untouched and is not assigned to the current account because its owner cannot be verified.
 
 ## Development
 

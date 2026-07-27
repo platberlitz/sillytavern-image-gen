@@ -305,6 +305,57 @@ test("imports reject unsupported versions, prototype keys, bad IDs, and oversize
     assert.throws(() => parseSettingsImport(" ".repeat(MAX_SETTINGS_IMPORT_BYTES + 1)), /smaller than/);
 });
 
+test("imports coerce typed settings and discard HTML payloads from numeric fields", () => {
+    const payload = '\"><img src=x onerror="globalThis.qigXss=1">';
+    const imported = parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        activeSettings: {
+            provider: "local",
+            width: "768",
+            height: 99_999,
+            nanogptStrength: payload,
+            localDenoise: "0.65",
+            a1111HiresDenoise: payload,
+            a1111IpAdapterWeight: payload,
+            a1111ControlNetWeight: payload,
+            a1111RestoreFaces: "false",
+            localType: payload,
+            injectInsertMode: "inline",
+        },
+        generationPresets: [{
+            id: "typed-preset",
+            provider: "local",
+            localDenoise: payload,
+            a1111HiresDenoise: "0.5",
+        }],
+        contextualFilters: [{
+            id: "typed-filter",
+            priority: payload,
+            seedOverride: "42",
+            enabled: "false",
+            matchMode: payload,
+        }],
+    }));
+
+    assert.equal(imported.activeSettings.width, 768);
+    assert.equal(imported.activeSettings.height, 2048);
+    assert.equal(imported.activeSettings.localDenoise, 0.65);
+    assert.equal(imported.activeSettings.a1111RestoreFaces, false);
+    assert.equal(imported.activeSettings.injectInsertMode, "replace");
+    assert.equal(imported.activeSettings.localType, undefined);
+    assert.equal(imported.activeSettings.nanogptStrength, undefined);
+    assert.equal(imported.activeSettings.a1111HiresDenoise, undefined);
+    assert.equal(imported.activeSettings.a1111IpAdapterWeight, undefined);
+    assert.equal(imported.activeSettings.a1111ControlNetWeight, undefined);
+    assert.equal(imported.generationPresets[0].localDenoise, undefined);
+    assert.equal(imported.generationPresets[0].a1111HiresDenoise, 0.5);
+    assert.equal(imported.contextualFilters[0].priority, undefined);
+    assert.equal(imported.contextualFilters[0].seedOverride, 42);
+    assert.equal(imported.contextualFilters[0].enabled, false);
+    assert.equal(imported.contextualFilters[0].matchMode, undefined);
+    assert.doesNotMatch(JSON.stringify(imported), /<img|qigXss/);
+});
+
 test("merging imported settings preserves local credentials without accepting imported ones", () => {
     const current = {
         proxyKey: "local-secret",

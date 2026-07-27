@@ -402,6 +402,9 @@ test("selects output nodes and an image index without losing image metadata", ()
 test("distinguishes pending, terminal errors, interruption, and completion without images", () => {
     assert.equal(parseComfyHistoryEntry({}).state, "pending");
     assert.equal(parseComfyHistoryEntry({ status: { status_str: "running" } }).state, "pending");
+    const pendingEmptyOutputs = parseComfyHistoryEntry({ outputs: {}, status: {} });
+    assert.equal(pendingEmptyOutputs.state, "pending");
+    assert.equal(pendingEmptyOutputs.terminal, false);
     assert.equal(parseComfyHistoryEntry({
         outputs: { "9": { images: [{ filename: "partial.png" }] } },
         status: { status_str: "running" },
@@ -637,8 +640,48 @@ test("uses feature-detected jobs cancellation before legacy routes", async () =>
     });
 
     assert.equal(result.strategy, "jobs-api");
+    assert.equal(result.cancelled, true);
+    assert.deepEqual(result.result, { cancelled: true });
     assert.match(request.url, new RegExp(`/api/jobs/${promptId}/cancel$`));
     assert.equal(request.init.method, "POST");
+});
+
+test("accepts empty 200, 204, and 205 jobs cancellation responses", async () => {
+    const responses = [
+        new Response("", { status: 200 }),
+        new Response(null, { status: 204 }),
+        new Response(null, { status: 205 }),
+    ];
+
+    for (const response of responses) {
+        const result = await cancelComfyPrompt(promptId, {
+            baseUrl,
+            jobsCancelSupported: true,
+            fetchImpl: async () => response,
+        });
+        assert.deepEqual(result, { strategy: "jobs-api", cancelled: true, result: null });
+    }
+});
+
+test("accepts a jobs cancellation response declared with Content-Length 0", async () => {
+    const result = await cancelComfyPrompt(promptId, {
+        baseUrl,
+        jobsCancelSupported: true,
+        fetchImpl: async () => new Response(null, {
+            status: 200,
+            headers: { "Content-Length": "0" },
+        }),
+    });
+
+    assert.deepEqual(result, { strategy: "jobs-api", cancelled: true, result: null });
+});
+
+test("rejects malformed nonempty jobs cancellation responses", async () => {
+    await assert.rejects(() => cancelComfyPrompt(promptId, {
+        baseUrl,
+        jobsCancelSupported: true,
+        fetchImpl: async () => new Response("not json", { status: 200 }),
+    }), /jobs cancellation response contains malformed JSON/);
 });
 
 test("deletes pending work from the queue when targeted jobs cancellation is unavailable", async () => {

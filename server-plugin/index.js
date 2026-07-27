@@ -1,7 +1,13 @@
 const PLUGIN_ID = "quick-image-gen-relay";
 const PROTOCOL_VERSION = require("./package.json").version;
 const REQUEST_TIMEOUT_MS = 60_000;
-const { readResponseBufferWithLimit, readResponseTextWithLimit } = require("./response-limit");
+const {
+    DEFAULT_MAX_RESPONSE_BYTES,
+    MAX_IMAGE_RESPONSE_BYTES,
+    createResponseByteBudget,
+    readResponseBufferWithLimit,
+    readResponseTextWithLimit,
+} = require("./response-limit");
 const {
     MAX_ACTION_BYTES,
     MAX_API_KEY_BYTES,
@@ -19,6 +25,7 @@ const {
 } = require("./pre-parser");
 
 const authenticatedConcurrency = createRelayConcurrencyLimiter({ getKey: getAuthenticatedUserKey });
+const responseByteBudget = createResponseByteBudget();
 
 const OUTPUT_AUTH_ORIGINS = Object.freeze({
     civitai: "https://orchestration.civitai.com",
@@ -29,6 +36,39 @@ function sendJson(res, status, body) {
     if (res.destroyed || res.writableEnded) return false;
     res.status(status).type("application/json").send(JSON.stringify(body));
     return true;
+}
+
+function reserveResponseBytes(res, maxBytes) {
+    const release = responseByteBudget.tryReserve(maxBytes);
+    if (!release) {
+        sendJson(res, 503, { error: "Quick Image Gen relay is busy" });
+        return null;
+    }
+
+    let operationDone = false;
+    let responseDone = false;
+    const releaseReservation = () => {
+        res.removeListener("finish", onResponseDone);
+        res.removeListener("close", onResponseDone);
+        release();
+    };
+    const releaseWhenSafe = () => {
+        if (operationDone && (responseDone || (!res.headersSent && !res.writableEnded))) {
+            releaseReservation();
+        }
+    };
+    function onResponseDone() {
+        responseDone = true;
+        releaseWhenSafe();
+    }
+    res.once("finish", onResponseDone);
+    res.once("close", onResponseDone);
+    if (res.destroyed || res.writableFinished) onResponseDone();
+
+    return function completeResponseOperation() {
+        operationDone = true;
+        releaseWhenSafe();
+    };
 }
 
 function requireAuthScheme(value, expected = "Bearer") {
@@ -63,6 +103,8 @@ function withTimeout(signal) {
 }
 
 async function relayJson(req, res, url, authHeader, init = {}) {
+    const completeResponseReservation = reserveResponseBytes(res, DEFAULT_MAX_RESPONSE_BYTES);
+    if (!completeResponseReservation) return;
     const timeout = withTimeout();
     let clientDisconnected = false;
     const abortOnDisconnect = () => {
@@ -110,6 +152,7 @@ async function relayJson(req, res, url, authHeader, init = {}) {
         }
         sendJson(res, 502, { error: error?.message || "Quick Image Gen relay request failed" });
     } finally {
+        completeResponseReservation();
         timeout.done();
         req.removeListener("aborted", abortOnDisconnect);
         res.removeListener("close", abortOnDisconnect);
@@ -148,6 +191,8 @@ function getOutputAuthorization(req, provider, url, authHeader) {
 }
 
 async function relayImage(req, res, url, authHeader = null, { manualRedirectProvider = null } = {}) {
+    const completeResponseReservation = reserveResponseBytes(res, MAX_IMAGE_RESPONSE_BYTES);
+    if (!completeResponseReservation) return;
     const timeout = withTimeout();
     let clientDisconnected = false;
     const abortOnDisconnect = () => {
@@ -209,6 +254,7 @@ async function relayImage(req, res, url, authHeader = null, { manualRedirectProv
         }
         sendJson(res, 502, { error: error?.message || "Quick Image Gen relay image request failed" });
     } finally {
+        completeResponseReservation();
         timeout.done();
         req.removeListener("aborted", abortOnDisconnect);
         res.removeListener("close", abortOnDisconnect);

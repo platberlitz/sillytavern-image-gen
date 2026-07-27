@@ -1,7 +1,42 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { getGeminiCandidateFailure, isEffectivelyBlankPixels } from "../lib/generated-image.js";
+import {
+    getGeminiCandidateFailure,
+    isEffectivelyBlankPixels,
+    normalizeSavedImagePath,
+} from "../lib/generated-image.js";
+
+test("saved SillyTavern image paths are encoded and remain root-relative", () => {
+    assert.equal(
+        normalizeSavedImagePath("/user/images/John Doe/qig_test.png"),
+        "/user/images/John%20Doe/qig_test.png",
+    );
+    assert.equal(
+        normalizeSavedImagePath("/user/images/O'Brien/qig_test.png"),
+        "/user/images/O%27Brien/qig_test.png",
+    );
+    assert.equal(
+        normalizeSavedImagePath("/user/images/A#1/qig_test.png"),
+        "/user/images/A%231/qig_test.png",
+    );
+    assert.equal(
+        normalizeSavedImagePath("/user/images/100%/qig_test.png"),
+        "/user/images/100%25/qig_test.png",
+    );
+    assert.equal(
+        normalizeSavedImagePath("/user/images/John%20Doe/qig_test.png"),
+        "/user/images/John%20Doe/qig_test.png",
+    );
+});
+
+test("saved image paths reject non-image roots and path traversal", () => {
+    assert.equal(normalizeSavedImagePath("https://example.com/user/images/a.png"), null);
+    assert.equal(normalizeSavedImagePath("//example.com/user/images/a.png"), null);
+    assert.equal(normalizeSavedImagePath("/user/images/../secrets.txt"), null);
+    assert.equal(normalizeSavedImagePath("/user/images/%2e%2e/secrets.txt"), null);
+    assert.equal(normalizeSavedImagePath("/user/images/a\\b/qig.png"), null);
+});
 
 test("Gemini candidate failures take precedence over placeholder image data", () => {
     const failure = getGeminiCandidateFailure({

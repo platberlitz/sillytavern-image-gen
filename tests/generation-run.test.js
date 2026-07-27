@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GenerationRunManager } from "../lib/generation-run.js";
+import { GenerationRunManager, snapshotGenerationRunSettings } from "../lib/generation-run.js";
 
 test("generation runs own an isolated settings snapshot", () => {
     const manager = new GenerationRunManager();
@@ -14,6 +14,40 @@ test("generation runs own an isolated settings snapshot", () => {
     assert.equal(run.settings.provider, "proxy");
     assert.equal(run.settings.nested.model, "one");
     assert.equal(run.context.chatId, "chat-a");
+});
+
+test("generation snapshots exclude synchronized backups without reading them", () => {
+    let backupReads = 0;
+    const source = {
+        provider: "proxy",
+        proxyRefImages: ["data:image/png;base64,AA=="],
+        _syncCacheId: "account-secret",
+        _charSettingsBaseState: { prompt: "private base" },
+    };
+    Object.defineProperty(source, "_backupCharRefImages", {
+        enumerable: true,
+        get() {
+            backupReads += 1;
+            return { huge: "x".repeat(1024) };
+        },
+    });
+
+    const snapshot = snapshotGenerationRunSettings(source);
+    assert.equal(backupReads, 0);
+    assert.deepEqual(snapshot, {
+        provider: "proxy",
+        proxyRefImages: ["data:image/png;base64,AA=="],
+    });
+    source.proxyRefImages[0] = "changed";
+    assert.equal(snapshot.proxyRefImages[0], "data:image/png;base64,AA==");
+});
+
+test("run manager accepts an already-owned settings snapshot without cloning it again", () => {
+    const manager = new GenerationRunManager();
+    const snapshot = { provider: "proxy" };
+    const run = manager.start(snapshot, {}, { settingsSnapshot: true });
+    assert.equal(run.settings, snapshot);
+    assert.equal(manager.finish(run), true);
 });
 
 test("only the active owner can finish a generation run", () => {

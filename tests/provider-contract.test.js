@@ -124,6 +124,36 @@ test("effective request imports retain only bounded reproducible allowlists", ()
     });
 });
 
+test("structured metadata coerces typed settings and drops numeric HTML payloads", () => {
+    const payload = '\"><img src=x onerror="globalThis.qigXss=1">';
+    const local = sanitizeEffectiveRequest({
+        provider: "local",
+        settings: {
+            provider: "local",
+            width: "768",
+            localDenoise: payload,
+            a1111HiresDenoise: "0.6",
+            a1111IpAdapterWeight: payload,
+            a1111ControlNetWeight: payload,
+            a1111RestoreFaces: "false",
+            localType: payload,
+        },
+    });
+    const nanogpt = sanitizeEffectiveRequest({
+        provider: "nanogpt",
+        settings: { nanogptStrength: payload },
+    });
+
+    assert.deepEqual(local.settings, {
+        provider: "local",
+        width: 768,
+        a1111RestoreFaces: false,
+        a1111HiresDenoise: 0.6,
+    });
+    assert.deepEqual(nanogpt.settings, { provider: "nanogpt" });
+    assert.doesNotMatch(JSON.stringify({ local, nanogpt }), /<img|qigXss/);
+});
+
 test("reverse-proxy CFG zero survives effective request sanitization", () => {
     const importedProxy = sanitizeEffectiveRequest({
         provider: "proxy",

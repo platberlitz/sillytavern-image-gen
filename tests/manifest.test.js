@@ -35,8 +35,8 @@ test('manifest metadata and package versions are valid and aligned', async () =>
   assert.ok(Array.isArray(manifest.optional));
   assert.equal(typeof manifest.auto_update, 'boolean');
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.minimum_client_version, '1.12.0');
-  assert.match(readmeText, /SillyTavern 1\.12\.0 or newer/);
+  assert.equal(manifest.minimum_client_version, '1.14.0');
+  assert.match(readmeText, /SillyTavern 1\.14\.0 or newer/);
   assert.match(manifest.version, semverPattern);
   assert.match(packageJson.version, semverPattern);
   assert.equal(manifest.version, packageJson.version);
