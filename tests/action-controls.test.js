@@ -5,6 +5,7 @@ import { JSDOM } from "jsdom";
 import {
     createAccessibleIconButton,
     resolveMainGenerationControlState,
+    shouldBlockGenerationStart,
 } from "../lib/action-controls.js";
 
 test("icon actions are native named buttons", () => {
@@ -36,4 +37,10 @@ test("the main generation control remains an enabled Cancel action without a pal
     });
     assert.equal(visiblePalette.action, "busy");
     assert.equal(visiblePalette.disabled, true);
+});
+
+test("post-cancel debounce blocks only new starts, never cancellation of an active run", () => {
+    assert.equal(shouldBlockGenerationStart({ active: false, now: 100, blockedUntil: 200 }), true);
+    assert.equal(shouldBlockGenerationStart({ active: false, now: 200, blockedUntil: 200 }), false);
+    assert.equal(shouldBlockGenerationStart({ active: true, now: 100, blockedUntil: 200 }), false);
 });

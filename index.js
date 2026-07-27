@@ -16,7 +16,7 @@ import {
     getResultFailures,
     normalizeBatchCount,
 } from "./lib/generation.js";
-import { GenerationRunManager, snapshotGenerationRunSettings, snapshotGenerationSettings } from "./lib/generation-run.js";
+import { GenerationRunManager, OwnedTransientValue, snapshotGenerationRunSettings, snapshotGenerationSettings } from "./lib/generation-run.js";
 import { normalizeProviderResult, sanitizeEffectiveRequest } from "./lib/provider-contract.js";
 import {
     createSettingsExport,
@@ -153,6 +153,7 @@ import {
 import {
     applyStateBeforePersistence,
     createAccountStorageScope,
+    createAbortableSerializedRunner,
     createConversationCheckpoint,
     createLatestWinsAsyncRunner,
     getCharacterProviderReferences,
@@ -177,6 +178,19 @@ import {
     unregisterConversationCheckpointInsertion,
 } from "./lib/client-orchestration.js";
 import {
+    appendWorldInfoToRequest,
+    createPromptPipelineState,
+    getPromptPipelineResult,
+    setAuthoritativeFinalPrompt,
+    updatePromptPipelineState,
+} from "./lib/prompt-pipeline.js";
+import {
+    buildWorldInfoScanChat,
+    formatWorldInfoScanMessage,
+    getWorldInfoContextBudget,
+    resolveWorldInfoContext,
+} from "./lib/world-info-context.js";
+import {
     captureRegenerationReferences,
     normalizeInjectInsertMode,
     parseContextualFilterSelection,
@@ -188,6 +202,7 @@ import { PrivacyLogBuffer } from "./lib/privacy-log.js";
 import {
     createAccessibleIconButton,
     resolveMainGenerationControlState,
+    shouldBlockGenerationStart,
 } from "./lib/action-controls.js";
 
 // Artist lists for random selection
@@ -202,6 +217,7 @@ function getRandomArtist(useTagFormat = false) {
 
 const extensionName = "quick-image-gen";
 let extension_settings, getContext, saveSettingsDebounced, saveSettings, generateQuietPrompt, generateRaw, generateRawData, createRawPrompt, substituteParams, getRequestHeaders;
+let checkWorldInfo, hostScriptModule, hostWorldInfoModule;
 let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
 
@@ -393,7 +409,6 @@ const QIG_DEFAULT_COLLAPSED_SECTIONS = {
     sectionCreate: true,
     sectionContext: true,
     sectionAutomation: true,
-    sectionGeneration: true,
     providerSettings: false,
     promptAdvanced: true,
     injectOptions: true,
@@ -574,7 +589,6 @@ function setupSettingsSearch() {
             ["sectionCreate", "qig-section-create-toggle", "qig-section-create-content"],
             ["sectionContext", "qig-section-context-toggle", "qig-section-context-content"],
             ["sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content"],
-            ["sectionGeneration", "qig-section-generation-toggle", "qig-section-generation-content"],
             ["providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content"],
             ["promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content"],
             ["injectOptions", "qig-inject-options-toggle", "qig-inject-options"],
@@ -808,19 +822,19 @@ function collectQigStatus(s = getSettings()) {
     const selectedModelNeedsKey = s.provider === "pollinations"
         && pollinationsModelRequiresAuth(s.pollinationsModel);
     if ((PROVIDERS[s.provider]?.needsKey || selectedModelNeedsKey) && !getProviderKeyValue(s)) {
-        warnings.push(`${providerName} needs an API key. Open More settings → Provider Setup or Quick Setup to add one.`);
+        warnings.push(`${providerName} needs an API key. Open More settings → Image Provider & Output or Quick Setup to add one.`);
     }
     if (s.provider === "proxy" && !String(s.proxyUrl || "").trim()) {
-        warnings.push("Reverse proxy URL is not set. Open More settings → Provider Setup to configure it.");
+        warnings.push("Reverse proxy URL is not set. Open More settings → Image Provider & Output to configure it.");
     }
     if (s.provider === "custom" && !String(s.customApiUrl || "").trim()) {
-        warnings.push("Custom API request URL is not set. Open More settings → Provider Setup to configure it.");
+        warnings.push("Custom API request URL is not set. Open More settings → Image Provider & Output to configure it.");
     }
     if (s.provider === "custom" && s.customApiAuthType !== "none" && !String(s.customApiKey || "").trim()) {
         warnings.push("Custom API authentication is enabled but its credential is empty.");
     }
     if (s.provider === "local" && !String(s.localUrl || "").trim()) {
-        warnings.push("Local server URL is not set. Open More settings → Provider Setup to configure it.");
+        warnings.push("Local server URL is not set. Open More settings → Image Provider & Output to configure it.");
     }
     if (s.injectEnabled && !s.autoGenerate) {
         warnings.push("AI-tagged source needs Auto-generate on. Tags will not fire until it is re-enabled.");
@@ -882,7 +896,7 @@ function applyChatGptNbpWorkflowPreset({ persist = true, notify = true } = {}) {
         messageRange: "-1",
         useLLMPrompt: true,
         llmPromptStyle: "natural",
-        llmEditPrompt: false,
+        reviewBeforeGenerate: false,
         appendQuality: true,
         style: "none",
         width: 1024,
@@ -911,7 +925,9 @@ const defaultSettings = {
     useLLMPrompt: false,
     llmPromptStyle: "tags",
     llmCustomInstruction: "",
-    llmEditPrompt: false,
+    reviewBeforeGenerate: false,
+    preserveCharacterIdentity: true,
+    useWorldInfo: false,
     llmAddQuality: false,
     llmAddLighting: false,
     llmAddArtist: false,
@@ -1378,6 +1394,7 @@ try {
 let selectedComfyWorkflowId = "";
 let isGenerating = false;
 const generationRunManager = new GenerationRunManager();
+const runSerializedTextAITask = createAbortableSerializedRunner();
 const regenerationReferenceStore = new RegenerationReferenceStore();
 let regenerationReferenceAccountId = null;
 let activeGenerationRun = null;
@@ -1409,13 +1426,15 @@ let _suppressAutoGenerateUntil = 0;
 let _lastAutoGenerateSuppressionLogTs = 0;
 let paletteGenerateLockUntil = 0;
 let paletteCancelLockUntil = 0;
+let generationStartLockUntil = 0;
 let _palettePresetMenuCleanup = null;
 let _paletteInjectActive = false;
 let _paletteInjectSerial = 0;
 let _automationRevision = 0;
 let _promptHistorySaveQueued = false;
-let transientGenerationTarget = null;
-let transientGenerationSettingsOverride = null;
+const transientGenerationTargetState = new OwnedTransientValue();
+const localCancellationBarriers = new Map();
+const transientGenerationSettingsState = new OwnedTransientValue();
 let qigMessageActionObserver = null;
 let qigMessageActionObserverRetryTimer = null;
 let qigMessageActionRefreshQueued = false;
@@ -1609,11 +1628,16 @@ async function runInternalQuietPromptRequest(instruction, {
     };
 
     try {
-        return await runAbortableTask(() => generateQuietPrompt(quietOptions), signal);
+        return await runSerializedTextAITask(() => generateQuietPrompt(quietOptions), signal);
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`${requestLabel}: generateQuietPrompt with options failed: ${e.message}, using simple call`);
-        return await runAbortableTask(() => generateQuietPrompt({ quietPrompt, quietToLoud: false }), signal);
+        return await runSerializedTextAITask(() => generateQuietPrompt({
+            quietPrompt,
+            skipWIAN: true,
+            quietName: quietName || `ImageGen_${Date.now()}`,
+            quietToLoud: false,
+        }), signal);
     }
 }
 
@@ -1708,10 +1732,10 @@ async function callInternalStandaloneLLM(instruction, {
         if (attemptedDirectRawRequest || !canUseDirectMainChatRawRequest()) return null;
         attemptedDirectRawRequest = true;
         try {
-            const meta = await callDirectMainChatRawRequest(instruction, {
+            const meta = await runSerializedTextAITask(() => callDirectMainChatRawRequest(instruction, {
                 signal,
                 prefill: resolvedPrefill,
-            });
+            }), signal);
             if (meta?.text) {
                 return meta;
             }
@@ -1727,7 +1751,7 @@ async function callInternalStandaloneLLM(instruction, {
     return await runWithInternalLLMRequest(requestLabel, async () => {
         if (returnMeta && typeof generateRawData === "function") {
             try {
-                const response = await runAbortableTask(() => generateRawData({
+                const response = await runSerializedTextAITask(() => generateRawData({
                     prompt: instruction,
                     quietToLoud: false,
                     prefill: resolvedPrefill,
@@ -1757,7 +1781,7 @@ async function callInternalStandaloneLLM(instruction, {
             }
         } else if (typeof generateRaw === "function") {
             try {
-                const text = await runAbortableTask(() => generateRaw({
+                const text = await runSerializedTextAITask(() => generateRaw({
                     prompt: instruction,
                     quietToLoud: false,
                     trimNames: false,
@@ -3497,10 +3521,10 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
     btn.innerHTML = `<span class="fa-solid ${escapeHtml(controlState.iconClass)}" aria-hidden="true"></span><span>${escapeHtml(controlState.label)}</span>${shortcut}`;
 }
 
-function beginGeneration({ settings = getGenerationSettingsForRun(), context = getContext?.(), messageSnapshots = [], conversationCheckpoint = null, disableGenerateButton = false, clearPendingAuto = false } = {}) {
+function beginGeneration({ settings = getGenerationSettingsForRun(), context = getContext?.(), messageSnapshots = [], conversationCheckpoint = null, disableGenerateButton = false, clearPendingAuto = false, preserveRegenerationReferences = false } = {}) {
     closePalettePresetMenu();
     cancelContextMediaWork();
-    clearRegenerationReferenceState();
+    if (!preserveRegenerationReferences) clearRegenerationReferenceState();
     if (clearPendingAuto) {
         resetAutoGenerateCadence({ clearTimer: true });
     }
@@ -3597,7 +3621,8 @@ function requestGenerationCancel(reason = "Generation cancelled by user", { forc
         log("Palette: Ignored rapid duplicate cancel click");
         return false;
     }
-    if (currentAbortController?.signal?.aborted) {
+    const run = activeGenerationRun;
+    if (!run || currentAbortController?.signal?.aborted) {
         log("Cancel already requested, ignoring duplicate click");
         return false;
     }
@@ -3605,40 +3630,53 @@ function requestGenerationCancel(reason = "Generation cancelled by user", { forc
     paletteCancelLockUntil = now + PALETTE_CANCEL_LOCK_MS;
     cancelRequested = true;
     cancelRequestSerial += 1;
-    generationRunManager.cancel(reason);
+    const settings = run.settings;
+    const trackedComfyPrompt = activeComfyPrompt?.runId === run.id
+        ? { ...activeComfyPrompt }
+        : null;
+    const released = generationRunManager.cancelAndRelease(reason);
+    if (!released) return false;
     resetAutoGenerateCadence({ clearTimer: true });
+
+    if (activeComfyPrompt?.runId === run.id) activeComfyPrompt = null;
+    activeGenerationRun = null;
+    currentAbortController = null;
+    isGenerating = false;
+    cancelRequested = false;
+    transientGenerationTargetState.clear();
+    transientGenerationSettingsState.clear();
+    generationStartLockUntil = Math.max(generationStartLockUntil, now + PALETTE_CANCEL_LOCK_MS);
+    paletteCancelLockUntil = 0;
+    showStatus(null);
+    setGenerationActiveUI(false, { disableGenerateButton: true });
 
     // Best-effort server cancellation. ComfyUI never receives a bodyless global interrupt.
     try {
-        const s = activeGenerationRun?.settings || extension_settings?.[extensionName];
-        if (s?.provider === "local" && s.localUrl) {
-            const baseUrl = normalizeA1111BaseUrl(s.localUrl);
-            if (s.localType === "comfyui") {
-                const tracked = activeComfyPrompt;
-                if (tracked?.promptId) {
-                    cancelTrackedComfyPrompt(tracked).then(result => {
+        if (settings?.provider === "local" && settings.localUrl) {
+            const baseUrl = normalizeA1111BaseUrl(settings.localUrl);
+            if (settings.localType === "comfyui") {
+                if (trackedComfyPrompt?.promptId) {
+                    cancelTrackedComfyPrompt(trackedComfyPrompt).then(result => {
                         if (result.cancelled === false) log(`ComfyUI: ${result.reason || "prompt could not be safely cancelled"}`);
                     }).catch(error => log(`ComfyUI cancellation failed: ${error.message}`));
                 }
             } else {
-                corsFetch(`${baseUrl}/sdapi/v1/interrupt`, { method: "POST", redirect: "error" }).catch(() => {});
+                const interruptController = new AbortController();
+                const timeoutId = setTimeout(() => interruptController.abort(), 2000);
+                const barrier = corsFetch(`${baseUrl}/sdapi/v1/interrupt`, {
+                    method: "POST",
+                    redirect: "error",
+                    signal: interruptController.signal,
+                }).catch(() => {}).finally(() => clearTimeout(timeoutId));
+                localCancellationBarriers.set(baseUrl, barrier);
+                barrier.finally(() => {
+                    if (localCancellationBarriers.get(baseUrl) === barrier) localCancellationBarriers.delete(baseUrl);
+                }).catch(() => {});
             }
         }
     } catch (e) { /* best-effort */ }
 
-    // Cancellation watchdog: keep the UI busy until the active async chain actually settles.
-    const thisCancelSerial = cancelRequestSerial;
-    setTimeout(() => {
-        if (isGenerating && cancelRequestSerial === thisCancelSerial && currentAbortController?.signal?.aborted) {
-            log("Cancel watchdog: generation is still settling after 5 seconds");
-        }
-    }, 5000);
-
-    const paletteBtn = getOrCacheElement("qig-input-btn");
-    if (paletteBtn) {
-        paletteBtn.title = "Cancelling...";
-        paletteBtn.style.opacity = "0.4";
-    }
+    toastr?.info?.("Stopped waiting. Remote work may continue if the provider cannot cancel it.", "Image Gen", { timeOut: 3500 });
     return true;
 }
 
@@ -3836,6 +3874,11 @@ async function loadSettings() {
     const normalizedSaved = normalizeComfyIntegrationSettings(saved || {});
     extension_settings[extensionName] = { ...defaultSettings, ...normalizedSaved };
     const s = extension_settings[extensionName];
+    const reviewBeforeGenerateNeedsMigration = !!saved && saved.reviewBeforeGenerate === undefined;
+    if (reviewBeforeGenerateNeedsMigration) {
+        s.reviewBeforeGenerate = Boolean(saved.llmEditPrompt);
+    }
+    delete s.llmEditPrompt;
     const comfyModelLoaderNeedsMigration = !!saved
         && (saved.comfyModelLoader !== normalizedSaved.comfyModelLoader
             || saved.comfyFluxVaeModel !== normalizedSaved.comfyFluxVaeModel
@@ -3903,7 +3946,9 @@ async function loadSettings() {
         serverCacheId: savedCacheId,
         localCacheId,
     });
-    let serverSettingsNeedSave = comfyModelLoaderNeedsMigration || injectInsertModeNeedsMigration;
+    let serverSettingsNeedSave = comfyModelLoaderNeedsMigration
+        || injectInsertModeNeedsMigration
+        || reviewBeforeGenerateNeedsMigration;
     if (!savedCacheId) {
         s._syncCacheId = generateUUID();
         serverSettingsNeedSave = true;
@@ -5085,8 +5130,9 @@ function getSettings() {
 
 function getGenerationSettingsForRun() {
     const baseSettings = getSettings();
-    const merged = transientGenerationSettingsOverride && typeof transientGenerationSettingsOverride === "object"
-        ? { ...baseSettings, ...transientGenerationSettingsOverride }
+    const transientValues = transientGenerationSettingsState.current?.value;
+    const merged = transientValues && typeof transientValues === "object"
+        ? { ...baseSettings, ...transientValues }
         : baseSettings;
     const snapshot = snapshotGenerationRunSettings(merged);
     if (!Array.isArray(snapshot.__qigActiveContextualFilters)) {
@@ -5096,37 +5142,32 @@ function getGenerationSettingsForRun() {
 }
 
 async function withTransientGenerationSettings(overrides, task) {
-    const previousOverride = transientGenerationSettingsOverride;
-    transientGenerationSettingsOverride = {
-        ...(previousOverride || {}),
+    const values = {
+        ...(transientGenerationSettingsState.current?.value || {}),
         ...(overrides || {}),
     };
-    try {
-        return await task();
-    } finally {
-        transientGenerationSettingsOverride = previousOverride;
-    }
+    return await transientGenerationSettingsState.withValue(values, task);
 }
 
 function setTransientGenerationTarget(messageIndex, { forceMessagePrompt = true, conversationCheckpoint = null } = {}) {
     const ctx = getContext?.();
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
     const targetSnapshot = createMessageTargetSnapshot(chat, messageIndex);
-    transientGenerationTarget = {
+    return transientGenerationTargetState.set({
         messageIndex: targetSnapshot?.index ?? Number(messageIndex),
         forceMessagePrompt: forceMessagePrompt !== false,
         targetSnapshot,
         conversationCheckpoint,
         createdAt: Date.now(),
-    };
-    return transientGenerationTarget;
+    });
 }
 
-function clearTransientGenerationTarget() {
-    transientGenerationTarget = null;
+function clearTransientGenerationTarget(expectedTarget = null) {
+    return transientGenerationTargetState.clear(expectedTarget);
 }
 
 function getTransientGenerationTarget(ctx = getContext?.()) {
+    const transientGenerationTarget = transientGenerationTargetState.current?.value;
     if (!transientGenerationTarget || typeof transientGenerationTarget !== "object") return null;
     const chat = Array.isArray(ctx?.chat) ? ctx.chat : [];
     const resolvedIndex = Number(transientGenerationTarget.messageIndex);
@@ -5243,6 +5284,86 @@ function resolveLLMPromptProfileContext(ctx = getContext(), sceneText = "") {
         usesCurrentCardContext: true,
         useExactNameRequirements: false,
     };
+}
+
+function buildWorldInfoGlobalScanData(ctx = getContext()) {
+    const profile = resolveChatProfileContext(ctx);
+    const characterSections = {
+        description: [],
+        personality: [],
+        depth: [],
+        scenario: [],
+        creatorNotes: [],
+    };
+    for (const card of profile.charCards || []) {
+        const name = String(card?.name || "Character").trim() || "Character";
+        const add = (key, value) => {
+            const text = String(value || "").trim();
+            if (text) characterSections[key].push(`${name}: ${text}`);
+        };
+        add("description", card?.description);
+        add("personality", card?.personality);
+        add("depth", card?.extensions?.depth_prompt?.prompt || card?.depth_prompt?.prompt || card?.depth_prompt);
+        add("scenario", card?.scenario);
+        add("creatorNotes", card?.creator_notes || card?.creatorcomment);
+    }
+    return {
+        personaDescription: String(ctx?.persona || ctx?.powerUserSettings?.persona_description || profile.userDesc || "").trim(),
+        characterDescription: characterSections.description.join("\n\n"),
+        characterPersonality: characterSections.personality.join("\n\n"),
+        characterDepthPrompt: characterSections.depth.join("\n\n"),
+        scenario: characterSections.scenario.join("\n\n"),
+        creatorNotes: characterSections.creatorNotes.join("\n\n"),
+        trigger: "normal",
+    };
+}
+
+async function resolveWorldInfoForPromptPipeline(settings, {
+    context = getContext(),
+    throughIndex = null,
+    sourceText = "",
+    signal = null,
+    forceTextAI = false,
+} = {}) {
+    if (!settings?.useWorldInfo || (!settings?.useLLMPrompt && !forceTextAI)) {
+        return { records: [], text: "" };
+    }
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const explicitSource = String(sourceText || "").trim();
+
+    try {
+        const includeNames = hostWorldInfoModule?.world_info_include_names !== false;
+        const scanChat = Number.isInteger(throughIndex) && chat.length
+            ? buildWorldInfoScanChat(chat, throughIndex, (message) => {
+                const source = resolveSceneMessageSource(message);
+                return formatWorldInfoScanMessage(message, {
+                    text: source?.text,
+                    speakerName: getSceneMessageSpeakerName(message, context),
+                    includeNames,
+                });
+            })
+            : (explicitSource ? [explicitSource] : []);
+        if (!scanChat.length) return { records: [], text: "" };
+        const maxContext = getWorldInfoContextBudget(hostScriptModule);
+        const resolved = await runSerializedTextAITask(() => resolveWorldInfoContext({
+            checkWorldInfo: hostWorldInfoModule?.checkWorldInfo || checkWorldInfo,
+            chat: scanChat,
+            maxContext,
+            globalScanData: buildWorldInfoGlobalScanData(context),
+        }), signal);
+        if (signal?.aborted) throw getAbortError(signal);
+        if (resolved.text) log(`World Info: Added ${resolved.records.length} matched placement record(s) to visible Text AI context`);
+        return resolved;
+    } catch (error) {
+        if (error?.name === "AbortError") throw error;
+        log(`World Info context unavailable: ${error.message}`);
+        toastr?.warning?.(
+            "Matched World Info could not be resolved, so this request will continue without lore context.",
+            "Quick Image Gen",
+            { timeOut: 5000 },
+        );
+        return { records: [], text: "" };
+    }
 }
 
 function expandWildcards(text) {
@@ -5677,6 +5798,73 @@ async function applyResolvedContextualFilters(prompt, negative, {
     };
 }
 
+async function prepareQigFinalPrompt({
+    settings,
+    context,
+    sourcePrompt,
+    matchText = "",
+    llmSceneText = "",
+    signal = null,
+    isMultiMessageScene = false,
+    worldInfoText = "",
+    forcePromptWasLLM = false,
+} = {}) {
+    let pipelineState = createPromptPipelineState({ sourceText: sourcePrompt, worldInfoText });
+
+    while (true) {
+        const generatedPrompt = await generateLLMPrompt(settings, sourcePrompt, signal, {
+            isMultiMessageScene,
+            worldInfoText,
+        });
+        if (signal?.aborted) throw getAbortError(signal);
+        const promptWasLLM = forcePromptWasLLM || (settings.useLLMPrompt && generatedPrompt !== sourcePrompt);
+        pipelineState = updatePromptPipelineState(pipelineState, { promptResult: generatedPrompt });
+
+        let prompt = applyStyle(generatedPrompt, settings);
+        if (settings.appendQuality && settings.qualityTags) {
+            prompt = `${settings.qualityTags}, ${prompt}`;
+        }
+        let negative = resolvePrompt(settings.negativePrompt);
+        if (settings.useSTStyle !== false) {
+            ({ prompt, negative } = applySTStylePrompts(prompt, negative, context));
+        }
+
+        const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
+            matchText: [matchText, prompt].filter(Boolean).join("\n\n") || prompt,
+            llmSceneText: llmSceneText || sourcePrompt,
+            signal,
+            settings,
+        });
+        if (signal?.aborted) throw getAbortError(signal);
+        pipelineState = updatePromptPipelineState(pipelineState, {
+            positive: contextualApplied.prompt,
+            negative: contextualApplied.negative,
+            finalPromptEdited: false,
+        });
+
+        if (settings.reviewBeforeGenerate) {
+            const reviewed = await reviewFinalImagePrompt(
+                pipelineState.positive,
+                pipelineState.negative,
+                signal,
+                { canGoBack: !!settings.useLLMPrompt },
+            );
+            if (!reviewed) throw getAbortError(signal, "Prompt review cancelled");
+            if (reviewed.action === "back" && settings.useLLMPrompt) continue;
+            pipelineState = setAuthoritativeFinalPrompt(pipelineState, {
+                positive: reviewed.prompt,
+                negative: reviewed.negative,
+            });
+        }
+
+        return {
+            ...getPromptPipelineResult(pipelineState),
+            promptWasLLM,
+            seedOverride: contextualApplied.seedOverride,
+        };
+    }
+}
+
 function getBatchBaseSeed(settings, batchCount, seedOverride = null) {
     let baseSeed = seedOverride != null ? seedOverride : getGenerationSeedValue(settings);
     if (settings?.sequentialSeeds && batchCount > 1 && baseSeed === -1) {
@@ -5695,7 +5883,7 @@ async function matchLLMFilters(sceneText, signal = null, settings = null) {
     const conceptList = llmFilters.map((f, i) => `${i + 1}. "${f.name || "(unnamed)"}": ${f.description}`).join('\n');
     log(`LLM filter matching concepts: ${previewTextForLog(conceptList, 180)}`);
 
-    const instruction = `Given the following scene, identify which concepts are present.
+    let instruction = `Given the following scene, identify which concepts are present.
 Reply ONLY with the numbers of matching concepts, comma-separated. If none match, reply "none".
 
 Scene:
@@ -5707,8 +5895,16 @@ ${conceptList}`;
     const s = settings || activeGenerationRun?.settings || getSettings();
     let response;
     try {
+        if (s.reviewBeforeGenerate) {
+            const reviewed = await reviewTextAIRequest(instruction, {
+                title: "Review Contextual Filter Request",
+                description: "This request asks Text AI which Contextual Filters match the scene. Edit it before running the classifier.",
+                signal,
+            });
+            instruction = reviewed.request;
+        }
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
-            response = await callOverrideLLM(instruction, "You are a scene analyst. Reply only with numbers.", signal, { settings: s });
+            response = await callOverrideLLM(instruction, "", signal, { settings: s });
         } else {
             response = await callInternalQuietPrompt(instruction, {
                 signal,
@@ -5982,15 +6178,17 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
 
     try {
         const context = getContext();
-        const response = await runWithInternalLLMRequest("LLM override profile request", () => sendIsolatedConnectionManagerRequest({
-            service: CMRS,
-            context,
-            profileId: s.llmOverrideProfileId,
-            messages,
-            maxTokens: requestedMaxTokens,
-            preset: requestedPreset,
-            signal,
-        }));
+        const response = await runWithInternalLLMRequest("LLM override profile request", () =>
+            runSerializedTextAITask(() => sendIsolatedConnectionManagerRequest({
+                service: CMRS,
+                context,
+                profileId: s.llmOverrideProfileId,
+                messages,
+                maxTokens: requestedMaxTokens,
+                preset: requestedPreset,
+                signal,
+            }), signal)
+        );
         const details = extractLLMResponseDetails(response);
         const meta = {
             ...details,
@@ -6127,7 +6325,7 @@ async function generateSceneDescription(s, sceneText, signal, options = {}) {
     const selectedScene = String(sceneText || "").trim();
     if (!selectedScene) return "";
 
-    checkAborted();
+    if (signal?.aborted) throw getAbortError(signal);
     log("Generating plain scene description via SillyTavern LLM...");
     showStatus("🤖 Summarizing scene for image prompt...");
 
@@ -6142,6 +6340,7 @@ async function generateSceneDescription(s, sceneText, signal, options = {}) {
         const tags = profile.charTagsResolved || "";
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
+        const preserveCharacterIdentity = s.preserveCharacterIdentity !== false;
         const forcedMultiMessage = options?.isMultiMessageScene;
         const isMultiMessage = forcedMultiMessage === true
             ? true
@@ -6152,7 +6351,7 @@ async function generateSceneDescription(s, sceneText, signal, options = {}) {
         if (userPersona) referenceSections.push(`${userName}'s persona/appearance: ${userPersona.substring(0, 800)}`);
         if (tags) referenceSections.push(`Source/Tags: ${tags}`);
         if (scenario) referenceSections.push(`Setting: ${scenario.substring(0, 400)}`);
-        if (activeCharacterList) referenceSections.push(`Active character names to preserve when visible: ${activeCharacterList}`);
+        if (preserveCharacterIdentity && activeCharacterList) referenceSections.push(`Active character names to preserve when visible: ${activeCharacterList}`);
         const referenceBlock = referenceSections.length ? `\nREFERENCE CONTEXT:\n${referenceSections.join("\n")}` : "";
 
         const customInstruction = String(s.twoStepInstruction || "").trim();
@@ -6175,7 +6374,7 @@ Convert the selected chat scene into one concise plain-language visual descripti
 Rules:
 - Output ONLY the plain description. No commentary, no markdown, no speaker labels, no tags, no bullet list.
 - Describe one coherent visible moment: subjects, identities, poses, expressions, clothing, setting, lighting, mood, and camera framing.
-- Preserve explicit species, ages, body traits, names, and non-human details from the scene or reference context.
+${preserveCharacterIdentity ? "- Preserve explicit species, ages, body traits, names, and non-human details from the scene or reference context." : ""}
 - Do not continue the roleplay and do not quote dialogue.
 ${isMultiMessage ? "- The selected scene is a multi-message transcript. Infer the best single visual moment from it." : ""}${referenceBlock}
 
@@ -6188,7 +6387,16 @@ Plain visual description:`;
         const timestamp = Date.now();
         const randomPart = Math.random().toString(36).substring(2, 11);
         const entropyInline = `{{${timestamp}_${randomPart}}}`;
-        const instructionWithEntropy = `[${timestamp}]\n${instruction}\n\nRequest marker: ${entropyInline}`;
+        let instructionWithEntropy = `[${timestamp}]\n${instruction}\n\nRequest marker: ${entropyInline}`;
+        instructionWithEntropy = appendWorldInfoToRequest(instructionWithEntropy, options.worldInfoText);
+        if (s.reviewBeforeGenerate || !!options.worldInfoText) {
+            const reviewed = await reviewTextAIRequest(instructionWithEntropy, {
+                title: "Review Scene Summary Request",
+                description: "Review the exact request used to create the intermediate visual summary. Matched World Info, when enabled, is included as editable context.",
+                signal,
+            });
+            instructionWithEntropy = reviewed.request;
+        }
 
         log(`Sending scene description instruction to LLM (length: ${instructionWithEntropy.length} chars)`);
 
@@ -6208,7 +6416,7 @@ Plain visual description:`;
             llmDescription = helperResponseMeta?.text || "";
         }
 
-        checkAborted();
+        if (signal?.aborted) throw getAbortError(signal);
         logLLMHelperResponseMeta(helperResponseMeta, "Scene description helper response");
 
         const cleaned = cleanSceneDescriptionText(llmDescription);
@@ -6235,7 +6443,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
     // Clear any cached styles before generating new prompt
     clearStyleCache();
 
-    checkAborted(); // Bail early if already cancelled
+    if (signal?.aborted) throw getAbortError(signal);
 
     // Only show status message when actually generating
     log("Generating prompt via SillyTavern LLM...");
@@ -6252,6 +6460,7 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         const tags = profile.charTagsResolved || "";
         const activeCharacterNames = uniqueStringList(profile.charNames || []);
         const activeCharacterList = activeCharacterNames.join(", ");
+        const preserveCharacterIdentity = s.preserveCharacterIdentity !== false;
         const resolvedPrefill = getResolvedLLMPrefill(s);
         const sceneUsesFirstPersonUser = /\b(i|me|my|mine|myself)\b/i.test(basePrompt);
         const sceneMentionsUserByName = promptIncludesName(basePrompt, userName);
@@ -6262,8 +6471,8 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         const userLikelyPrimarySubject = sceneIncludesUserPersona && sceneCentersUserAppearance;
 
         const skinTones = [];
-        const charSkin = charDesc.match(skinPattern);
-        const userSkin = userPersona.match(skinPattern);
+        const charSkin = preserveCharacterIdentity ? charDesc.match(skinPattern) : null;
+        const userSkin = preserveCharacterIdentity ? userPersona.match(skinPattern) : null;
         if (charSkin) skinTones.push(`${charName}: ${charSkin[0]}`);
         if (userSkin) skinTones.push(`${userName}: ${userSkin[0]}`);
 
@@ -6293,18 +6502,18 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
             if (appearanceContext) appearanceContext += "\n";
         }
 
-        const skinEnforce = skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
-        const shouldUseExactNameRequirements = !!profile.useExactNameRequirements && activeCharacterNames.length > 0;
+        const skinEnforce = preserveCharacterIdentity && skinTones.length ? `\nCRITICAL - You MUST include these skin tones: ${skinTones.join(", ")}` : "";
+        const shouldUseExactNameRequirements = preserveCharacterIdentity && !!profile.useExactNameRequirements && activeCharacterNames.length > 0;
         const exactNameRequirement = shouldUseExactNameRequirements
             ? `\n- Preserve and include these exact character name${activeCharacterNames.length === 1 ? "" : "s"} when the scene/card identifies them${shouldDeprioritizeUnmentionedCharacters ? "; otherwise do not force them into the prompt just because they are the active chat character" : ""}: ${activeCharacterList}`
             : "";
-        const exactUserRequirement = userPersona
+        const exactUserRequirement = preserveCharacterIdentity && userPersona
             ? `\n- If the scene refers to the user in first person or by name, preserve and include the exact user persona name when applicable: ${userName}`
             : "";
         const exactNameBlock = shouldUseExactNameRequirements
             ? `\n${shouldDeprioritizeUnmentionedCharacters ? "ACTIVE CHARACTER NAMES (only use if the scene explicitly includes them):" : "CHARACTER NAMES TO PRESERVE (use these exact spellings when applicable):"} ${activeCharacterList}`
             : "";
-        const userNameBlock = userPersona
+        const userNameBlock = preserveCharacterIdentity && userPersona
             ? `\nUSER PERSONA NAME (use when the scene refers to the user / I / me / my): ${userName}`
             : "";
         const identityRequirements = [
@@ -6315,7 +6524,9 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         if (userPersona) {
             identityRequirements.push(`- If the scene uses first-person references like I/me/my or mentions ${userName}, that subject is the user persona described below. Use that persona's age, species, body type, and nonhuman traits.`);
         }
-        const identityRequirementBlock = `\nIDENTITY REQUIREMENTS:\n${identityRequirements.join("\n")}`;
+        const identityRequirementBlock = preserveCharacterIdentity
+            ? `\nIDENTITY REQUIREMENTS:\n${identityRequirements.join("\n")}`
+            : "";
         const subjectPriorityRequirements = [];
         if (sceneIncludesUserPersona) {
             subjectPriorityRequirements.push(`- The user persona (${userName}) is visually involved in this scene whenever the scene uses first-person references or the user name.`);
@@ -6331,10 +6542,10 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         if (sceneIncludesUserPersona && sceneMentionedCharacterNames.length) {
             subjectPriorityRequirements.push(`- If both the user persona and another subject are present, preserve both identities accurately and do not let ${sceneMentionedCharacterNames.join(", ")} overshadow the user persona.`);
         }
-        const subjectPriorityBlock = subjectPriorityRequirements.length
+        const subjectPriorityBlock = preserveCharacterIdentity && subjectPriorityRequirements.length
             ? `\nSCENE SUBJECT PRIORITY:\n${subjectPriorityRequirements.join("\n")}`
             : "";
-        const userSceneRequirementBullet = userPersona
+        const userSceneRequirementBullet = preserveCharacterIdentity && userPersona
             ? `\n- If the scene refers to the user in first person or by name, use the user persona reference below for that subject (${userName})`
             : "";
 
@@ -6419,8 +6630,8 @@ Write a detailed image prompt describing:
 - The characters involved with their defining visual traits (hair color, eye color, outfit, distinguishing features)
 ${shouldUseExactNameRequirements ? `- Use the exact active character names when the scene/card identifies them${activeCharacterNames.length ? ` (${activeCharacterList})` : ""}` : ""}
 ${userSceneRequirementBullet}
-- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human labels
-- If from known media/franchise, include the series name and character's canonical appearance
+${preserveCharacterIdentity ? "- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human labels" : ""}
+${preserveCharacterIdentity ? "- If from known media/franchise, include the series name and character's canonical appearance" : ""}
 - Their poses, expressions, and body language
 - The setting/background
 - Lighting and atmosphere
@@ -6477,9 +6688,9 @@ Create Danbooru/Booru-style tags for this ${isMultiMessage ? "scene context:\n" 
 Character info: ${appearanceContext}${exactNameBlock}${userNameBlock}${identityRequirementBlock}${subjectPriorityBlock}
 
 Required tag categories:
-- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized${shouldUseExactNameRequirements ? `, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists` : ""})
+${preserveCharacterIdentity ? `- Character name + series name (CRITICAL: Use recognizable fictional media character tags whenever recognized${shouldUseExactNameRequirements ? `, and keep exact active names like ${activeCharacterList || "the named character"} when no canonical tag exists` : ""})` : "- Subjects and visible traits relevant to the selected scene"}
 ${userSceneRequirementBullet}
-- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human tags
+${preserveCharacterIdentity ? "- Preserve explicit ages, species, creature types, and nonhuman identities from the scene/profile instead of replacing them with generic human tags" : ""}
 - Physical traits (hair, eyes, body, skin)
 - Clothing and accessories
 - Pose and expression
@@ -6512,9 +6723,18 @@ Tags:`;
 
         log(`Request ID: ${uniqueId}`);
 
-        // Build the full instruction with optional prefill
-        const prefillHint = resolvedPrefill ? `\n\nContinue the output from this exact prefix if your backend supports prefills:\n${resolvedPrefill}` : "";
-        instructionWithEntropy += prefillHint;
+        let effectivePrefill = resolvedPrefill;
+        instructionWithEntropy = appendWorldInfoToRequest(instructionWithEntropy, options.worldInfoText);
+        if (s.reviewBeforeGenerate || !!options.worldInfoText) {
+            const reviewed = await reviewTextAIRequest(instructionWithEntropy, {
+                title: "Review Image Prompt Request",
+                description: "Review the exact QIG instruction and assistant prefill sent to Text AI. The selected scene, character context, enabled identity rules, and matched lore are editable here.",
+                prefill: resolvedPrefill || null,
+                signal,
+            });
+            instructionWithEntropy = reviewed.request;
+            effectivePrefill = reviewed.prefill;
+        }
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
 
@@ -6525,7 +6745,7 @@ Tags:`;
         if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
             log("Using LLM Override for prompt generation");
             helperResponseMeta = await callOverrideLLM(instructionWithEntropy, "", signal, {
-                assistantPrefill: resolvedPrefill,
+                assistantPrefill: effectivePrefill,
                 returnMeta: true,
                 settings: s,
             });
@@ -6535,13 +6755,13 @@ Tags:`;
                 signal,
                 quietName: `ImageGen_${timestamp}`,
                 label: "image prompt generation request",
-                prefill: resolvedPrefill,
+                prefill: effectivePrefill,
                 returnMeta: true,
             });
             llmPrompt = helperResponseMeta?.text || "";
         }
 
-        checkAborted(); // Check immediately after LLM call returns
+        if (signal?.aborted) throw getAbortError(signal);
         logLLMHelperResponseMeta(helperResponseMeta, "LLM helper response");
         debugLog(`LLM raw response: ${llmPrompt}`);
         log(`LLM response length: ${(llmPrompt || "").length} chars`);
@@ -6566,10 +6786,10 @@ Tags:`;
         }
 
         // Strip only meta-label prefills; preserve character-name prefills so filters can still key off them.
-        if (resolvedPrefill && shouldStripPrefillFromLLMResult(resolvedPrefill, profile) && cleaned.toLowerCase().startsWith(resolvedPrefill.toLowerCase())) {
-            cleaned = cleaned.substring(resolvedPrefill.length).trim();
+        if (effectivePrefill && shouldStripPrefillFromLLMResult(effectivePrefill, profile) && cleaned.toLowerCase().startsWith(effectivePrefill.toLowerCase())) {
+            cleaned = cleaned.substring(effectivePrefill.length).trim();
         }
-        cleaned = mergeMeaningfulPrefillIntoLLMResult(cleaned, resolvedPrefill, profile);
+        cleaned = mergeMeaningfulPrefillIntoLLMResult(cleaned, effectivePrefill, profile);
 
         // CRITICAL: Check if response looks like roleplay dialogue (indicates LLM used chat context)
         // Roleplay dialogue typically has dialogue markers, quotation marks, or narrative text
@@ -7709,6 +7929,13 @@ function startA1111ProgressPolling(baseUrl, generationSignal) {
 
 async function genLocal(prompt, negative, s, signal, options = {}) {
     const baseUrl = normalizeA1111BaseUrl(s.localUrl);
+    const generationOwner = activeGenerationRun?.signal === signal ? activeGenerationRun : null;
+    const generationOwnerId = generationOwner?.id ?? null;
+
+    if (s.localType !== "comfyui") {
+        const cancellationBarrier = localCancellationBarriers.get(baseUrl);
+        if (cancellationBarrier) await runAbortableTask(() => cancellationBarrier, signal);
+    }
 
     if (s.localType === "comfyui") {
         // Map sampler names to ComfyUI format
@@ -7824,11 +8051,19 @@ async function genLocal(prompt, negative, s, signal, options = {}) {
                 return parseComfyPromptResponse(await readResponseJson(res, 1024 * 1024));
             });
             const trackedPrompt = {
-                runId: activeGenerationRun?.id ?? null,
+                runId: generationOwnerId,
                 baseUrl,
                 promptId: promptResponse.prompt_id,
                 allowLegacyInterrupt: s.comfyAllowLegacyInterrupt === true,
             };
+            const ownerIsCurrent = !generationOwner
+                || (generationRunManager.active === generationOwner && activeGenerationRun === generationOwner);
+            if (signal?.aborted || !ownerIsCurrent) {
+                cancelTrackedComfyPrompt(trackedPrompt).then(result => {
+                    if (result.cancelled === false) log(`ComfyUI stale submission cleanup: ${result.reason || "prompt could not be safely cancelled"}`);
+                }).catch(error => log(`ComfyUI stale submission cleanup failed: ${error.message}`));
+                throw getAbortError(signal, "Generation no longer owns the submitted ComfyUI prompt");
+            }
             activeComfyPrompt = trackedPrompt;
             showStatus("🖼️ ComfyUI workflow queued...");
             try {
@@ -10839,6 +11074,27 @@ function savePromptHistory() {
     });
 }
 
+function commitSuccessfulPrompt(run, {
+    prompt,
+    negative = "",
+    promptWasLLM = false,
+    addHistory = false,
+} = {}) {
+    assertGenerationCanCommit(run);
+    lastPrompt = String(prompt || "");
+    lastNegative = String(negative || "");
+    lastPromptWasLLM = !!promptWasLLM;
+    if (addHistory) {
+        promptHistory.unshift({
+            prompt: lastPrompt,
+            negative: lastNegative,
+            time: new Date().toLocaleTimeString(),
+        });
+        if (promptHistory.length > 50) promptHistory.pop();
+        savePromptHistory();
+    }
+}
+
 function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
     const entry = normalizeGenerationEntry(entryOrUrl);
     if (!entry.url) return;
@@ -10928,22 +11184,20 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
                 toastr.warning("Generation already in progress");
                 return;
             }
-            if (promptTextarea && promptTextarea.value.trim()) {
-                lastPrompt = promptTextarea.value;
-            }
-            if (negativeTextarea) {
-                lastNegative = negativeTextarea.value;
-            }
-            lastPromptWasLLM = false;
-            rememberLastGenerationSource(entry);
-            lastEffectiveRequest = cloneMetadataSettings(entry.effectiveRequest || imageMetadataSettings.effectiveRequest || {});
-            if (!lastPrompt.trim()) {
+            const candidatePrompt = promptTextarea?.value || "";
+            const candidateNegative = negativeTextarea?.value || "";
+            if (!candidatePrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
             }
+            const effectiveRequest = cloneMetadataSettings(entry.effectiveRequest || imageMetadataSettings.effectiveRequest || {});
             const returnFocus = popup._qigReturnFocus;
             hidePopup(popup, { restoreFocus: false });
-            regenerateImage(lastEffectiveRequest, returnFocus, entry);
+            void regenerateImage(effectiveRequest, returnFocus, entry, {
+                prompt: candidatePrompt,
+                negative: candidateNegative,
+                promptWasLLM: false,
+            });
         };
         document.getElementById("qig-gallery-btn").onclick = (e) => {
             e.stopPropagation();
@@ -11179,23 +11433,21 @@ function displayBatchResults(results, returnFocusElement = null) {
                 toastr.warning("Generation already in progress");
                 return;
             }
-            if (batchPromptTextarea && batchPromptTextarea.value.trim()) {
-                lastPrompt = batchPromptTextarea.value;
-            }
-            if (batchNegativeTextarea) {
-                lastNegative = batchNegativeTextarea.value;
-            }
-            lastPromptWasLLM = false;
             const activeEntry = getCurrentEntry();
-            rememberLastGenerationSource(activeEntry);
-            lastEffectiveRequest = cloneMetadataSettings(activeEntry?.effectiveRequest || activeEntry?.metadataSettings?.effectiveRequest || {});
-            if (!lastPrompt.trim()) {
+            const candidatePrompt = batchPromptTextarea?.value || "";
+            const candidateNegative = batchNegativeTextarea?.value || "";
+            if (!candidatePrompt.trim()) {
                 toastr.error("Prompt cannot be empty");
                 return;
             }
+            const effectiveRequest = cloneMetadataSettings(activeEntry?.effectiveRequest || activeEntry?.metadataSettings?.effectiveRequest || {});
             const returnFocus = popup._qigReturnFocus;
             hidePopup(popup, { restoreFocus: false });
-            regenerateImage(lastEffectiveRequest, returnFocus, activeEntry);
+            void regenerateImage(effectiveRequest, returnFocus, activeEntry, {
+                prompt: candidatePrompt,
+                negative: candidateNegative,
+                promptWasLLM: false,
+            });
         };
         document.getElementById("qig-batch-gallery").onclick = (e) => {
             e.stopPropagation();
@@ -11392,23 +11644,65 @@ function bindAbortDismiss(signal, dismiss) {
     return () => signal.removeEventListener("abort", dismiss);
 }
 
-function showPromptEditDialog(prompt, signal) {
+function showPromptReviewStage({
+    mode,
+    title,
+    description,
+    request = "",
+    prefill = null,
+    result = "",
+    prompt = "",
+    negative = "",
+    canGoBack = false,
+    signal = null,
+}) {
     return new Promise((resolve) => {
-        const popup = createPopup("qig-prompt-edit-popup", "Edit LLM Generated Prompt", `
-            <div class="qig-popup-form qig-prompt-edit-dialog">
-                <textarea id="qig-prompt-edit-text" rows="10" placeholder="Edit the generated prompt..."></textarea>
-                <div class="qig-dialog-actions" style="margin-top:14px;">
-                    <button id="qig-prompt-edit-cancel" class="menu_button">Cancel</button>
-                    <button id="qig-prompt-edit-use" class="menu_button">Use Prompt</button>
+        const isRequest = mode === "request";
+        const isResult = mode === "result";
+        const isFinal = mode === "final";
+        const hasPrefill = isRequest && prefill !== null;
+        const fieldMarkup = isFinal
+            ? `<div class="qig-review-fields qig-review-fields--final">
+                    <label for="qig-review-positive">Positive prompt</label>
+                    <textarea id="qig-review-positive" rows="10" spellcheck="false"></textarea>
+                    <label for="qig-review-negative">Negative prompt</label>
+                    <textarea id="qig-review-negative" rows="5" spellcheck="false"></textarea>
+                </div>`
+            : `<div class="qig-review-fields">
+                    <label for="qig-review-text">${isRequest ? "Exact request sent to Text AI" : "Scene summary result"}</label>
+                    <textarea id="qig-review-text" rows="16" spellcheck="false"></textarea>
+                    ${hasPrefill ? `<label for="qig-review-prefill">Assistant prefill</label>
+                    <textarea id="qig-review-prefill" class="qig-review-prefill" rows="3" spellcheck="false"></textarea>
+                    <p class="qig-review-field-note">Sent as a separate assistant prefix when supported. Fallback routes convert this reviewed value into an explicit continuation instruction.</p>` : ""}
+                </div>`;
+        const backLabel = isResult ? "Re-run Text AI" : "Back";
+        const primaryLabel = isRequest ? "Run Text AI" : (isFinal ? "Generate" : "Continue");
+        const activeStage = isFinal ? 3 : (isResult ? 2 : 1);
+        const popup = createPopup("qig-prompt-review-popup", title, `
+            <div class="qig-prompt-review">
+                <ol class="qig-review-progress" aria-label="Prompt review progress">
+                    <li class="${activeStage === 1 ? "is-active" : ""}">Text AI request</li>
+                    <li class="${activeStage === 2 ? "is-active" : ""}">AI result</li>
+                    <li class="${activeStage === 3 ? "is-active" : ""}">Image prompt</li>
+                </ol>
+                <p class="qig-review-description">${escapeHtml(description)}</p>
+                ${fieldMarkup}
+                <div class="qig-review-actions">
+                    <button id="qig-review-cancel" type="button" class="menu_button">Cancel</button>
+                    ${(canGoBack || isResult) ? `<button id="qig-review-back" type="button" class="menu_button">${backLabel}</button>` : ""}
+                    <button id="qig-review-reset" type="button" class="menu_button">Reset stage</button>
+                    <button id="qig-review-primary" type="button" class="menu_button">${primaryLabel}</button>
                 </div>
-            </div>`, (popup) => {
-            const textarea = document.getElementById("qig-prompt-edit-text");
-            textarea.value = prompt;
-            const cancelBtn = document.getElementById("qig-prompt-edit-cancel");
-            const useBtn = document.getElementById("qig-prompt-edit-use");
-
-            textarea.focus();
-            textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+            </div>`, (popupElement) => {
+            const textArea = popupElement.querySelector("#qig-review-text");
+            const prefillArea = popupElement.querySelector("#qig-review-prefill");
+            const positiveArea = popupElement.querySelector("#qig-review-positive");
+            const negativeArea = popupElement.querySelector("#qig-review-negative");
+            const initialText = isRequest ? request : result;
+            if (textArea) textArea.value = initialText;
+            if (prefillArea) prefillArea.value = prefill;
+            if (positiveArea) positiveArea.value = prompt;
+            if (negativeArea) negativeArea.value = negative;
 
             let settled = false;
             let removeAbortListener = () => {};
@@ -11416,29 +11710,105 @@ function showPromptEditDialog(prompt, signal) {
                 if (settled) return;
                 settled = true;
                 removeAbortListener();
-                hidePopup(popup);
+                hidePopup(popupElement);
                 resolve(value);
             };
             const close = () => finish(null);
-            const use = () => finish(textarea.value);
-            removeAbortListener = bindAbortDismiss(signal, close);
-
-            cancelBtn.onclick = close;
-            useBtn.onclick = use;
-
-            bindPopupDismiss(popup, close);
-
-            textarea.onkeydown = (e) => {
-                if (e.key === "Enter" && e.ctrlKey) {
-                    e.preventDefault();
-                    use();
+            const submit = () => {
+                if (isFinal) {
+                    const positive = positiveArea?.value?.trim() || "";
+                    if (!positive) {
+                        toastr.warning("Image prompt cannot be empty");
+                        positiveArea?.focus();
+                        return;
+                    }
+                    finish({ action: "continue", prompt: positive, negative: negativeArea?.value || "" });
+                    return;
                 }
-                if (e.key === "Escape") {
-                    e.preventDefault();
-                    close();
+                const text = textArea?.value?.trim() || "";
+                if (!text) {
+                    toastr.warning(isRequest ? "Text AI request cannot be empty" : "Scene summary cannot be empty");
+                    textArea?.focus();
+                    return;
+                }
+                finish({ action: "continue", text, prefill: prefillArea?.value ?? null });
+            };
+            const reset = () => {
+                if (isFinal) {
+                    positiveArea.value = prompt;
+                    negativeArea.value = negative;
+                    positiveArea.focus();
+                } else {
+                    textArea.value = initialText;
+                    if (prefillArea) prefillArea.value = prefill;
+                    textArea.focus();
                 }
             };
-        }, { popupClass: "editor", contentClass: "qig-popup-content--editor", resizable: false });
+
+            removeAbortListener = bindAbortDismiss(signal, close);
+            popupElement.querySelector("#qig-review-cancel").onclick = close;
+            popupElement.querySelector("#qig-review-reset").onclick = reset;
+            popupElement.querySelector("#qig-review-primary").onclick = submit;
+            const backButton = popupElement.querySelector("#qig-review-back");
+            if (backButton) backButton.onclick = () => finish({ action: "back" });
+            bindPopupDismiss(popupElement, close, { closeOnBackdrop: false });
+
+            const firstField = textArea || positiveArea;
+            firstField?.focus();
+            firstField?.setSelectionRange?.(firstField.value.length, firstField.value.length);
+            for (const textarea of popupElement.querySelectorAll("textarea")) {
+                textarea.onkeydown = (event) => {
+                    if (event.key === "Enter" && event.ctrlKey) {
+                        event.preventDefault();
+                        submit();
+                    }
+                };
+            }
+        }, {
+            popupClass: "editor",
+            contentClass: "qig-popup-content--review",
+            resizable: false,
+            closeOnBackdrop: false,
+        });
+        popup.style.display = "flex";
+    });
+}
+
+async function reviewTextAIRequest(request, { title, description, prefill = null, signal } = {}) {
+    const reviewed = await showPromptReviewStage({
+        mode: "request",
+        title: title || "Review Text AI Request",
+        description: description || "This is the exact QIG instruction sent to Text AI. Edit it before running the request.",
+        request,
+        prefill,
+        signal,
+    });
+    if (!reviewed) throw getAbortError(signal, "Prompt review cancelled");
+    return {
+        request: reviewed.text,
+        prefill: reviewed.prefill ?? "",
+    };
+}
+
+async function reviewSceneSummaryResult(result, signal) {
+    return await showPromptReviewStage({
+        mode: "result",
+        title: "Review Scene Summary",
+        description: "Edit this intermediate visual summary, continue to prompt generation, or re-run the summary request.",
+        result,
+        signal,
+    });
+}
+
+async function reviewFinalImagePrompt(prompt, negative, signal, { canGoBack = false } = {}) {
+    return await showPromptReviewStage({
+        mode: "final",
+        title: "Review Image Prompt",
+        description: "This is the QIG-final prompt after styles, quality tags, ST Style, and Contextual Filters. Wildcards and provider wrappers are applied later.",
+        prompt,
+        negative,
+        canGoBack,
+        signal,
     });
 }
 
@@ -11458,12 +11828,6 @@ function showPlainDescriptionDialog() {
                             <option value="custom" ${s.llmPromptStyle === "custom" ? "selected" : ""}>Custom Instruction</option>
                         </select>
                     </div>
-                    <div class="qig-form-field" style="justify-content:end;">
-                        <label class="checkbox_label">
-                            <input id="qig-plain-description-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
-                            <span>Edit AI prompt before generation</span>
-                        </label>
-                    </div>
                 </div>
                 <div class="qig-dialog-actions" style="margin-top:14px;">
                     <button id="qig-plain-description-cancel" class="menu_button">Cancel</button>
@@ -11472,7 +11836,6 @@ function showPlainDescriptionDialog() {
             </div>`, (popup) => {
             const textEl = document.getElementById("qig-plain-description-text");
             const styleEl = document.getElementById("qig-plain-description-style");
-            const editEl = document.getElementById("qig-plain-description-edit");
 
             const close = () => {
                 hidePopup(popup);
@@ -11489,7 +11852,6 @@ function showPlainDescriptionDialog() {
                 resolve({
                     description,
                     promptStyle: styleEl.value || "tags",
-                    editPrompt: !!editEl.checked,
                 });
             };
 
@@ -12254,9 +12616,14 @@ function reportPartialBatchErrors(label, outcome) {
     );
 }
 
-async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFocusElement = null, sourceEntry = null) {
+async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFocusElement = null, sourceEntry = null, promptCandidate = null) {
     if (isGenerating) return;
-    if (!lastPrompt) {
+    const regenerationPrompt = String(promptCandidate?.prompt ?? lastPrompt ?? "");
+    const regenerationNegative = String(promptCandidate?.negative ?? lastNegative ?? "");
+    const regenerationPromptWasLLM = promptCandidate && Object.hasOwn(promptCandidate, "promptWasLLM")
+        ? !!promptCandidate.promptWasLLM
+        : lastPromptWasLLM;
+    if (!regenerationPrompt.trim()) {
         showStatus("❌ No previous prompt to regenerate");
         return;
     }
@@ -12267,12 +12634,17 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
         ? effectiveRequest.settings
         : null;
     const ctx = getContext?.();
-    const sourceTargetSnapshot = createMessageTargetSnapshot(ctx?.chat, lastGenerationSourceMessageIndex);
-    if ((lastGenerationSourceChatId && lastGenerationSourceChatId !== getContextMediaChatId(ctx))
-        || (Number.isInteger(lastGenerationSourceMessageIndex)
+    const candidateSourceIndex = sourceEntry?.sourceMessageIndex ?? sourceEntry?.index ?? lastGenerationSourceMessageIndex;
+    const sourceMessageIndex = Number.isInteger(candidateSourceIndex) ? candidateSourceIndex : null;
+    const sourceChatId = String(sourceEntry?.sourceChatId ?? sourceEntry?.chatId ?? lastGenerationSourceChatId ?? "");
+    const sourceMessageId = String(sourceEntry?.sourceMessageId ?? sourceEntry?.messageId ?? lastGenerationSourceMessageId ?? "");
+    const sourceMessageSignature = String(sourceEntry?.sourceMessageSignature ?? sourceEntry?.signature ?? lastGenerationSourceMessageSignature ?? "");
+    const sourceTargetSnapshot = createMessageTargetSnapshot(ctx?.chat, sourceMessageIndex);
+    if ((sourceChatId && sourceChatId !== getContextMediaChatId(ctx))
+        || (Number.isInteger(sourceMessageIndex)
         && (!sourceTargetSnapshot
-            || (lastGenerationSourceMessageId && sourceTargetSnapshot.messageId !== lastGenerationSourceMessageId)
-            || (lastGenerationSourceMessageSignature && sourceTargetSnapshot.signature !== lastGenerationSourceMessageSignature)))) {
+            || (sourceMessageId && sourceTargetSnapshot.messageId !== sourceMessageId)
+            || (sourceMessageSignature && sourceTargetSnapshot.signature !== sourceMessageSignature)))) {
         showStatus("❌ The original source message changed; regeneration was cancelled");
         return;
     }
@@ -12310,6 +12682,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
         context: ctx,
         messageSnapshots: sourceTargetSnapshot ? [sourceTargetSnapshot] : [],
         disableGenerateButton: true,
+        preserveRegenerationReferences: true,
     });
     const s = run.settings;
     const batchCount = normalizeBatchCount(s.batchCount);
@@ -12320,12 +12693,27 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
         ? { proxyRefImages: [...(originalReferences?.runtimeOptions?.proxyRefImages || [])] }
         : {};
 
-    debugLog(`Regenerating with prompt: ${lastPrompt.substring(0, 50)}... (batch: ${batchCount})`);
+    const commitRegenerationState = () => {
+        commitSuccessfulPrompt(run, {
+            prompt: regenerationPrompt,
+            negative: regenerationNegative,
+            promptWasLLM: regenerationPromptWasLLM,
+        });
+        rememberLastGenerationSource({
+            sourceMessageIndex,
+            sourceChatId: sourceTargetSnapshot?.chatId || sourceChatId,
+            sourceMessageId: sourceTargetSnapshot?.messageId || sourceMessageId,
+            sourceMessageSignature: sourceTargetSnapshot?.signature || sourceMessageSignature,
+        });
+        lastEffectiveRequest = cloneMetadataSettings(effectiveRequest || {});
+    };
+
+    debugLog(`Regenerating with prompt: ${regenerationPrompt.substring(0, 50)}... (batch: ${batchCount})`);
     try {
         checkAborted(cancelCheckpoint);
         if (batchCount <= 1) {
             showStatus("🔄 Regenerating...");
-            const result = await generateForProvider(lastPrompt, lastNegative, s, run.signal, {
+            const result = await generateForProvider(regenerationPrompt, regenerationNegative, s, run.signal, {
                 ...providerRuntimeOptions,
                 batchIndex: 0,
                 batchCount: 1,
@@ -12333,20 +12721,20 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
             checkAborted(cancelCheckpoint);
             hideStatus();
             if (result) {
-                const entries = await finalizeGeneratedResults(result, lastPrompt, lastNegative, s, getGenerationFinalizationOptions(run, {
+                const entries = await finalizeGeneratedResults(result, regenerationPrompt, regenerationNegative, s, getGenerationFinalizationOptions(run, {
                     referenceRuntimeOptions: providerRuntimeOptions,
-                    promptWasLLM: lastPromptWasLLM,
-                    sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
-                    sourceChatId: sourceTargetSnapshot?.chatId,
-                    sourceMessageId: sourceTargetSnapshot?.messageId,
-                    sourceMessageSignature: sourceTargetSnapshot?.signature,
+                    promptWasLLM: regenerationPromptWasLLM,
+                    sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
+                    sourceChatId: sourceTargetSnapshot?.chatId || sourceChatId,
+                    sourceMessageId: sourceTargetSnapshot?.messageId || sourceMessageId,
+                    sourceMessageSignature: sourceTargetSnapshot?.signature || sourceMessageSignature,
                 }));
                 reportPartialBatchErrors("Regeneration", {
                     results: entries,
                     errors: getResultFailures(entries),
                 });
                 if (entries.length) {
-                    assertGenerationCanCommit(run);
+                    commitRegenerationState();
                     if (entries.length > 1) displayBatchResults(entries, returnFocusElement);
                     else displayImage(entries[0], false, returnFocusElement);
                 }
@@ -12357,8 +12745,8 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
                 checkAborted(cancelCheckpoint);
                 if (s.sequentialSeeds) setGenerationSeedValue(s, baseSeed + i);
                 showStatus(`🔄 Regenerating ${i + 1}/${batchCount}...`);
-                const expandedPrompt = expandWildcards(lastPrompt);
-                const expandedNegative = expandWildcards(lastNegative);
+                const expandedPrompt = expandWildcards(regenerationPrompt);
+                const expandedNegative = expandWildcards(regenerationNegative);
                 const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, {
                     ...providerRuntimeOptions,
                     batchIndex: i,
@@ -12367,11 +12755,11 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
                 if (result) {
                     return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                         referenceRuntimeOptions: providerRuntimeOptions,
-                        promptWasLLM: lastPromptWasLLM,
-                        sourceMessageIndex: Number.isInteger(lastGenerationSourceMessageIndex) ? lastGenerationSourceMessageIndex : undefined,
-                        sourceChatId: sourceTargetSnapshot?.chatId,
-                        sourceMessageId: sourceTargetSnapshot?.messageId,
-                        sourceMessageSignature: sourceTargetSnapshot?.signature,
+                        promptWasLLM: regenerationPromptWasLLM,
+                        sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
+                        sourceChatId: sourceTargetSnapshot?.chatId || sourceChatId,
+                        sourceMessageId: sourceTargetSnapshot?.messageId || sourceMessageId,
+                        sourceMessageSignature: sourceTargetSnapshot?.signature || sourceMessageSignature,
                     }));
                 }
                 return null;
@@ -12379,7 +12767,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
             const { results } = outcome;
             reportPartialBatchErrors("Regeneration", outcome);
             hideStatus();
-            assertGenerationCanCommit(run);
+            if (results.length) commitRegenerationState();
             if (results.length > 1) {
                 displayBatchResults(results, returnFocusElement);
             } else if (results.length === 1) {
@@ -14720,7 +15108,7 @@ function deleteSelectedComfyWorkflowPreset() {
 }
 
 // === Generation Presets ===
-const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "messageRange", "enableParagraphPicker", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "llmEditPrompt", "llmAddQuality", "llmAddLighting", "llmAddArtist", "twoStepPrompt", "twoStepInstruction", "batchCount", "sequentialSeeds"];
+const PRESET_KEYS = ["provider", "style", "width", "height", "steps", "cfgScale", "sampler", "seed", "prompt", "negativePrompt", "qualityTags", "appendQuality", "useLastMessage", "messageRange", "enableParagraphPicker", "useLLMPrompt", "llmPromptStyle", "llmPrefill", "llmCustomInstruction", "reviewBeforeGenerate", "preserveCharacterIdentity", "useWorldInfo", "llmAddQuality", "llmAddLighting", "llmAddArtist", "twoStepPrompt", "twoStepInstruction", "batchCount", "sequentialSeeds"];
 const PROVIDER_PRESET_KEYS = Object.freeze({
     local: ["a1111Scheduler", "comfyScheduler", "a1111RestoreFaces", "a1111Tiling", "a1111Subseed", "a1111SubseedStrength"],
     nanobanana: ["nanobananaNbpMode", "nanobananaNbpPreset", "nanobananaNbpUseNegative", "nanobananaNbpCustomDirector", "nanobananaNbpCustomPrompt", "nanobananaExtraInstructions"],
@@ -14790,6 +15178,24 @@ function normalizeGenerationPresetStore(presets = generationPresets) {
     let changed = false;
     for (const preset of presets) {
         if (!preset || typeof preset !== "object") continue;
+        if (preset.reviewBeforeGenerate === undefined && preset.llmEditPrompt !== undefined) {
+            preset.reviewBeforeGenerate = Boolean(preset.llmEditPrompt);
+            changed = true;
+        }
+        if (Object.hasOwn(preset, "llmEditPrompt")) {
+            delete preset.llmEditPrompt;
+            changed = true;
+        }
+        const recipeDefaults = {
+            reviewBeforeGenerate: false,
+            preserveCharacterIdentity: true,
+            useWorldInfo: false,
+        };
+        for (const [key, value] of Object.entries(recipeDefaults)) {
+            if (preset[key] !== undefined) continue;
+            preset[key] = value;
+            changed = true;
+        }
         if (preset.injectInsertMode !== undefined) {
             const insertMode = normalizeInjectInsertMode(preset.injectInsertMode);
             if (preset.injectInsertMode !== insertMode) {
@@ -15030,6 +15436,7 @@ function seedStarterPresets() {
         appendQuality: true,
         batchCount: 1, sequentialSeeds: false,
         useLastMessage: false, useLLMPrompt: false, llmPromptStyle: "tags",
+        reviewBeforeGenerate: false, preserveCharacterIdentity: true, useWorldInfo: false,
         injectEnabled: false, paletteMode: "direct",
     };
     generationPresets.push(
@@ -15056,7 +15463,7 @@ function showSetupWizard() {
                 <label id="qig-wizard-key-label" for="qig-wizard-key">API Key</label>
                 <input id="qig-wizard-key" type="password" autocomplete="off" placeholder="Paste your API key">
             </div>
-            <div id="qig-wizard-extra-note" class="qig-muted" style="display:none;">This provider has more required settings (server URL, models). Finish here, then open More settings → Provider Setup.</div>
+            <div id="qig-wizard-extra-note" class="qig-muted" style="display:none;">This provider has more required settings (server URL, models). Finish here, then open More settings → Image Provider &amp; Output.</div>
             <label for="qig-wizard-style">Style</label>
             <select id="qig-wizard-style">${styleOpts}</select>
             <div class="qig-wizard-actions">
@@ -15229,7 +15636,9 @@ function refreshAllUI(s) {
         "qig-append-quality": "appendQuality",
         "qig-use-llm": "useLLMPrompt", "qig-auto-generate": "autoGenerate",
         "qig-paragraph-picker": "enableParagraphPicker",
-        "qig-llm-edit": "llmEditPrompt", "qig-llm-quality": "llmAddQuality",
+        "qig-review-before-generate": "reviewBeforeGenerate",
+        "qig-preserve-character-identity": "preserveCharacterIdentity",
+        "qig-use-world-info": "useWorldInfo", "qig-llm-quality": "llmAddQuality",
         "qig-llm-lighting": "llmAddLighting", "qig-llm-artist": "llmAddArtist",
         "qig-two-step-prompt": "twoStepPrompt", "qig-auto-background": "autoSetBackground",
         "qig-auto-insert": "autoInsert", "qig-insert-hidden-reply": "insertAsHiddenReply",
@@ -16426,8 +16835,6 @@ function createUI() {
     const sectionContextExpanded = collapsed.sectionContext ? "false" : "true";
     const sectionAutomationHidden = collapsed.sectionAutomation ? "hidden" : "";
     const sectionAutomationExpanded = collapsed.sectionAutomation ? "false" : "true";
-    const sectionGenerationHidden = collapsed.sectionGeneration ? "hidden" : "";
-    const sectionGenerationExpanded = collapsed.sectionGeneration ? "false" : "true";
     const providerSettingsHidden = collapsed.providerSettings ? "hidden" : "";
     const providerSettingsExpanded = collapsed.providerSettings ? "false" : "true";
     const promptAdvancedHidden = collapsed.promptAdvanced ? "hidden" : "";
@@ -16556,8 +16963,8 @@ function createUI() {
                 <section class="qig-menu-section qig-menu-section--connection qig-menu-section--collapsible qig-flow-provider" aria-labelledby="qig-connection-heading">
                     <button id="qig-section-provider-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionProviderExpanded}" aria-controls="qig-section-provider-content">
                         <span class="qig-section-header-text">
-                            <h3 id="qig-connection-heading" class="qig-section-kicker">Provider Setup</h3>
-                            <small class="qig-section-subtitle">Choose an image backend and manage credentials, models, and connection profiles.</small>
+                            <h3 id="qig-connection-heading" class="qig-section-kicker">Image Provider &amp; Output</h3>
+                            <small class="qig-section-subtitle">Choose a backend and profile, then set output size, count, model, and provider options.</small>
                         </span>
                         <span class="qig-collapsible__icon fa-solid ${collapsed.sectionProvider ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
                     </button>
@@ -16575,6 +16982,10 @@ function createUI() {
                                 <button id="qig-profile-save" class="menu_button" title="Save current provider, API key, and model as a reusable profile"><span class="fa-solid fa-floppy-disk"></span><span>Save Profile</span></button>
                             </div>
                         </div>
+                    </div>
+                    <div id="qig-output-settings" class="qig-output-settings">
+                        <div class="qig-card-title">Output</div>
+                        <small class="qig-muted">Set image dimensions and count. Unsupported controls are hidden for the active provider.</small>
                     </div>
                     <div class="qig-provider-card qig-collapsible">
                         <button id="qig-provider-settings-toggle" type="button" class="qig-collapsible__header" aria-expanded="${providerSettingsExpanded}" aria-controls="qig-provider-settings-content">
@@ -17424,6 +17835,11 @@ function createUI() {
                         <input id="qig-append-quality" type="checkbox" ${s.appendQuality ? "checked" : ""}>
                         <span>Prepend quality tags to prompt</span>
                     </label>
+                    <label class="checkbox_label qig-switch-row">
+                        <input id="qig-review-before-generate" type="checkbox" ${s.reviewBeforeGenerate ? "checked" : ""}>
+                        <span>Review before generating</span>
+                    </label>
+                    <small class="qig-muted">Review the exact Text AI request and the final positive and negative image prompts before they are sent.</small>
 
                     <div id="qig-chat-source-panel" class="qig-subsection" style="display:${promptSourceMode === "chat" ? "block" : "none"}">
                         <div class="qig-card-title">Chat scene source</div>
@@ -17456,9 +17872,10 @@ function createUI() {
                             <small>How the AI formats the image prompt.</small>
                             <div class="qig-toggle-list">
                                 <label class="checkbox_label qig-switch-row">
-                                    <input id="qig-llm-edit" type="checkbox" ${s.llmEditPrompt ? "checked" : ""}>
-                                    <span>Edit LLM prompt before generation</span>
+                                    <input id="qig-preserve-character-identity" type="checkbox" ${s.preserveCharacterIdentity !== false ? "checked" : ""}>
+                                    <span>Preserve character identity</span>
                                 </label>
+                                <small class="qig-muted">Adds name, skin tone, species, age, body-trait, and canonical-appearance requirements to Text AI requests.</small>
                                 <label class="checkbox_label qig-switch-row">
                                     <input id="qig-llm-quality" type="checkbox" ${s.llmAddQuality ? "checked" : ""}>
                                     <span>Add enhanced quality tags</span>
@@ -17509,6 +17926,11 @@ function createUI() {
                         <span>Use SillyTavern's Style panel</span>
                     </label>
                     <small class="qig-muted">Applies its prefix, negative prompt, and character-specific settings.</small>
+                    <label class="checkbox_label qig-switch-row">
+                        <input id="qig-use-world-info" type="checkbox" ${s.useWorldInfo ? "checked" : ""}>
+                        <span>Include matched World Info in Text AI context</span>
+                    </label>
+                    <small class="qig-muted">QIG resolves active lore for the selected scene and opens an editable request review when lore matches. Matched private lore may be sent to the selected Text AI or override profile.</small>
                     <div class="qig-character-panel">
                         <div class="qig-card-title">Character Layers</div>
                         <p id="qig-character-status" class="qig-character-panel__status"></p>
@@ -17672,15 +18094,7 @@ function createUI() {
                 </div>
                 </section>
 
-                <section class="qig-menu-section qig-menu-section--collapsible qig-flow-generation" aria-labelledby="qig-output-heading">
-                    <button id="qig-section-generation-toggle" type="button" class="qig-collapsible__header qig-section-header-toggle" aria-expanded="${sectionGenerationExpanded}" aria-controls="qig-section-generation-content">
-                        <span class="qig-section-header-text">
-                            <h3 id="qig-output-heading" class="qig-section-kicker">Generation Parameters</h3>
-                            <small class="qig-section-subtitle">Set output resolution, image count, chat insertion modes, sampler, CFG, and seed.</small>
-                        </span>
-                        <span class="qig-collapsible__icon fa-solid ${collapsed.sectionGeneration ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
-                    </button>
-                    <div id="qig-section-generation-content" class="qig-collapsible__content" ${sectionGenerationHidden}>
+                <div id="qig-detached-generation-settings" hidden>
                 <div id="qig-delivery-settings">
                 <label class="checkbox_label">
                     <input id="qig-auto-insert" type="checkbox" ${s.autoInsert ? "checked" : ""}>
@@ -17771,7 +18185,6 @@ function createUI() {
                     </div>
                 </div>
                 </div>
-                </section>
                     </div>
                 </div>
             </div>
@@ -17786,7 +18199,6 @@ function createUI() {
         ".qig-flow-create",
         ".qig-flow-context",
         ".qig-flow-automation",
-        ".qig-flow-generation",
     ];
     for (const selector of flowSections) {
         const section = setupPanel?.querySelector(selector);
@@ -17795,6 +18207,13 @@ function createUI() {
     const deliverySettings = document.getElementById("qig-delivery-settings");
     const automationSection = setupPanel?.querySelector(".qig-flow-automation");
     if (deliverySettings && automationSection) automationSection.appendChild(deliverySettings);
+    const outputSettings = document.getElementById("qig-output-settings");
+    const detachedGenerationSettings = document.getElementById("qig-detached-generation-settings");
+    for (const selector of [".qig-generation-grid", "#qig-seq-seeds-wrap", ".qig-advanced-settings-shell"]) {
+        const control = detachedGenerationSettings?.querySelector(selector);
+        if (control && outputSettings) outputSettings.appendChild(control);
+    }
+    detachedGenerationSettings?.remove();
     const textAiRouting = document.getElementById("qig-text-ai-routing");
     const createSection = setupPanel?.querySelector(".qig-flow-create");
     if (textAiRouting && createSection) createSection.appendChild(textAiRouting);
@@ -17825,7 +18244,6 @@ function createUI() {
     setupQigCollapsibleSection("sectionCreate", "qig-section-create-toggle", "qig-section-create-content");
     setupQigCollapsibleSection("sectionContext", "qig-section-context-toggle", "qig-section-context-content");
     setupQigCollapsibleSection("sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content");
-    setupQigCollapsibleSection("sectionGeneration", "qig-section-generation-toggle", "qig-section-generation-content");
     setupQigCollapsibleSection("providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content");
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
@@ -18533,6 +18951,7 @@ function createUI() {
     bind("qig-negative", "negativePrompt");
     bind("qig-quality", "qualityTags");
     bindCheckbox("qig-append-quality", "appendQuality");
+    bindCheckbox("qig-review-before-generate", "reviewBeforeGenerate");
     bind("qig-msg-range", "messageRange", false);
     bindCheckbox("qig-paragraph-picker", "enableParagraphPicker");
     document.getElementById("qig-use-llm").onchange = (e) => {
@@ -18543,7 +18962,8 @@ function createUI() {
         syncGenerationPresetIndicators();
     };
     bind("qig-llm-custom", "llmCustomInstruction");
-    bindCheckbox("qig-llm-edit", "llmEditPrompt");
+    bindCheckbox("qig-preserve-character-identity", "preserveCharacterIdentity");
+    bindCheckbox("qig-use-world-info", "useWorldInfo");
     bindCheckbox("qig-llm-quality", "llmAddQuality");
     bindCheckbox("qig-llm-lighting", "llmAddLighting");
     bindCheckbox("qig-llm-artist", "llmAddArtist");
@@ -19128,14 +19548,14 @@ function bindMessageGenerateActionClicks() {
             return;
         }
 
+        const transientTarget = setTransientGenerationTarget(messageIndex);
         try {
-            setTransientGenerationTarget(messageIndex);
             await generateImage();
         } catch (e) {
             log(`Message action: Generation failed for message ${messageIndex}: ${e.message}`);
             toastr.error("Failed to generate from that message: " + e.message, "", { escapeHtml: true });
         } finally {
-            clearTransientGenerationTarget();
+            clearTransientGenerationTarget(transientTarget);
         }
     });
 }
@@ -19144,6 +19564,16 @@ function runConfiguredPaletteGeneration() {
     const mode = normalizePaletteMode(getSettings()?.paletteMode);
     if (mode === "inject") return generateImageInjectPalette();
     return generateImage();
+}
+
+function isGenerationStartDebounced(now = Date.now()) {
+    const blocked = shouldBlockGenerationStart({
+        active: isGenerating,
+        now,
+        blockedUntil: generationStartLockUntil,
+    });
+    if (blocked) log("Ignored rapid generate click immediately after cancellation");
+    return blocked;
 }
 
 function handleMainGenerationControlClick() {
@@ -19157,9 +19587,10 @@ function handleMainGenerationControlClick() {
     });
     if (state.action === "busy") return;
     if (state.action === "cancel") {
-        if (requestGenerationCancel()) toastr.warning("Cancelling generation...");
+        requestGenerationCancel();
         return;
     }
+    if (isGenerationStartDebounced()) return;
     return runConfiguredPaletteGeneration();
 }
 
@@ -19180,9 +19611,9 @@ function addInputButton() {
         if (isGenerating) {
             if (!requestGenerationCancel()) return;
             log("User cancelled generation via palette button");
-            toastr.warning("Cancelling generation...");
             return;
         }
+        if (isGenerationStartDebounced(now)) return;
         if (now < paletteGenerateLockUntil) {
             log("Palette: Ignored rapid duplicate generate click");
             return;
@@ -19250,14 +19681,38 @@ async function generateImageInjectPalette() {
             }
         }
 
+        const paletteSceneEntries = getSceneMessageEntries(s, ctx);
+        const paletteWorldInfoIndex = Number.isInteger(sourceMessageIndex)
+            ? sourceMessageIndex
+            : paletteSceneEntries.reduce((latest, entry) => (
+                Number.isInteger(entry?.index) ? Math.max(latest, entry.index) : latest
+            ), -1);
+        const paletteSourceText = getMessages(s, ctx) || resolvePrompt(s.prompt) || "the current scene";
+        const worldInfoContext = await resolveWorldInfoForPromptPipeline(s, {
+            context: ctx,
+            throughIndex: paletteWorldInfoIndex >= 0 ? paletteWorldInfoIndex : null,
+            sourceText: paletteSourceText,
+            signal: run.signal,
+            forceTextAI: matches.length === 0,
+        });
+
         if (matches.length === 0) {
             log("Palette inject: No image tags found, asking LLM for one tag from the selected scene");
             showStatus("🔍 No image tags found; asking LLM for one image tag...");
 
-            const sceneContext = getMessages(s, ctx) || resolvePrompt(s.prompt) || "the current scene";
+            const sceneContext = paletteSourceText;
             const injectInstruction = resolvePrompt(getInjectPromptTemplate(s));
             const timestamp = Date.now();
-            const fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate exactly one image tag for the single best visual moment. You must use the exact tag format shown above. Return exactly one tag only. Do not generate multiple tags, lists, moments, or variants.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
+            let fullInstruction = `${injectInstruction}\n\nBased on this scene context, generate exactly one image tag for the single best visual moment. You must use the exact tag format shown above. Return exactly one tag only. Do not generate multiple tags, lists, moments, or variants.\n\nScene context:\n${sceneContext}\n\nRespond with image tags only.\n\n[${timestamp}]`;
+            fullInstruction = appendWorldInfoToRequest(fullInstruction, worldInfoContext.text);
+            if (s.reviewBeforeGenerate || !!worldInfoContext.text) {
+                const reviewed = await reviewTextAIRequest(fullInstruction, {
+                    title: "Review Image Tag Request",
+                    description: "No image tag was found. Review the exact Text AI request QIG will use to choose one visual moment.",
+                    signal: run.signal,
+                });
+                fullInstruction = reviewed.request;
+            }
 
             let llmResponse;
             if (s.llmOverrideEnabled && s.llmOverrideProfileId) {
@@ -19316,42 +19771,21 @@ async function generateImageInjectPalette() {
 
             const originalSeed = getGenerationSeedValue(s);
             try {
-                let prompt = await generateLLMPrompt(s, extractedPrompt, run.signal);
-                checkAborted(cancelCheckpoint);
-
-                if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
-                    const editedPrompt = await showPromptEditDialog(prompt, run.signal);
-                    if (editedPrompt !== null) prompt = editedPrompt;
-                    else continue;
-                }
-                let negative = resolvePrompt(s.negativePrompt);
-                prompt = applyStyle(prompt, s);
-
-                if (s.appendQuality && s.qualityTags) {
-                    prompt = `${s.qualityTags}, ${prompt}`;
-                }
-
-                if (s.useSTStyle !== false) {
-                    ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
-                }
-
-                const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-                    matchText: [baseSceneText, extractedPrompt, prompt].filter(Boolean).join("\n\n"),
+                const preparedPrompt = await prepareQigFinalPrompt({
+                    settings: s,
+                    context: ctx,
+                    sourcePrompt: extractedPrompt,
+                    matchText: [baseSceneText, extractedPrompt].filter(Boolean).join("\n\n"),
                     llmSceneText: baseSceneText || extractedPrompt,
                     signal: run.signal,
-                    settings: s,
+                    worldInfoText: worldInfoContext.text,
                 });
                 checkAborted(cancelCheckpoint);
-                prompt = contextualApplied.prompt;
-                negative = contextualApplied.negative;
-
-                lastPrompt = prompt;
-                lastNegative = negative;
-                lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+                const { prompt, negative, promptWasLLM, seedOverride } = preparedPrompt;
 
                 const batchCount = normalizeBatchCount(s.batchCount);
                 const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
-                const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+                const baseSeed = getBatchBaseSeed(s, batchCount, seedOverride);
                 const outcome = await collectBatchResults(batchCount, async (i) => {
                     checkAborted(cancelCheckpoint);
                     setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
@@ -19361,7 +19795,7 @@ async function generateImageInjectPalette() {
                     const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
                     if (result) {
                         return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
-                            promptWasLLM: lastPromptWasLLM,
+                            promptWasLLM,
                             sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
                             sourceMessageId: sourceTargetSnapshot?.messageId,
                             sourceMessageSignature: sourceTargetSnapshot?.signature,
@@ -19377,6 +19811,7 @@ async function generateImageInjectPalette() {
 
                 if (results.length > 0) {
                     assertGenerationCanCommit(run);
+                    commitSuccessfulPrompt(run, { prompt, negative, promptWasLLM });
                     if (sourceTargetSnapshot) assertMessageTargetSnapshot(sourceTargetSnapshot);
                     if (sourceInjectMessage) consumedMessagePrompts.add(extractedPrompt);
                     await maybeAutoSetBackground(results, s, run);
@@ -19475,51 +19910,28 @@ async function generateImageFromPlainDescription() {
         log(`Plain description: Generating AI prompt from ${basePrompt.length} chars`);
         showStatus("🤖 Turning description into image prompt...");
 
-        let prompt = await generateLLMPrompt(s, basePrompt, run.signal, {
-            isMultiMessageScene: false,
+        const worldInfoContext = await resolveWorldInfoForPromptPipeline(s, {
+            context: ctx,
+            sourceText: basePrompt,
+            signal: run.signal,
+            forceTextAI: true,
         });
-        checkAborted(cancelCheckpoint);
-        lastPromptWasLLM = prompt !== basePrompt;
-
-        if (request.editPrompt) {
-            const editedPrompt = await showPromptEditDialog(prompt, run.signal);
-            if (editedPrompt !== null) {
-                prompt = editedPrompt;
-            } else {
-                return;
-            }
-        }
-
-        prompt = applyStyle(prompt, s);
-
-        if (s.appendQuality && s.qualityTags) {
-            prompt = `${s.qualityTags}, ${prompt}`;
-        }
-        let negative = resolvePrompt(s.negativePrompt);
-
-        if (s.useSTStyle !== false) {
-            ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
-        }
-
-        const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-            matchText: [basePrompt, prompt].filter(Boolean).join("\n\n"),
+        const preparedPrompt = await prepareQigFinalPrompt({
+            settings: s,
+            context: ctx,
+            sourcePrompt: basePrompt,
+            matchText: basePrompt,
             llmSceneText: basePrompt,
             signal: run.signal,
-            settings: s,
+            isMultiMessageScene: false,
+            worldInfoText: worldInfoContext.text,
         });
         checkAborted(cancelCheckpoint);
-        prompt = contextualApplied.prompt;
-        negative = contextualApplied.negative;
-
-        lastPrompt = prompt;
-        lastNegative = negative;
-        promptHistory.unshift({ prompt, negative, time: new Date().toLocaleTimeString() });
-        if (promptHistory.length > 50) promptHistory.pop();
-        savePromptHistory();
+        const { prompt, negative, promptWasLLM, seedOverride } = preparedPrompt;
 
         const batchCount = normalizeBatchCount(s.batchCount);
         const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
-        const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+        const baseSeed = getBatchBaseSeed(s, batchCount, seedOverride);
 
         debugLog(`Plain description final prompt: ${prompt.substring(0, 100)}...`);
         const outcome = await collectBatchResults(batchCount, async (i) => {
@@ -19531,7 +19943,7 @@ async function generateImageFromPlainDescription() {
             const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
             if (result) {
                 return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
-                    promptWasLLM: lastPromptWasLLM,
+                    promptWasLLM,
                     sourceMessageIndex: insertionSnapshot?.index,
                     sourceMessageId: insertionSnapshot?.messageId,
                     sourceMessageSignature: insertionSnapshot?.signature,
@@ -19544,6 +19956,7 @@ async function generateImageFromPlainDescription() {
 
         if (results.length > 0) {
             assertGenerationCanCommit(run);
+            commitSuccessfulPrompt(run, { prompt, negative, promptWasLLM, addHistory: true });
             await maybeAutoSetBackground(results, s, run);
         }
 
@@ -19593,7 +20006,7 @@ async function generateImageFromPlainDescription() {
 
 async function generateImage() {
     if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
-    const usingTransientSettingsOverride = !!transientGenerationSettingsOverride;
+    const usingTransientSettingsOverride = !!transientGenerationSettingsState.current;
     const initialSettings = getGenerationSettingsForRun();
     if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
     const ctx = getContext();
@@ -19607,6 +20020,9 @@ async function generateImage() {
     const sceneSelectionMessageIndex = selectedSceneEntries.length > 0 && Number.isInteger(selectedSceneEntries[selectedSceneEntries.length - 1]?.index)
         ? selectedSceneEntries[selectedSceneEntries.length - 1].index
         : null;
+    const worldInfoThroughIndex = selectedSceneEntries.reduce((latest, entry) => (
+        Number.isInteger(entry?.index) ? Math.max(latest, entry.index) : latest
+    ), -1);
     const sceneSelectionIsMultiMessage = selectedSceneEntries.length > 1;
     const sourceMessageIndexForEntries = Number.isInteger(activeMessageTarget?.messageIndex)
         ? activeMessageTarget.messageIndex
@@ -19687,11 +20103,28 @@ async function generateImage() {
     const originalLLMPromptSource = scenePrompt || basePrompt;
     let llmPromptSource = originalLLMPromptSource;
     let llmPromptSourceIsDescription = false;
+    const worldInfoContext = await resolveWorldInfoForPromptPipeline(s, {
+        context: ctx,
+        throughIndex: worldInfoThroughIndex >= 0 ? worldInfoThroughIndex : null,
+        sourceText: originalLLMPromptSource,
+        signal: run.signal,
+    });
     if (s.twoStepPrompt && s.useLLMPrompt && useChatMessageScene && scenePrompt) {
-        const sceneDescription = await generateSceneDescription(s, scenePrompt, run.signal, {
-            isMultiMessageScene: sceneSelectionIsMultiMessage,
-        });
-        checkAborted(cancelCheckpoint);
+        let sceneDescription = "";
+        do {
+            sceneDescription = await generateSceneDescription(s, scenePrompt, run.signal, {
+                isMultiMessageScene: sceneSelectionIsMultiMessage,
+                worldInfoText: worldInfoContext.text,
+            });
+            checkAborted(cancelCheckpoint);
+            if (sceneDescription && s.reviewBeforeGenerate) {
+                const reviewedSummary = await reviewSceneSummaryResult(sceneDescription, run.signal);
+                if (!reviewedSummary) throw getAbortError(run.signal, "Prompt review cancelled");
+                if (reviewedSummary.action === "back") continue;
+                sceneDescription = reviewedSummary.text;
+            }
+            break;
+        } while (true);
         if (sceneDescription) {
             llmPromptSource = sceneDescription;
             llmPromptSourceIsDescription = true;
@@ -19701,58 +20134,27 @@ async function generateImage() {
         }
     }
 
-    let prompt = await generateLLMPrompt(s, llmPromptSource, run.signal, {
-        isMultiMessageScene: llmPromptSourceIsDescription ? false : sceneSelectionIsMultiMessage,
-    });
-    checkAborted(cancelCheckpoint);
-    lastPromptWasLLM = (s.useLLMPrompt && (prompt !== originalLLMPromptSource || llmPromptSourceIsDescription));
-
-    // Show prompt editing dialog if enabled
-    if (s.useLLMPrompt && s.llmEditPrompt) {
-        const editedPrompt = await showPromptEditDialog(prompt, run.signal);
-        if (editedPrompt !== null) {
-            prompt = editedPrompt;
-        } else {
-            return { status: "cancelled", generated: 0, failed: 0 }; // finally block handles cleanup
-        }
-    }
-
-    prompt = applyStyle(prompt, s);
-
-    if (s.appendQuality && s.qualityTags) {
-        prompt = `${s.qualityTags}, ${prompt}`;
-    }
-    let negative = resolvePrompt(s.negativePrompt);
-
-    // Apply ST Style panel settings (prefix, char-specific, negative)
-    if (s.useSTStyle !== false) {
-        ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
-    }
-
     const llmSceneText = scenePrompt || basePrompt;
-    const filterMatchText = [llmSceneText, prompt].filter(Boolean).join("\n\n");
-    const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-        matchText: filterMatchText || prompt,
+    const preparedPrompt = await prepareQigFinalPrompt({
+        settings: s,
+        context: ctx,
+        sourcePrompt: llmPromptSource,
+        matchText: llmSceneText,
         llmSceneText,
         signal: run.signal,
-        settings: s,
+        isMultiMessageScene: llmPromptSourceIsDescription ? false : sceneSelectionIsMultiMessage,
+        worldInfoText: worldInfoContext.text,
+        forcePromptWasLLM: llmPromptSourceIsDescription,
     });
     checkAborted(cancelCheckpoint);
-    prompt = contextualApplied.prompt;
-    negative = contextualApplied.negative;
-
-    lastPrompt = prompt;
-    lastNegative = negative;
-    promptHistory.unshift({ prompt, negative, time: new Date().toLocaleTimeString() });
-    if (promptHistory.length > 50) promptHistory.pop();
-    savePromptHistory();
+    const { prompt, negative, promptWasLLM, seedOverride } = preparedPrompt;
 
     debugLog(`Final prompt: ${prompt.substring(0, 100)}...`);
     debugLog(`Negative: ${negative.substring(0, 50)}...`);
 
             log(`Using provider: ${s.provider}, batch: ${batchCount}`);
             const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
-            const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+            const baseSeed = getBatchBaseSeed(s, batchCount, seedOverride);
             const outcome = await collectBatchResults(batchCount, async (i) => {
                 checkAborted(cancelCheckpoint);
                 setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
@@ -19767,7 +20169,7 @@ async function generateImage() {
                 if (result) {
                     return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
                         referenceRuntimeOptions: providerRuntimeOptions,
-                        promptWasLLM: lastPromptWasLLM,
+                        promptWasLLM,
                         sourceMessageIndex: sourceTargetSnapshot?.index,
                         sourceMessageId: sourceTargetSnapshot?.messageId,
                         sourceMessageSignature: sourceTargetSnapshot?.signature,
@@ -19779,6 +20181,9 @@ async function generateImage() {
             reportPartialBatchErrors("Generation", outcome);
             log(`Generated ${results.length} valid image result(s)`);
             assertGenerationCanCommit(run);
+            if (results.length > 0) {
+                commitSuccessfulPrompt(run, { prompt, negative, promptWasLLM, addHistory: true });
+            }
             await maybeAutoSetBackground(results, s, run);
             if (s.autoInsert) {
                 let insertedCount = 0;
@@ -20313,6 +20718,12 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
 
         // Generate images for each extracted prompt
         const sceneTextForFilters = getMessages(s, ctx) || "";
+        const worldInfoContext = await resolveWorldInfoForPromptPipeline(s, {
+            context: ctx,
+            throughIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : null,
+            sourceText: sceneTextForFilters || matches.join("\n"),
+            signal: run.signal,
+        });
         for (const extractedPrompt of matches) {
             const originalSeed = getGenerationSeedValue(s);
             try {
@@ -20320,50 +20731,21 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
                 debugLog(`Inject: Generating image for: ${extractedPrompt.substring(0, 80)}...`);
                 showStatus("🖼️ Generating inject-mode image...");
 
-                let prompt = await generateLLMPrompt(s, extractedPrompt, run.signal);
-                checkAborted(cancelCheckpoint);
-
-                // Show prompt editing dialog if enabled
-                if (s.useLLMPrompt && s.llmEditPrompt && prompt !== extractedPrompt) {
-                    const editedPrompt = await showPromptEditDialog(prompt, run.signal);
-                    if (editedPrompt !== null) {
-                        prompt = editedPrompt;
-                    } else {
-                        continue;
-                    }
-                }
-                let negative = resolvePrompt(s.negativePrompt);
-
-                // Apply style
-                prompt = applyStyle(prompt, s);
-
-                // Apply quality tags
-                if (s.appendQuality && s.qualityTags) {
-                    prompt = `${s.qualityTags}, ${prompt}`;
-                }
-
-                // Apply ST Style
-                if (s.useSTStyle !== false) {
-                    ({ prompt, negative } = applySTStylePrompts(prompt, negative, ctx));
-                }
-
-                const contextualApplied = await applyResolvedContextualFilters(prompt, negative, {
-                    matchText: sceneTextForFilters || prompt,
+                const preparedPrompt = await prepareQigFinalPrompt({
+                    settings: s,
+                    context: ctx,
+                    sourcePrompt: extractedPrompt,
+                    matchText: sceneTextForFilters || extractedPrompt,
                     llmSceneText: sceneTextForFilters || extractedPrompt,
                     signal: run.signal,
-                    settings: s,
+                    worldInfoText: worldInfoContext.text,
                 });
                 checkAborted(cancelCheckpoint);
-                prompt = contextualApplied.prompt;
-                negative = contextualApplied.negative;
-
-                lastPrompt = prompt;
-                lastNegative = negative;
-                lastPromptWasLLM = (s.useLLMPrompt && prompt !== extractedPrompt);
+                const { prompt, negative, promptWasLLM, seedOverride } = preparedPrompt;
 
                 const batchCount = job ? 1 : normalizeBatchCount(s.batchCount);
                 const useSequentialSeeds = s.sequentialSeeds && batchCount > 1;
-                const baseSeed = getBatchBaseSeed(s, batchCount, contextualApplied.seedOverride);
+                const baseSeed = getBatchBaseSeed(s, batchCount, seedOverride);
                 const outcome = await collectBatchResults(batchCount, async (i) => {
                     checkAborted(cancelCheckpoint);
                     setGenerationSeedValue(s, useSequentialSeeds ? baseSeed + i : baseSeed);
@@ -20373,7 +20755,7 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
                     const result = await generateForProvider(expandedPrompt, expandedNegative, s, run.signal, { batchIndex: i, batchCount });
                     if (result) {
                         return await finalizeGeneratedResults(result, expandedPrompt, expandedNegative, s, getGenerationFinalizationOptions(run, {
-                            promptWasLLM: lastPromptWasLLM,
+                            promptWasLLM,
                             sourceMessageIndex: Number.isInteger(sourceMessageIndex) ? sourceMessageIndex : undefined,
                             sourceMessageId: sourceTargetSnapshot?.messageId,
                             sourceMessageSignature: sourceTargetSnapshot?.signature,
@@ -20387,6 +20769,7 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
 
                 if (results.length > 0) {
                     assertGenerationCanCommit(run);
+                    commitSuccessfulPrompt(run, { prompt, negative, promptWasLLM });
                     await maybeAutoSetBackground(results, s, run);
                     await deliverInjectResults(results, {
                         settings: s,
@@ -20656,14 +21039,14 @@ function scheduleDirectAutoGeneration(job, delayMs) {
             scheduleDirectAutoGeneration(job, 250);
             return;
         }
+        const transientTarget = setTransientGenerationTarget(job.index, {
+            forceMessagePrompt: false,
+            conversationCheckpoint: job.conversationCheckpoint,
+        });
         try {
-            setTransientGenerationTarget(job.index, {
-                forceMessagePrompt: false,
-                conversationCheckpoint: job.conversationCheckpoint,
-            });
             await withTransientGenerationSettings(job.settings, () => generateImage());
         } finally {
-            clearTransientGenerationTarget();
+            clearTransientGenerationTarget(transientTarget);
         }
     }, delayMs);
 }
@@ -20758,6 +21141,7 @@ jQuery(function () {
         try {
             const extensionsModule = await import("../../../extensions.js");
             const scriptModule = await import("../../../../script.js");
+            hostScriptModule = scriptModule;
             extension_settings = extensionsModule.extension_settings;
             getContext = extensionsModule.getContext;
             saveSettingsDebounced = scriptModule.saveSettingsDebounced;
@@ -20768,6 +21152,14 @@ jQuery(function () {
             createRawPrompt = scriptModule.createRawPrompt;
             substituteParams = scriptModule.substituteParams;
             getRequestHeaders = scriptModule.getRequestHeaders;
+
+            try {
+                const worldInfoModule = await import("../../../world-info.js");
+                hostWorldInfoModule = worldInfoModule;
+                checkWorldInfo = worldInfoModule.checkWorldInfo;
+            } catch (e) {
+                console.warn("[ImageGen] Could not import World Info helpers:", e.message);
+            }
 
             try {
                 const openAICompatModule = await import("../../../openai.js");

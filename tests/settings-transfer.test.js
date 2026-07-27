@@ -269,6 +269,20 @@ test("version 5 imports are migrated and private profile fields are ignored", ()
     assert.match(imported.contextualFilters[0].id, /^contextualFilters-/);
 });
 
+test("legacy prompt editor setting migrates to review preflight on import", () => {
+    const legacy = parseSettingsImport(JSON.stringify({
+        version: 6,
+        activeSettings: { llmEditPrompt: true },
+    }));
+    const explicit = parseSettingsImport(JSON.stringify({
+        version: 7,
+        activeSettings: { llmEditPrompt: true, reviewBeforeGenerate: false },
+    }));
+
+    assert.deepEqual(legacy.activeSettings, { reviewBeforeGenerate: true });
+    assert.deepEqual(explicit.activeSettings, { reviewBeforeGenerate: false });
+});
+
 test("private fields are stripped from every store except explicit legacy references", () => {
     const imported = parseSettingsImport(JSON.stringify({
         version: 5,

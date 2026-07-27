@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { GenerationRunManager, snapshotGenerationRunSettings } from "../lib/generation-run.js";
+import { GenerationRunManager, OwnedTransientValue, snapshotGenerationRunSettings } from "../lib/generation-run.js";
 
 test("generation runs own an isolated settings snapshot", () => {
     const manager = new GenerationRunManager();
@@ -61,13 +61,53 @@ test("only the active owner can finish a generation run", () => {
     assert.equal(manager.finish(second), true);
 });
 
-test("cancelling invalidates the active run until its owner finishes", () => {
+test("cancelling and releasing invalidates and immediately releases the active run", () => {
     const manager = new GenerationRunManager();
     const run = manager.start({});
 
-    assert.equal(manager.cancel("Chat changed"), true);
+    assert.equal(manager.cancelAndRelease("Chat changed"), run);
     assert.equal(run.signal.aborted, true);
+    assert.equal(run.signal.reason.name, "AbortError");
+    assert.equal(run.signal.reason.message, "Chat changed");
     assert.throws(() => manager.assertActive(run), { name: "AbortError" });
-    assert.throws(() => manager.start({}), /already active/);
-    assert.equal(manager.finish(run), true);
+    assert.equal(manager.active, null);
+    assert.equal(manager.cancelAndRelease(), null);
+});
+
+test("a released owner cannot finish a newer active run", () => {
+    const manager = new GenerationRunManager();
+    const oldRun = manager.start({});
+
+    assert.equal(manager.cancelAndRelease(), oldRun);
+    const newRun = manager.start({});
+
+    assert.equal(manager.finish(oldRun), false);
+    assert.equal(manager.active, newRun);
+    assert.equal(manager.finish(newRun), true);
+});
+
+test("stale transient owners cannot clear replacement state", () => {
+    const state = new OwnedTransientValue();
+    const oldOwner = state.set({ prompt: "old" });
+    const newOwner = state.set({ prompt: "new" });
+
+    assert.equal(state.clear(oldOwner), false);
+    assert.equal(state.current, newOwner);
+    assert.deepEqual(state.current.value, { prompt: "new" });
+});
+
+test("a cancelled transient scope cannot restore over replacement state", async () => {
+    const state = new OwnedTransientValue();
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    const oldTask = state.withValue({ prompt: "old" }, async () => await gate);
+    const oldOwner = state.current;
+
+    assert.equal(state.clear(oldOwner), true);
+    const newOwner = state.set({ prompt: "new" });
+    release();
+    await oldTask;
+
+    assert.equal(state.current, newOwner);
+    assert.deepEqual(state.current.value, { prompt: "new" });
 });

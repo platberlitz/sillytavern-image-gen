@@ -54,7 +54,7 @@ QIG synchronizes active settings, Connection Profiles, generation presets, Comfy
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
 5. Save the generation recipe as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
 
-The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Create, Generation, Context, Automation & Delivery, then Provider Setup. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Recipes & Prompting, Context Rules & Media, then Automation & Delivery. Connection profiles still keep credentials and models separate from portable generation presets. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
 
 ### Prompt source
 
@@ -107,6 +107,14 @@ When `Use LLM to create image prompt` is enabled, your Text AI rewrites the chat
 - **Tags (Danbooru)**: tag-list format (`1girl, long hair, blue eyes, ...`).
 - **Natural (Description)**: prose description.
 - **Custom instruction**: your own system prompt directs the conversion.
+
+### Prompt review, identity, and World Info
+
+- **Review before generating** opens a staged editor for prompt-building Text AI requests, intermediate scene summaries, LLM Contextual Filter classification, and the final positive/negative image prompt. The final stage is after QIG styles, quality tags, SillyTavern Style, and Contextual Filters, but before wildcard expansion and provider-specific wrappers. Final edits are authoritative; QIG does not reapply those transformations afterward.
+- **Preserve character identity** controls QIG's added name, skin tone, species, age, body-trait, and canonical-appearance requirements. It defaults on for compatibility. Turning it off removes those enforcement rules; it does not remove the selected scene, character profile, or persona context used to create the prompt.
+- **Include matched World Info in Text AI context** uses SillyTavern's active World Info match for the selected scene or explicit source text. Matched lore appears in the editable Text AI request and is not appended directly to the image-provider prompt. This option is off by default because private lore may be sent to the selected Text AI or override profile.
+
+Cancel releases the QIG interface immediately and discards late results. QIG still requests provider-side cancellation where supported, but remote work may continue when a provider cannot cancel an accepted job. Cancelled and failed drafts are not added to prompt history.
 
 ### Style presets
 
@@ -401,6 +409,7 @@ SillyTavern server plugins are not sandboxed. Only install server plugins from d
 
 ## Migration Notes
 
+- The legacy `Edit LLM prompt before generation` setting migrates to `Review before generating`.
 - Legacy Prompt Replacement Maps are migrated into Contextual Filters on settings load, preset import, and settings import.
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
