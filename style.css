@@ -263,6 +263,19 @@
     white-space: normal;
 }
 
+.qig-template-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.qig-template-actions .menu_button {
+    padding: 3px 10px;
+    font-size: 11px;
+    line-height: 1.2;
+}
+
 .qig-settings-search-shell {
     margin: 10px 0 14px;
     display: flex;

@@ -185,6 +185,11 @@ import {
     updatePromptPipelineState,
 } from "./lib/prompt-pipeline.js";
 import {
+    DEFAULT_NATURAL_INSTRUCTION_TEMPLATE,
+    DEFAULT_TAGS_INSTRUCTION_TEMPLATE,
+    DEFAULT_TWO_STEP_INSTRUCTION_TEMPLATE,
+} from "./lib/prompt-defaults.js";
+import {
     buildWorldInfoScanChat,
     composeWorldInfoScanChat,
     formatWorldInfoScanMessage,
@@ -17622,6 +17627,9 @@ function createUI() {
                         </div>
                         <label>Personality / System Prompt</label>
                         <textarea id="qig-proxy-chat-system" rows="3" placeholder="Tell the image model how to behave in chat-image mode.">${esc(s.proxyChatImageSystemPrompt || DEFAULT_PROXY_CHAT_IMAGE_SYSTEM_PROMPT)}</textarea>
+                        <div class="qig-template-actions">
+                            <button id="qig-proxy-chat-system-reset" type="button" class="menu_button">Reset to default</button>
+                        </div>
                         <label class="checkbox_label qig-switch-row">
                             <input id="qig-proxy-chat-personality" type="checkbox" ${s.proxyChatImageIncludePersonality ? "checked" : ""}>
                             <span>Append active chat character and persona context</span>
@@ -17898,7 +17906,13 @@ function createUI() {
                             <small>Pre-fills the start of the AI response to guide its output format.</small>
                             <div id="qig-llm-custom-wrap" style="display:${s.llmPromptStyle === "custom" ? "block" : "none"};margin-top:8px;">
                                 <label>Custom LLM Instruction</label>
-                                <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Write your custom instruction for the LLM. Use {{scene}} for the current scene text.">${esc(s.llmCustomInstruction || "")}</textarea>
+                                <textarea id="qig-llm-custom" style="width:100%;height:120px;resize:vertical;" placeholder="Empty = the built-in Tags instruction. Insert a default below to see and edit it.">${esc(s.llmCustomInstruction || "")}</textarea>
+                                <div class="qig-template-actions">
+                                    <button id="qig-llm-custom-insert-tags" type="button" class="menu_button">Insert Tags default</button>
+                                    <button id="qig-llm-custom-insert-natural" type="button" class="menu_button">Insert Natural default</button>
+                                    <button id="qig-llm-custom-reset" type="button" class="menu_button">Reset</button>
+                                </div>
+                                <small style="opacity:0.6;font-size:10px;">Supports {{scene}}, {{char}}, {{user}}, {{charDesc}}, and {{userDesc}}. Identity rules and the quality/lighting/artist toggles above are appended automatically. Reset clears the override so the built-in adaptive instruction is used.</small>
                             </div>
                             <label class="checkbox_label" style="margin-top:8px;">
                                 <input id="qig-two-step-prompt" type="checkbox" ${s.twoStepPrompt ? "checked" : ""}>
@@ -17907,8 +17921,12 @@ function createUI() {
                             <div id="qig-two-step-options" class="qig-dependent-panel" style="display:${s.twoStepPrompt ? "block" : "none"};margin-top:6px;">
                                 <small style="opacity:0.6;font-size:10px;">For chat-based direct generation, QIG first asks Text AI for a plain visual scene description, then converts that description through the selected LLM prompt style.</small>
                                 <label>Scene description instruction (optional)</label>
-                                <textarea id="qig-two-step-instruction" rows="3" style="width:100%;resize:vertical;" placeholder="Leave empty for the default visual summary instruction">${esc(s.twoStepInstruction || "")}</textarea>
-                                <small style="opacity:0.6;font-size:10px;">Supports {{scene}}, {{char}}, {{user}}, {{charDesc}}, and {{userDesc}}.</small>
+                                <textarea id="qig-two-step-instruction" rows="3" style="width:100%;resize:vertical;" placeholder="Empty = the built-in visual summary instruction. Insert the default below to see and edit it.">${esc(s.twoStepInstruction || "")}</textarea>
+                                <div class="qig-template-actions">
+                                    <button id="qig-two-step-insert-default" type="button" class="menu_button">Insert default</button>
+                                    <button id="qig-two-step-reset" type="button" class="menu_button">Reset</button>
+                                </div>
+                                <small style="opacity:0.6;font-size:10px;">Supports {{scene}}, {{char}}, {{user}}, {{charDesc}}, and {{userDesc}}. Reset clears the override so the built-in adaptive instruction is used.</small>
                             </div>
                         </div>
                     </div>
@@ -18037,9 +18055,15 @@ function createUI() {
                         <small style="opacity:0.6;font-size:10px;">Preview: <code id="qig-inject-tag-preview">${esc(getInjectTagPreview(getInjectTagName(s)))}</code>. Change this if your preset/model tends to swallow &lt;image&gt; tags inside reasoning.</small>
                         <label>Inject prompt template</label>
                         <textarea id="qig-inject-prompt" rows="3" style="width:100%;resize:vertical;">${esc(s.injectPrompt || "")}</textarea>
+                        <div class="qig-template-actions">
+                            <button id="qig-inject-prompt-reset" type="button" class="menu_button">Reset to default</button>
+                        </div>
                         <small style="opacity:0.6;font-size:10px;">Supports {{char}}, {{user}}. Default prompt tells the AI to put the image tag in the final visible reply, not inside reasoning or &lt;think&gt;.</small>
                         <label>Extraction regex</label>
                         <input id="qig-inject-regex" type="text" value="${esc(s.injectRegex || '')}" style="width:100%;font-family:monospace;font-size:11px;">
+                        <div class="qig-template-actions">
+                            <button id="qig-inject-regex-reset" type="button" class="menu_button">Reset to default</button>
+                        </div>
                         <small style="opacity:0.6;font-size:10px;">Capture groups extract the image prompt. Default matches your custom paired tag plus legacy &lt;pic prompt="..."&gt; tags.</small>
                         <label>Injection position</label>
                         <select id="qig-inject-position">
@@ -19005,6 +19029,36 @@ function createUI() {
         };
     }
     bind("qig-two-step-instruction", "twoStepInstruction");
+    const setInstructionTemplateValue = (id, key, value) => {
+        const el = document.getElementById(id);
+        if (el) el.value = value;
+        getSettings()[key] = value;
+        saveSettingsDebounced();
+        updateQigStatusLine();
+        syncGenerationPresetIndicators();
+    };
+    const wireInstructionTemplateButton = (id, onClick) => {
+        const el = document.getElementById(id);
+        if (el) el.onclick = (e) => { e.preventDefault(); onClick(); };
+    };
+    const insertInstructionTemplate = (id, key, template) => {
+        const current = String(document.getElementById(id)?.value || "").trim();
+        if (current && current !== template.trim() && !confirm("Replace the current text with the default template?")) return;
+        setInstructionTemplateValue(id, key, template);
+    };
+    const resetInstructionTemplate = (id, key, value) => {
+        const current = String(document.getElementById(id)?.value || "").trim();
+        if (current && current !== String(value).trim() && !confirm("Discard the custom text and restore the default?")) return;
+        setInstructionTemplateValue(id, key, value);
+    };
+    wireInstructionTemplateButton("qig-llm-custom-insert-tags", () => insertInstructionTemplate("qig-llm-custom", "llmCustomInstruction", DEFAULT_TAGS_INSTRUCTION_TEMPLATE));
+    wireInstructionTemplateButton("qig-llm-custom-insert-natural", () => insertInstructionTemplate("qig-llm-custom", "llmCustomInstruction", DEFAULT_NATURAL_INSTRUCTION_TEMPLATE));
+    wireInstructionTemplateButton("qig-llm-custom-reset", () => resetInstructionTemplate("qig-llm-custom", "llmCustomInstruction", ""));
+    wireInstructionTemplateButton("qig-two-step-insert-default", () => insertInstructionTemplate("qig-two-step-instruction", "twoStepInstruction", DEFAULT_TWO_STEP_INSTRUCTION_TEMPLATE));
+    wireInstructionTemplateButton("qig-two-step-reset", () => resetInstructionTemplate("qig-two-step-instruction", "twoStepInstruction", ""));
+    wireInstructionTemplateButton("qig-inject-prompt-reset", () => resetInstructionTemplate("qig-inject-prompt", "injectPrompt", buildDefaultInjectPrompt(getInjectTagName(getSettings()))));
+    wireInstructionTemplateButton("qig-inject-regex-reset", () => resetInstructionTemplate("qig-inject-regex", "injectRegex", buildDefaultInjectRegex(getInjectTagName(getSettings()))));
+    wireInstructionTemplateButton("qig-proxy-chat-system-reset", () => resetInstructionTemplate("qig-proxy-chat-system", "proxyChatImageSystemPrompt", DEFAULT_PROXY_CHAT_IMAGE_SYSTEM_PROMPT));
     const autoBackgroundEl = document.getElementById("qig-auto-background");
     if (autoBackgroundEl) {
         autoBackgroundEl.onchange = (e) => {
