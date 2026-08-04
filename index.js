@@ -49,6 +49,8 @@ import {
     MAX_INJECT_MATCHES,
 } from "./lib/inject-regex.js";
 import { mergeSTStylePrompts, resolveSTStyleSettings } from "./lib/st-style.js";
+import { createDialogHost, DEFAULT_DIALOG_TITLE } from "./lib/st-dialogs.js";
+import { createNotifier } from "./lib/notifications.js";
 import { executeCustomBackend, getCustomBackendCapabilities } from "./lib/custom-backend.js";
 import {
     buildComfyBuiltinWorkflow,
@@ -226,6 +228,40 @@ let extension_settings, getContext, saveSettingsDebounced, saveSettings, generat
 let checkWorldInfo, hostScriptModule, hostWorldInfoModule;
 let createGenerationParameters, getChatCompletionModel;
 let saveBase64AsFile, getSanitizedFilename, humanizedDateTime;
+
+// Dialogs route through SillyTavern's Popup API once `popup.js` is imported during
+// init. Until then — and if that import fails — the browser dialogs stand in, so a
+// confirmation is never silently skipped.
+let dialogHost = createDialogHost({
+    nativeConfirm: (message) => globalThis.confirm?.(message),
+    nativeAlert: (message) => globalThis.alert?.(message),
+    nativePrompt: (message, value) => globalThis.prompt?.(message, value),
+});
+
+function qigConfirm(message, options = {}) {
+    return dialogHost.confirmDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigNotice(message, options = {}) {
+    return dialogHost.messageDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigInput(message, options = {}) {
+    return dialogHost.inputDialog(message, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+function qigChoice(message, choices, options = {}) {
+    return dialogHost.choiceDialog(message, choices, { title: DEFAULT_DIALOG_TITLE, ...options });
+}
+
+// All notifications route through here so the `toastr` global is read behind a
+// single `typeof` check, HTML is escaped by default, and repeats can be throttled.
+// Reading `toastr` directly would throw a ReferenceError before SillyTavern
+// defines it — optional chaining does not protect an undeclared binding.
+const qigToast = createNotifier({
+    getToastr: () => (typeof toastr === "undefined" ? null : toastr),
+    log: (message) => log(message),
+});
 
 function normalizeGeneratedImageSource(value) {
     return normalizeSavedImagePath(value)
@@ -916,7 +952,7 @@ function applyChatGptNbpWorkflowPreset({ persist = true, notify = true } = {}) {
         paletteMode: "direct",
     });
     if (persist) saveSettingsDebounced?.();
-    if (notify) toastr?.success?.("Configured ChatGPT + Nano Banana Pro workflow");
+    if (notify) qigToast.success("Configured ChatGPT + Nano Banana Pro workflow");
     return s;
 }
 
@@ -1227,7 +1263,7 @@ function safeSetStorage(key, value, errorMessage = "") {
         return true;
     } catch (e) {
         log(`Storage write failed for ${key}: ${e.message}`);
-        if (errorMessage) toastr?.error?.(errorMessage);
+        if (errorMessage) qigToast.error(errorMessage);
         return false;
     }
 }
@@ -1290,9 +1326,9 @@ function saveLocalStoreBackup(localKey, data, errorMessage) {
     if (backupSaved) saveSettingsDebounced?.();
     if (!cacheSaved && backupSaved) {
         log(`Server sync was queued while the local cache write failed for ${localKey}`);
-        toastr?.warning?.("Settings were queued for synchronization, but this browser's local cache could not be updated.");
+        qigToast.warning("Settings were queued for synchronization, but this browser's local cache could not be updated.");
     }
-    if (!backupSaved && errorMessage) toastr?.error?.(errorMessage);
+    if (!backupSaved && errorMessage) qigToast.error(errorMessage);
     return backupSaved;
 }
 
@@ -1311,12 +1347,12 @@ async function saveLocalStoreBackupNow(localKey, data, errorMessage) {
         });
         if (!result.cacheSaved) {
             log(`Local cache write failed for ${localKey}: ${result.cacheError?.message || "unknown error"}`);
-            toastr?.warning?.("Saved to your SillyTavern account, but this browser's local cache could not be updated.");
+            qigToast.warning("Saved to your SillyTavern account, but this browser's local cache could not be updated.");
         }
         return true;
     } catch (error) {
         log(`Server synchronization failed for ${localKey}: ${error.message}`);
-        toastr?.error?.(errorMessage || "Failed to synchronize settings with SillyTavern.");
+        qigToast.error(errorMessage || "Failed to synchronize settings with SillyTavern.");
         return false;
     }
 }
@@ -1325,7 +1361,7 @@ const activeSynchronizedStoreMutations = new Set();
 let settingsImportInProgress = false;
 function blockMutationDuringSettingsImport() {
     if (!settingsImportInProgress) return false;
-    toastr?.info?.("Settings are being imported. Please wait a moment.");
+    qigToast.info("Settings are being imported. Please wait a moment.");
     return true;
 }
 
@@ -1334,7 +1370,7 @@ async function runSynchronizedStoreMutations(localKeys, task, { throwIfBusy = fa
     if (keys.some(key => activeSynchronizedStoreMutations.has(key))) {
         const message = "Synchronized settings are already being updated. Please wait a moment.";
         if (throwIfBusy) throw new Error(message);
-        toastr?.info?.(message);
+        qigToast.info(message);
         return false;
     }
     keys.forEach(key => activeSynchronizedStoreMutations.add(key));
@@ -3438,7 +3474,7 @@ async function refreshComfyModelCatalog() {
 
     if (error?.message?.includes("403 Forbidden")) {
         showCatalogStatus("-- 403 Forbidden (see error) --");
-        toastr?.error?.(error.message, "ComfyUI Connection Error", { timeOut: 0, extendedTimeOut: 0, escapeHtml: true });
+        qigToast.error(error.message, "ComfyUI Connection Error", { timeOut: 0, extendedTimeOut: 0, escapeHtml: true });
         return;
     }
     if (models.length > 0) {
@@ -3682,7 +3718,7 @@ function requestGenerationCancel(reason = "Generation cancelled by user", { forc
         }
     } catch (e) { /* best-effort */ }
 
-    toastr?.info?.("Stopped waiting. Remote work may continue if the provider cannot cancel it.", "Image Gen", { timeOut: 3500 });
+    qigToast.info("Stopped waiting. Remote work may continue if the provider cannot cancel it.", "Image Gen", { timeOut: 3500 });
     return true;
 }
 
@@ -4002,7 +4038,7 @@ async function loadSettings() {
     const hasUnownedLegacyData = !savedCacheId
         && !localCacheId
         && (hasUnownedSynchronizedData || hasUnownedLegacyReplacementData);
-    const legacySeedApproved = hasUnownedLegacyData && confirm("Quick Image Gen found legacy browser-only settings that are not linked to a SillyTavern account. Import them into the current server user? They may include API keys and private reference images. Choose Cancel if this browser data belongs to another user.");
+    const legacySeedApproved = hasUnownedLegacyData && await qigConfirm("Quick Image Gen found legacy browser-only settings that are not linked to a SillyTavern account. Import them into the current server user? They may include API keys and private reference images. Choose Cancel if this browser data belongs to another user.", { okButton: "Import", wide: true });
     const legacySeedDeclined = hasUnownedLegacyData && !legacySeedApproved;
     const maySeedFromLocal = cacheOwnerMatches || legacySeedApproved;
     const quarantinedLegacyCacheKeys = new Set();
@@ -4042,7 +4078,7 @@ async function loadSettings() {
     } catch (error) {
         log(`Context Media backup is invalid: ${error.message}`);
         contextMediaLibrary = normalizeContextMediaLibrary({});
-        toastr?.warning?.("Invalid Context Media data was reset so Quick Image Gen could continue.");
+        qigToast.error("Invalid Context Media data was reset so Quick Image Gen could continue. Your saved media library was discarded.");
     }
     if (localCacheWritesAllowed && !quarantinedLegacyCacheKeys.has(CONTEXT_MEDIA_STORE_KEY)) {
         localCachesRefreshed = safeSetStorage(CONTEXT_MEDIA_STORE_KEY, JSON.stringify(contextMediaLibrary), "Failed to migrate Context Media. Browser storage may be full.") && localCachesRefreshed;
@@ -4090,7 +4126,7 @@ async function loadSettings() {
             initialServerSaveSucceeded = true;
         } catch (error) {
             log(`Initial settings synchronization failed: ${error.message}`);
-            toastr?.warning?.("Quick Image Gen loaded, but synchronized settings could not be saved to SillyTavern yet.");
+            qigToast.warning("Quick Image Gen loaded, but synchronized settings could not be saved to SillyTavern yet.");
             saveSettingsDebounced?.();
         }
     } else {
@@ -4177,7 +4213,7 @@ function restoreFilterPoolState(snapshot) {
 function blockFilterStoreMutation() {
     if (blockMutationDuringSettingsImport()) return true;
     if (!FILTER_STORE_CONFIG.some(([key]) => activeSynchronizedStoreMutations.has(key))) return false;
-    toastr?.info?.("Filter settings are already being saved. Please wait a moment.");
+    qigToast.info("Filter settings are already being saved. Please wait a moment.");
     return true;
 }
 
@@ -4185,7 +4221,7 @@ async function persistFilterPoolState(previousState) {
     const settings = extension_settings?.[extensionName];
     if (!settings) {
         restoreFilterPoolState(previousState);
-        toastr?.error?.("Filter settings persistence is unavailable. No changes were saved.");
+        qigToast.error("Filter settings persistence is unavailable. No changes were saved.");
         return false;
     }
     try {
@@ -4206,13 +4242,13 @@ async function persistFilterPoolState(previousState) {
         if (!result.cacheSaved) {
             const failedKeys = result.cacheErrors.map(item => item.localKey).join(", ");
             log(`Filter settings local cache write failed for ${failedKeys}`);
-            toastr?.warning?.("Saved filter settings to your SillyTavern account, but this browser's local cache could not be fully updated.");
+            qigToast.warning("Saved filter settings to your SillyTavern account, but this browser's local cache could not be fully updated.");
         }
         return true;
     } catch (error) {
         restoreFilterPoolState(previousState);
         log(`Filter settings synchronization failed: ${error.message}`);
-        toastr?.error?.("Failed to synchronize filter settings with SillyTavern. No changes were saved.");
+        qigToast.error("Failed to synchronize filter settings with SillyTavern. No changes were saved.");
         return false;
     }
 }
@@ -5069,7 +5105,7 @@ function applyProxyChatImageSimpleMode({ persist = true, notify = true } = {}) {
     s.proxyChatImageMaxTokens = DEFAULT_PROXY_CHAT_IMAGE_MAX_TOKENS;
     s.proxyChatImageMaxTokens = getProxyChatMaxTokens(s);
     if (persist) saveSettingsDebounced?.();
-    if (notify) toastr?.success?.("Configured New-API Chat Image mode");
+    if (notify) qigToast.success("Configured New-API Chat Image mode");
     refreshAllUI?.(s);
     return s;
 }
@@ -5366,7 +5402,7 @@ async function resolveWorldInfoForPromptPipeline(settings, {
     } catch (error) {
         if (error?.name === "AbortError") throw error;
         log(`World Info context unavailable: ${error.message}`);
-        toastr?.warning?.(
+        qigToast.warning(
             "Matched World Info could not be resolved, so this request will continue without lore context.",
             "Quick Image Gen",
             { timeOut: 5000 },
@@ -6432,7 +6468,7 @@ Plain visual description:`;
         if (!cleaned) {
             const warningMessage = buildLLMEmptyPromptWarning(helperResponseMeta, llmDescription, cleaned);
             log(`WARNING: ${warningMessage}`);
-            toastr?.warning?.(warningMessage, "Image Gen", { timeOut: 5000 });
+            qigToast.warning(warningMessage, "Image Gen", { timeOut: 5000 });
             return "";
         }
 
@@ -6441,7 +6477,7 @@ Plain visual description:`;
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`Scene description failed: ${e.message}`);
-        toastr?.warning?.(`Scene description failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
+        qigToast.warning(`Scene description failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
         return "";
     }
 }
@@ -6790,7 +6826,7 @@ Tags:`;
             const warningMessage = buildLLMEmptyPromptWarning(helperResponseMeta, llmPrompt, cleaned);
             log(`WARNING: ${warningMessage}`);
             logLLMHelperResponseMeta(helperResponseMeta, "LLM helper empty response");
-            toastr.warning(warningMessage, "Image Gen", { timeOut: 5000 });
+            qigToast.warning(warningMessage, "Image Gen", { timeOut: 5000 });
             return basePrompt;
         }
 
@@ -6817,7 +6853,7 @@ Tags:`;
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`LLM prompt failed: ${e.message}`);
-        toastr.warning(`LLM prompt failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
+        qigToast.warning(`LLM prompt failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
         return basePrompt;
     }
 }
@@ -9029,16 +9065,16 @@ function showPromptHistory() {
                 if (!entry) return;
                 try {
                     await navigator.clipboard.writeText(entry.prompt || "");
-                    toastr?.success?.("Prompt copied");
+                    qigToast.success("Prompt copied");
                 } catch (e) {
                     log(`Prompt copy failed: ${e.message}`);
-                    toastr?.error?.("Failed to copy prompt");
+                    qigToast.warning("Could not copy the prompt. Your browser blocked clipboard access — select the text and copy it manually.");
                 }
             };
         });
 
-        document.getElementById("qig-clear-history").onclick = () => {
-            if (confirm("Clear all prompt history?")) {
+        document.getElementById("qig-clear-history").onclick = async () => {
+            if (await qigConfirm("Clear all prompt history?", { okButton: "Clear History" })) {
                 promptHistory = [];
                 try {
                     if (accountStorageScope?.promptHistoryKey) {
@@ -9046,7 +9082,7 @@ function showPromptHistory() {
                     }
                 } catch (error) {
                     log(`Prompt history could not be cleared from browser storage: ${error.message}`);
-                    toastr?.warning?.("Prompt history was cleared for this session, but browser storage could not be updated.");
+                    qigToast.warning("Prompt history was cleared for this session, but browser storage could not be updated.");
                 }
                 container.innerHTML = '<p class="qig-muted">No prompts yet</p>';
             }
@@ -9119,7 +9155,7 @@ async function readValidatedReferenceFiles(files, existingSources = [], maxCount
 function reportReferenceFileErrors(errors, limitDescription = "25 MiB total limit") {
     if (!errors?.length) return;
     log(`Reference upload skipped: ${errors.join("; ")}`);
-    toastr.warning(`${errors.length} reference image${errors.length === 1 ? " was" : "s were"} skipped. Files must be valid supported images and stay within the ${limitDescription}.`);
+    qigToast.warning(`${errors.length} reference image${errors.length === 1 ? " was" : "s were"} skipped. Files must be valid supported images and stay within the ${limitDescription}.`);
 }
 
 async function useImageAsReference(source, popup) {
@@ -9133,7 +9169,7 @@ async function useImageAsReference(source, popup) {
     if (s.provider === "custom") {
         if (!Array.isArray(s.customApiRefImages)) s.customApiRefImages = [];
         if (s.customApiRefImages.length >= 15) {
-            toastr.warning("Maximum 15 reference images reached");
+            qigToast.warning("Maximum 15 reference images reached");
             return;
         }
         const inlineBytes = [...s.customApiRefImages, persistedSource].reduce((total, value) => {
@@ -9141,14 +9177,13 @@ async function useImageAsReference(source, popup) {
             return total + (encoded ? Math.floor(encoded.length * 3 / 4) : 0);
         }, 0);
         if (inlineBytes > MAX_IMAGE_BYTES) {
-            toastr.warning("Custom API references are limited to 25 MiB total");
+            qigToast.warning("Custom API references are limited to 25 MiB total");
             return;
         }
         s.customApiRefImages.push(persistedSource);
         saveSettingsDebounced();
         renderCustomApiRefImages();
         hidePopup(popup);
-        toastr.success("Image added to Custom API references");
         return;
     }
 
@@ -9157,16 +9192,16 @@ async function useImageAsReference(source, popup) {
         if (!Array.isArray(s[key])) s[key] = [];
         const maxReferences = s.provider === "nanogpt" ? getNanoGptReferenceLimit(s) : 15;
         if (s[key].length >= maxReferences) {
-            toastr.warning(`Maximum ${maxReferences} reference images reached`);
+            qigToast.warning(`Maximum ${maxReferences} reference images reached`);
             return;
         }
         if (s.provider === "nanogpt" && !nanoGptReferencesFitRequest([...s[key], persistedSource])) {
-            toastr.warning("NanoGPT references must fit within the 4 MiB encoded request limit");
+            qigToast.warning("NanoGPT references must fit within the 4 MiB encoded request limit");
             return;
         }
         const inlineBytes = s[key].reduce((total, value) => total + getInlineImageBytes(value), 0) + getInlineImageBytes(persistedSource);
         if (inlineBytes > MAX_IMAGE_BYTES) {
-            toastr.warning("Reference images are limited to 25 MiB total");
+            qigToast.warning("Reference images are limited to 25 MiB total");
             return;
         }
         s[key].push(persistedSource);
@@ -9174,7 +9209,6 @@ async function useImageAsReference(source, popup) {
         if (s.provider === "nanobanana") renderNanobananaRefImages();
         else renderNanogptRefImages();
         hidePopup(popup);
-        toastr.success("Image added to reference images");
         return;
     }
 
@@ -9187,7 +9221,6 @@ async function useImageAsReference(source, popup) {
     const denoiseWrap = document.getElementById("qig-local-denoise-wrap");
     if (denoiseWrap) denoiseWrap.style.display = s.localType === "a1111" ? "block" : "none";
     hidePopup(popup);
-    toastr.success("Image set as reference for img2img");
 }
 
 async function createComfyReferenceUpload(source, signal) {
@@ -9379,7 +9412,7 @@ async function setImageAsBackground(entryOrUrl, mode = getSettings()?.background
 
     const modeLabel = normalizedMode === "locked" ? "locked chat" : "temporary";
     log(`Set generated image as ${modeLabel} background`);
-    if (!options.silent) toastr?.success?.(`Image set as ${modeLabel} background`);
+    if (!options.silent) qigToast.success(`Image set as ${modeLabel} background`);
 }
 
 async function maybeAutoSetBackground(results, settings = getSettings(), run = null) {
@@ -9395,7 +9428,7 @@ async function maybeAutoSetBackground(results, settings = getSettings(), run = n
     } catch (e) {
         if (e.name === "AbortError") throw e;
         log(`Auto background failed: ${e.message}`);
-        toastr?.warning?.(`Auto background failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
+        qigToast.warning(`Auto background failed: ${e.message}`, "Image Gen", { timeOut: 5000, escapeHtml: true });
     }
 }
 
@@ -9636,12 +9669,18 @@ async function autoInsertInjectImage(entryOrUrl, { messageIndex, insertMode, com
     return await insertImageIntoMessage(entryOrUrl, null, { commitGuard, targetSnapshot, outputMode });
 }
 
+// Reached once per matched tag from the inject loops, so both arms are throttled:
+// a multi-tag reply reports its insert outcome once rather than once per image.
 function reportAutoInsertOutcome(insertedCount, failedResults) {
     if (insertedCount > 0) {
-        toastr.success(`${insertedCount === 1 ? "Image" : `${insertedCount} images`} inserted into chat`);
+        qigToast.success(`${insertedCount === 1 ? "Image" : `${insertedCount} images`} inserted into chat`, "", {
+            throttleKey: "auto-insert-ok",
+        });
     }
     if (!failedResults.length) return;
-    toastr.warning(`${failedResults.length === 1 ? "One image" : `${failedResults.length} images`} could not be inserted and remain available in the result viewer.`);
+    qigToast.warning(`${failedResults.length === 1 ? "One image" : `${failedResults.length} images`} could not be inserted and remain available in the result viewer.`, "", {
+        throttleKey: "auto-insert-failed",
+    });
     if (failedResults.length === 1) displayImage(failedResults[0]);
     else displayBatchResults(failedResults);
 }
@@ -9820,7 +9859,7 @@ async function addContextMediaRemoteUrls(rawValue, target) {
         owner.media.push(...inserted);
         if (!await commitContextMediaMutation(previous)) throw new Error("Remote media links could not be saved");
     });
-    if (rejected.length) toastr?.warning?.(`${rejected.length} link(s) were skipped. ${rejected[0]}`, "Context Media", { escapeHtml: true });
+    if (rejected.length) qigToast.warning(`${rejected.length} link(s) were skipped. ${rejected[0]}`, "Context Media", { escapeHtml: true });
     return inserted;
 }
 
@@ -10107,7 +10146,7 @@ async function uploadContextMediaFiles(files, target) {
         }
         throw new Error("Media persistence and rollback both failed; server files were retained to avoid broken references");
     });
-    if (rejected.length) toastr?.warning?.(`${rejected.length} file(s) were skipped. ${rejected[0]}`, "Context Media", { escapeHtml: true });
+    if (rejected.length) qigToast.warning(`${rejected.length} file(s) were skipped. ${rejected[0]}`, "Context Media", { escapeHtml: true });
     return accepted;
 }
 
@@ -10128,7 +10167,7 @@ async function deleteContextMediaItem(media, owner) {
             await deleteContextMediaServerPath(currentMedia.path);
         } catch (error) {
             log(`Context Media file cleanup failed: ${error.message}`);
-            toastr?.warning?.("The library entry was removed, but its server file could not be deleted.");
+            qigToast.warning("The library entry was removed, but its server file could not be deleted.");
         }
     });
 }
@@ -10253,47 +10292,47 @@ function showContextMediaManager() {
             libraryRoot.onclick = async (event) => {
                 const button = event.target.closest("button[data-action]");
                 if (!button) return;
-                if (_contextMediaMutationPending) return toastr?.info?.("Wait for the current Context Media change to finish.");
+                if (_contextMediaMutationPending) return qigToast.info("Wait for the current Context Media change to finish.");
                 const action = button.dataset.action;
                 const previous = snapshotGenerationSettings(contextMediaLibrary);
                 const folder = selectedProfile.folders.find((item) => item.id === button.dataset.folderId);
                 const owner = getOwner(button.dataset.nodeId);
                 if (action === "add-folder") {
-                    const label = prompt("Folder name (for example Fighting or Sunsets)");
+                    const label = await qigInput("Folder name (for example Fighting or Sunsets)", { okButton: "Add Folder" });
                     if (!label?.trim()) return;
                     selectedProfile.folders.push({ id: generateUUID(), label: label.trim(), description: "", media: [], subfolders: [] });
                 } else if (action === "add-subfolder" && folder) {
-                    const label = prompt("Context name (for example Swimsuit or Working)");
+                    const label = await qigInput("Context name (for example Swimsuit or Working)", { okButton: "Add Context" });
                     if (!label?.trim()) return;
-                    const description = prompt("Semantic description (optional)", "") || "";
+                    const description = await qigInput("Semantic description (optional)", { okButton: "Continue" }) || "";
                     folder.subfolders.push({ id: generateUUID(), label: label.trim(), description: description.trim(), media: [] });
                 } else if (action === "rename-profile") {
-                    const label = prompt("Profile name", selectedProfile.label);
+                    const label = await qigInput("Profile name", { defaultValue: selectedProfile.label, okButton: "Rename" });
                     if (!label?.trim()) return;
                     selectedProfile.label = label.trim();
                 } else if (action === "edit-folder" && folder) {
-                    const label = prompt("Folder name", folder.label);
+                    const label = await qigInput("Folder name", { defaultValue: folder.label, okButton: "Continue" });
                     if (!label?.trim()) return;
                     folder.label = label.trim();
-                    folder.description = (prompt("Semantic description", folder.description || "") || "").trim();
+                    folder.description = (await qigInput("Semantic description", { defaultValue: folder.description || "" }) || "").trim();
                 } else if (action === "edit-subfolder" && owner) {
-                    const label = prompt("Context name", owner.label);
+                    const label = await qigInput("Context name", { defaultValue: owner.label, okButton: "Continue" });
                     if (!label?.trim()) return;
                     owner.label = label.trim();
-                    owner.description = (prompt("Semantic description", owner.description || "") || "").trim();
+                    owner.description = (await qigInput("Semantic description", { defaultValue: owner.description || "" }) || "").trim();
                 } else if (action === "delete-subfolder" && folder && owner) {
-                    if (owner.media.length) return toastr?.warning?.("Remove media items before deleting this context.");
-                    if (!confirm(`Delete empty context "${owner.label}"?`)) return;
+                    if (owner.media.length) return qigToast.info("Remove media items before deleting this context.");
+                    if (!(await qigConfirm(`Delete empty context "${owner.label}"?`, { okButton: "Delete Context" }))) return;
                     folder.subfolders = folder.subfolders.filter((item) => item.id !== owner.id);
                 } else if (action === "delete-folder" && folder) {
                     const hasMedia = folder.media.length || folder.subfolders.some((item) => item.media.length);
-                    if (hasMedia) return toastr?.warning?.("Remove all media items before deleting this folder.");
-                    if (!confirm(`Delete empty folder "${folder.label}" and its empty contexts?`)) return;
+                    if (hasMedia) return qigToast.info("Remove all media items before deleting this folder.");
+                    if (!(await qigConfirm(`Delete empty folder "${folder.label}" and its empty contexts?`, { okButton: "Delete Folder" }))) return;
                     selectedProfile.folders = selectedProfile.folders.filter((item) => item.id !== folder.id);
                 } else if (action === "delete-profile") {
                     const hasMedia = contextMediaNodeOptions(selectedProfile).some((option) => option.owner.media.length);
-                    if (hasMedia) return toastr?.warning?.("Remove media items before deleting this profile.");
-                    if (!confirm(`Delete empty profile "${selectedProfile.label}"?`)) return;
+                    if (hasMedia) return qigToast.info("Remove media items before deleting this profile.");
+                    if (!(await qigConfirm(`Delete empty profile "${selectedProfile.label}"?`, { okButton: "Delete Profile" }))) return;
                     contextMediaLibrary.profiles = contextMediaLibrary.profiles.filter((profile) => profile.id !== selectedProfile.id);
                     for (const [key, value] of Object.entries(contextMediaLibrary.chatMap)) {
                         if (value === selectedProfile.id) delete contextMediaLibrary.chatMap[key];
@@ -10307,11 +10346,11 @@ function showContextMediaManager() {
                         button.disabled = true;
                         try {
                             const accepted = await uploadContextMediaFiles(input.files, owner);
-                            if (accepted.length) toastr?.success?.(`Added ${accepted.length} Context Media item(s)`);
+                            if (accepted.length) qigToast.success(`Added ${accepted.length} Context Media item(s)`);
                             render();
                         } catch (error) {
                             log(`Context Media upload failed: ${error.message}`);
-                            toastr?.error?.(error.message, "Context Media", { escapeHtml: true });
+                            qigToast.error(error.message, "Context Media", { escapeHtml: true });
                             button.disabled = false;
                         }
                     };
@@ -10323,12 +10362,12 @@ function showContextMediaManager() {
                     button.disabled = true;
                     try {
                         const accepted = await addContextMediaRemoteUrls(rawLinks, owner);
-                        if (accepted.length) toastr?.success?.(`Added ${accepted.length} remote Context Media link(s)`);
+                        if (accepted.length) qigToast.success(`Added ${accepted.length} remote Context Media link(s)`);
                         render();
                         renderContextMediaSummary();
                     } catch (error) {
                         log(`Context Media link add failed: ${error.message}`);
-                        toastr?.error?.(error.message, "Context Media", { escapeHtml: true });
+                        qigToast.error(error.message, "Context Media", { escapeHtml: true });
                         button.disabled = false;
                     }
                     return;
@@ -10348,31 +10387,31 @@ function showContextMediaManager() {
                             currentMedia.verifiedAt = result.verifiedAt;
                             if (!await commitContextMediaMutation(previous)) throw new Error("The link recheck result could not be saved");
                         });
-                        toastr?.success?.("Remote media link is available.");
+                        qigToast.success("Remote media link is available.");
                         render();
                     } catch (error) {
-                        toastr?.error?.(error.message, "Context Media link", { escapeHtml: true });
+                        qigToast.error(error.message, "Context Media link", { escapeHtml: true });
                         button.disabled = false;
                     }
                     return;
                 } else if (action === "delete-media" && owner) {
                     const media = owner.media.find((item) => item.id === button.dataset.mediaId);
                     const cleanup = media?.source === "remote" ? "library? The third-party file will not be changed." : "library and server when unshared?";
-                    if (!media || !confirm(`Delete "${media.label}" from the ${cleanup}`)) return;
+                    if (!media || !(await qigConfirm(`Delete "${media.label}" from the ${cleanup}`, { okButton: "Delete Media" }))) return;
                     try {
                         await deleteContextMediaItem(media, owner);
                         render();
                         renderContextMediaSummary();
                     } catch (error) {
                         log(`Context Media delete failed: ${error.message}`);
-                        toastr?.error?.(error.message, "Context Media", { escapeHtml: true });
+                        qigToast.error(error.message, "Context Media", { escapeHtml: true });
                     }
                     return;
                 } else {
                     return;
                 }
                 if (!await queueContextMediaMutation(() => commitContextMediaMutation(previous))) {
-                    toastr?.error?.("The Context Media change could not be saved.");
+                    qigToast.error("The Context Media change could not be saved.");
                 }
                 render();
                 renderContextMediaSummary();
@@ -10383,28 +10422,28 @@ function showContextMediaManager() {
             selectedProfileId = event.target.value;
             render();
         };
-        popupElement.querySelector("#qig-context-media-add-profile").onclick = () => {
-            if (_contextMediaMutationPending) return toastr?.info?.("Wait for the current Context Media change to finish.");
-            const label = prompt("Profile name", "Default");
+        popupElement.querySelector("#qig-context-media-add-profile").onclick = async () => {
+            if (_contextMediaMutationPending) return qigToast.info("Wait for the current Context Media change to finish.");
+            const label = await qigInput("Profile name", { defaultValue: "Default", okButton: "Add Profile" });
             if (!label?.trim()) return;
             const previous = snapshotGenerationSettings(contextMediaLibrary);
             const profile = { id: generateUUID(), label: label.trim(), description: "", folders: [] };
             contextMediaLibrary.profiles.push(profile);
             selectedProfileId = profile.id;
             void queueContextMediaMutation(async () => {
-                if (!await commitContextMediaMutation(previous)) toastr?.error?.("The profile could not be saved.");
+                if (!await commitContextMediaMutation(previous)) qigToast.error("The profile could not be saved.");
                 render();
             });
         };
         popupElement.querySelector("#qig-context-media-assign").onclick = async () => {
-            if (_contextMediaMutationPending) return toastr?.info?.("Wait for the current Context Media change to finish.");
+            if (_contextMediaMutationPending) return qigToast.info("Wait for the current Context Media change to finish.");
             const chatId = getContextMediaChatId();
             const profileId = selectedProfileId;
-            if (!chatId || !profileId) return toastr?.warning?.("Open a chat and select a profile first.");
+            if (!chatId || !profileId) return qigToast.info("Open a chat and select a profile first.");
             const previous = snapshotGenerationSettings(contextMediaLibrary);
             contextMediaLibrary.chatMap[chatId] = profileId;
             if (!await queueContextMediaMutation(() => commitContextMediaMutation(previous))) {
-                toastr?.error?.("The chat assignment could not be saved.");
+                qigToast.error("The chat assignment could not be saved.");
             }
             render();
             renderContextMediaSummary();
@@ -10414,11 +10453,11 @@ function showContextMediaManager() {
             const chat = ctx?.chat;
             let index = Array.isArray(chat) ? chat.length - 1 : -1;
             while (index >= 0 && chat[index]?.is_user) index -= 1;
-            if (index < 0) return toastr?.warning?.("No assistant reply is available to test.");
+            if (index < 0) return qigToast.info("No assistant reply is available to test.");
             const message = chat[index];
             const controller = new AbortController();
             const profile = contextMediaLibrary.profiles.find((item) => item.id === selectedProfileId);
-            if (!profile) return toastr?.warning?.("Select a Context Media profile to test.");
+            if (!profile) return qigToast.info("Select a Context Media profile to test.");
             const settings = normalizeContextMediaSettings(getSettings());
             const revision = _contextMediaRevision;
             const conversationCheckpoint = createConversationCheckpoint(chat);
@@ -10458,9 +10497,9 @@ function showContextMediaManager() {
                     insertMode: settings.contextMediaInsertMode,
                 }, { testOnly: true });
                 const label = result.media?.label || "No matching media";
-                toastr?.info?.(`${label} (${result.confidence}% confidence)`, "Context Media test", { escapeHtml: true });
+                qigToast.info(`${label} (${result.confidence}% confidence)`, "Context Media test", { escapeHtml: true });
             } catch (error) {
-                toastr?.error?.(error.message, "Context Media test", { escapeHtml: true });
+                qigToast.error(error.message, "Context Media test", { escapeHtml: true });
             } finally {
                 event.currentTarget.disabled = false;
             }
@@ -10564,7 +10603,9 @@ function scheduleContextMediaJob(snapshot, delayMs) {
         } catch (error) {
             if (error.name !== "AbortError") {
                 log(`Context Media: ${error.message}`);
-                toastr?.warning?.(`Context Media: ${error.message}`, "Quick Image Gen", { escapeHtml: true });
+                // This job self-reschedules every 250 ms while generation is busy,
+                // so a persistent failure must not toast on every retry.
+                qigToast.warning(`Context Media: ${error.message}`, "Quick Image Gen", { throttleKey: "context-media-job" });
             }
         } finally {
             if (_contextMediaController === snapshot.controller) _contextMediaController = null;
@@ -10864,13 +10905,12 @@ async function createGalleryAsset(entryOrUrl) {
     }
 }
 
-let _galleryPersistenceToastTs = 0;
 function warnGalleryPersistence(entry) {
     if (!entry?.ephemeral) return;
-    const now = Date.now();
-    if (now - _galleryPersistenceToastTs < 4000) return;
-    _galleryPersistenceToastTs = now;
-    toastr.warning("Image is available for this session but could not be saved permanently.");
+    // Reached once per gallery entry, including from batch loops, so it is throttled.
+    qigToast.warning("Image is available for this session but could not be saved permanently.", "", {
+        throttleKey: "gallery-persistence",
+    });
 }
 
 let _galleryEvictionToastTs = 0;
@@ -10882,7 +10922,7 @@ function warnGalleryEviction(event) {
     const now = Date.now();
     if (now - _galleryEvictionToastTs < 4000) return;
     _galleryEvictionToastTs = now;
-    toastr.warning(`Gallery keeps the newest ${limit} images. ${count} older image${count === 1 ? " was" : "s were"} removed.`);
+    qigToast.warning(`Gallery keeps the newest ${limit} images. ${count} older image${count === 1 ? " was" : "s were"} removed.`);
 }
 
 async function initializeGalleryRepository() {
@@ -10991,7 +11031,7 @@ async function addToGallery(entryOrUrl) {
         return savedEntry;
     } catch (error) {
         log(`Gallery save failed: ${error.message}`);
-        toastr.error("Failed to add image to gallery", "Quick Image Gen");
+        qigToast.error("Failed to add image to gallery", "Quick Image Gen");
         return null;
     }
 }
@@ -11014,7 +11054,7 @@ async function addBatchToGallery(entries) {
         return savedEntries.filter(Boolean);
     } catch (error) {
         log(`Gallery batch save failed: ${error.message}`);
-        toastr.error("Failed to save image batch to gallery", "Quick Image Gen");
+        qigToast.error("Failed to save image batch to gallery", "Quick Image Gen");
         return [];
     }
 }
@@ -11078,7 +11118,7 @@ function savePromptHistory() {
         promptHistory = result.history;
         if (!result.saved) {
             log(`Prompt history could not be saved: ${result.error?.message || "browser storage unavailable"}`);
-            toastr?.warning?.("Prompt history could not be saved because browser storage is unavailable or full.");
+            qigToast.error("Prompt history could not be saved because browser storage is unavailable or full. Clear some browser storage to keep history.");
         }
     });
 }
@@ -11190,13 +11230,13 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
         document.getElementById("qig-regenerate-btn").onclick = (e) => {
             e.stopPropagation();
             if (isGenerating) {
-                toastr.warning("Generation already in progress");
+                qigToast.warning("Generation already in progress");
                 return;
             }
             const candidatePrompt = promptTextarea?.value || "";
             const candidateNegative = negativeTextarea?.value || "";
             if (!candidatePrompt.trim()) {
-                toastr.error("Prompt cannot be empty");
+                qigToast.warning("Prompt cannot be empty");
                 return;
             }
             const effectiveRequest = cloneMetadataSettings(entry.effectiveRequest || imageMetadataSettings.effectiveRequest || {});
@@ -11223,10 +11263,9 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
                 } else {
                     await insertImageIntoMessage(entry, resolveManualInsertFallbackIndex(getContext()?.chat, s), { ignoreSourceIdentity: true });
                 }
-                toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
-                toastr.error("Failed to insert image: " + err.message);
+                qigToast.error("Failed to insert image: " + err.message);
             }
         };
         document.getElementById("qig-background-btn").onclick = async (e) => {
@@ -11235,7 +11274,7 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
                 await setImageAsBackground(entry, getSettings().backgroundMode);
             } catch (err) {
                 log(`Set background failed: ${err.message}`);
-                toastr.error("Failed to set background: " + err.message);
+                qigToast.error("Failed to set background: " + err.message);
             }
         };
         document.getElementById("qig-use-as-ref").onclick = async (e) => {
@@ -11246,7 +11285,7 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
                 await useImageAsReference(imgSrc, popup);
             } catch (error) {
                 log(`Use as reference failed: ${error.message}`);
-                toastr.error("Failed to save image as a reference");
+                qigToast.error("Failed to save image as a reference");
             }
         };
         document.getElementById("qig-close-popup").onclick = (e) => popup._qigDismiss?.(e);
@@ -11420,9 +11459,9 @@ function displayBatchResults(results, returnFocusElement = null) {
                 if (i < entries.length - 1) await new Promise(r => setTimeout(r, 300));
             }
             const { succeeded, failed } = summarizeOperationOutcomes(outcomes);
-            if (!failed) toastr.success(`Downloaded ${succeeded} image${succeeded === 1 ? "" : "s"}`);
-            else if (succeeded) toastr.warning(`Downloaded ${succeeded}; ${failed} failed`);
-            else toastr.error(`Could not download ${failed} image${failed === 1 ? "" : "s"}`);
+            if (!failed) qigToast.success(`Downloaded ${succeeded} image${succeeded === 1 ? "" : "s"}`);
+            else if (succeeded) qigToast.warning(`Downloaded ${succeeded}; ${failed} failed`);
+            else qigToast.error(`Could not download ${failed} image${failed === 1 ? "" : "s"}`);
         };
         document.getElementById("qig-batch-insert-all").onclick = async (e) => {
             e.stopPropagation();
@@ -11430,23 +11469,22 @@ function displayBatchResults(results, returnFocusElement = null) {
                 for (const entry of entries) {
                     await insertImageIntoMessage(entry, resolveManualInsertFallbackIndex(getContext()?.chat, getSettings()), { ignoreSourceIdentity: true });
                 }
-                toastr.success(`Inserted ${entries.length} images into message`);
             } catch (err) {
                 console.error("[Quick Image Gen] Insert all failed:", err);
-                toastr.error("Failed to insert images: " + err.message);
+                qigToast.error("Failed to insert images: " + err.message);
             }
         };
         document.getElementById("qig-batch-regenerate").onclick = (e) => {
             e.stopPropagation();
             if (isGenerating) {
-                toastr.warning("Generation already in progress");
+                qigToast.warning("Generation already in progress");
                 return;
             }
             const activeEntry = getCurrentEntry();
             const candidatePrompt = batchPromptTextarea?.value || "";
             const candidateNegative = batchNegativeTextarea?.value || "";
             if (!candidatePrompt.trim()) {
-                toastr.error("Prompt cannot be empty");
+                qigToast.warning("Prompt cannot be empty");
                 return;
             }
             const effectiveRequest = cloneMetadataSettings(activeEntry?.effectiveRequest || activeEntry?.metadataSettings?.effectiveRequest || {});
@@ -11469,10 +11507,9 @@ function displayBatchResults(results, returnFocusElement = null) {
             try {
                 const activeEntry = getCurrentEntry();
                 await insertImageIntoMessage(activeEntry, resolveManualInsertFallbackIndex(getContext()?.chat, getSettings()), { ignoreSourceIdentity: true });
-                toastr.success("Image inserted into message");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
-                toastr.error("Failed to insert image: " + err.message);
+                qigToast.error("Failed to insert image: " + err.message);
             }
         };
         document.getElementById("qig-batch-background").onclick = async (e) => {
@@ -11481,7 +11518,7 @@ function displayBatchResults(results, returnFocusElement = null) {
                 await setImageAsBackground(getCurrentEntry(), getSettings().backgroundMode);
             } catch (err) {
                 log(`Set background failed: ${err.message}`);
-                toastr.error("Failed to set background: " + err.message);
+                qigToast.error("Failed to set background: " + err.message);
             }
         };
         document.getElementById("qig-batch-use-as-ref").onclick = async (e) => {
@@ -11492,7 +11529,7 @@ function displayBatchResults(results, returnFocusElement = null) {
                 await useImageAsReference(imgSrc, popup);
             } catch (error) {
                 log(`Use as reference failed: ${error.message}`);
-                toastr.error("Failed to save image as a reference");
+                qigToast.error("Failed to save image as a reference");
             }
         };
         document.getElementById("qig-batch-close").onclick = (e) => popup._qigDismiss?.(e);
@@ -11583,21 +11620,20 @@ async function showGallery(returnFocusElement = null) {
         const runImport = async ({ insert = false } = {}) => {
             const rawUrl = importInput?.value?.trim() || "";
             if (!rawUrl) {
-                toastr.warning("Paste an image URL first");
+                qigToast.info("Paste an image URL first");
                 return;
             }
             try {
                 await importImageUrlToGallery(rawUrl, { insert });
                 if (importInput) importInput.value = "";
-                toastr.success(insert ? "Image URL inserted into chat" : "Image URL added to gallery");
             } catch (err) {
                 log(`Gallery import failed: ${err.message}`);
-                toastr.error("Failed to import image URL: " + err.message, "Quick Image Gen", { escapeHtml: true });
+                qigToast.error("Failed to import image URL: " + err.message, "Quick Image Gen", { escapeHtml: true });
             }
         };
 
         gallery.querySelector("#qig-gallery-clear").onclick = async () => {
-            if (!confirm("Clear entire gallery?")) return;
+            if (!(await qigConfirm("Clear entire gallery?", { okButton: "Clear Gallery" }))) return;
             try {
                 if (galleryRepository) {
                     await galleryRepository.clear();
@@ -11612,7 +11648,7 @@ async function showGallery(returnFocusElement = null) {
                     sessionGallery = [];
                     if (!recovery.assetsCleared) {
                         log(`Gallery asset clear deferred: ${recovery.error?.message || "IndexedDB unavailable"}`);
-                        toastr.warning("Gallery was marked cleared. Stored image bytes will be removed when IndexedDB is available again.");
+                        qigToast.warning("Gallery was marked cleared. Stored image bytes will be removed when IndexedDB is available again.");
                     }
                 }
                 blobUrls.forEach(url => URL.revokeObjectURL(url));
@@ -11621,7 +11657,7 @@ async function showGallery(returnFocusElement = null) {
                 renderGalleryGrid();
             } catch (error) {
                 log(`Gallery clear failed: ${error.message}`);
-                toastr.error("Could not clear the durable gallery", "Quick Image Gen");
+                qigToast.error("Could not clear the durable gallery", "Quick Image Gen");
             }
         };
         gallery.querySelector("#qig-gallery-import-add").onclick = (e) => {
@@ -11727,7 +11763,7 @@ function showPromptReviewStage({
                 if (isFinal) {
                     const positive = positiveArea?.value?.trim() || "";
                     if (!positive) {
-                        toastr.warning("Image prompt cannot be empty");
+                        qigToast.warning("Image prompt cannot be empty");
                         positiveArea?.focus();
                         return;
                     }
@@ -11736,7 +11772,7 @@ function showPromptReviewStage({
                 }
                 const text = textArea?.value?.trim() || "";
                 if (!text) {
-                    toastr.warning(isRequest ? "Text AI request cannot be empty" : "Scene summary cannot be empty");
+                    qigToast.warning(isRequest ? "Text AI request cannot be empty" : "Scene summary cannot be empty");
                     textArea?.focus();
                     return;
                 }
@@ -11853,7 +11889,7 @@ function showPlainDescriptionDialog() {
             const use = () => {
                 const description = textEl.value.trim();
                 if (!description) {
-                    toastr.warning("Enter a plain text description first");
+                    qigToast.warning("Enter a plain text description first");
                     textEl.focus();
                     return;
                 }
@@ -12618,10 +12654,11 @@ function reportPartialBatchErrors(label, outcome) {
     const failed = outcome.errors.length;
     const succeeded = outcome.results.length;
     log(`${label}: ${failed} item(s) failed; preserving ${succeeded} successful item(s)`);
-    toastr?.warning?.(
+    // Called once per matched tag by the inject loops, so repeats are throttled.
+    qigToast.warning(
         `${failed} image${failed === 1 ? "" : "s"} failed; ${succeeded} successful image${succeeded === 1 ? " was" : "s were"} preserved.`,
         "Partial generation",
-        { escapeHtml: true },
+        { throttleKey: `partial-batch:${label}` },
     );
 }
 
@@ -12672,7 +12709,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
             ? "Original reference images exceeded the temporary reuse limit; regenerating without them."
             : "Original reference state is no longer available in this session; regenerating without its reference images.";
         log(`Regeneration: ${message}`);
-        toastr?.warning?.(message, "Regeneration");
+        qigToast.warning(message, "Regeneration");
     }
     const regenerationSettings = {
         ...liveSettings,
@@ -12786,7 +12823,7 @@ async function regenerateImage(effectiveRequest = lastEffectiveRequest, returnFo
     } catch (e) {
         if (e.name === "AbortError") {
             log("Regeneration cancelled by user");
-            toastr.info("Generation cancelled");
+            qigToast.info("Generation cancelled");
         } else {
             showStatus(`❌ ${e.message}`);
             log(`Regenerate error: ${e.message}`);
@@ -12997,22 +13034,22 @@ async function addFilterPool(scope = FILTER_SCOPE_GLOBAL) {
         cardLabel: isCardScope ? currentCard.cardLabel : null,
     });
     if (isCardScope && !targetScope.cardKey) {
-        toastr.warning("Open a specific card chat to create a card-only pool.");
+        qigToast.info("Open a specific card chat to create a card-only pool.");
         return;
     }
     if (isCharScope && !targetScope.charId) {
-        toastr.warning("Open a character chat to create a character pool.");
+        qigToast.info("Open a character chat to create a character pool.");
         return;
     }
-    const rawName = prompt(`New ${isCardScope ? "card" : isCharScope ? "character" : "global"} pool name:`);
+    const rawName = await qigInput(`New ${isCardScope ? "card" : isCharScope ? "character" : "global"} pool name:`, { okButton: "Create Pool" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
-        toastr.warning("Pool name cannot be empty.");
+        qigToast.warning("Pool name cannot be empty.");
         return;
     }
     if (findFilterPoolByName(name, targetScope)) {
-        toastr.warning(`Pool "${name}" already exists in this scope.`, "Contextual Filters", { escapeHtml: true });
+        qigToast.warning(`Pool "${name}" already exists in this scope.`, "Contextual Filters");
         return;
     }
     const previousState = snapshotFilterPoolState();
@@ -13030,11 +13067,11 @@ async function renameFilterPool(poolId) {
     if (blockFilterStoreMutation()) return;
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
-    const rawName = prompt("Rename pool:", pool.name || "");
+    const rawName = await qigInput("Rename pool:", { defaultValue: pool.name || "", okButton: "Rename" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
-        toastr.warning("Pool name cannot be empty.");
+        qigToast.warning("Pool name cannot be empty.");
         return;
     }
     const previousState = snapshotFilterPoolState();
@@ -13046,12 +13083,12 @@ async function renameFilterPool(poolId) {
 async function deleteFilterPool(poolId) {
     if (blockFilterStoreMutation()) return;
     if (poolId === DEFAULT_FILTER_POOL_ID) {
-        toastr.warning("The default pool cannot be deleted.");
+        qigToast.warning("The default pool cannot be deleted.");
         return;
     }
     const pool = filterPools.find(p => p.id === poolId);
     if (!pool) return;
-    if (!confirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`)) return;
+    if (!(await qigConfirm(`Delete pool "${pool.name}"? Filters in this pool will be moved to "${DEFAULT_FILTER_POOL_NAME}" if needed.`, { okButton: "Delete Pool" }))) return;
     const previousState = snapshotFilterPoolState();
     filterPools = filterPools.filter(p => p.id !== poolId);
     activeFilterPoolIdsGlobal = normalizePoolIdList(activeFilterPoolIdsGlobal).filter(id => id !== poolId);
@@ -13267,6 +13304,7 @@ function showFilterDialog(filter) {
                     <small class="qig-help">LoRA removals match by name only, so &lt;lora:foo&gt; removes any &lt;lora:foo:*&gt; variant.</small>
                 </section>
 
+                <p id="qig-fd-error" class="qig-field-error" role="alert" hidden></p>
                 <div class="qig-dialog-actions">
                     <button id="qig-fd-cancel" class="menu_button">Cancel</button>
                     <button id="qig-fd-save" class="menu_button">Save</button>
@@ -13348,27 +13386,48 @@ function showFilterDialog(filter) {
             };
             bindPopupDismiss(popup, close);
             document.getElementById("qig-fd-cancel").onclick = close;
+            // Validation stays inside the dialog so the offending field keeps focus and
+            // the message is announced without a second modal on top of this one.
+            const errorEl = document.getElementById("qig-fd-error");
+            let invalidField = null;
+            const clearFieldError = () => {
+                errorEl.hidden = true;
+                errorEl.textContent = "";
+                invalidField?.removeAttribute("aria-invalid");
+                invalidField = null;
+            };
+            const failValidation = (message, fieldId) => {
+                errorEl.textContent = message;
+                errorEl.hidden = false;
+                invalidField = fieldId ? document.getElementById(fieldId) : null;
+                if (invalidField) {
+                    invalidField.setAttribute("aria-invalid", "true");
+                    invalidField.focus();
+                }
+                return false;
+            };
+
             document.getElementById("qig-fd-save").onclick = (e) => {
                 e?.preventDefault?.();
                 e?.stopPropagation?.();
                 if (blockFilterStoreMutation()) return;
+                clearFieldError();
                 const name = document.getElementById("qig-fd-name").value.trim();
                 const mode = document.getElementById("qig-fd-mode").value;
                 const keywords = document.getElementById("qig-fd-keywords").value.trim();
                 const description = document.getElementById("qig-fd-description").value.trim();
                 const seedInput = document.getElementById("qig-fd-seed").value.trim();
-                if (!name) { alert("Name is required."); return; }
-                if (mode === "LLM" && !description) { alert("Concept description is required for LLM mode."); return; }
-                if (mode !== "LLM" && !keywords) { alert("Keywords are required."); return; }
+                if (!name) return failValidation("Name is required.", "qig-fd-name");
+                if (mode === "LLM" && !description) return failValidation("Concept description is required for LLM mode.", "qig-fd-description");
+                if (mode !== "LLM" && !keywords) return failValidation("Keywords are required.", "qig-fd-keywords");
                 const seedOverride = seedInput === "" ? null : normalizeSeedOverride(seedInput);
                 if (seedInput !== "" && seedOverride == null) {
-                    alert("Seed Override must be a non-negative integer or left blank.");
-                    return;
+                    return failValidation("Seed Override must be a non-negative integer or left blank.", "qig-fd-seed");
                 }
                 const selected = [...popup.querySelectorAll(".qig-fd-pool-cb:checked")].map(cb => String(cb.value));
                 const selectedScope = getSelectedScopeInfo();
                 const poolIds = normalizePoolIdList(selected);
-                if (!poolIds.length) { alert("Select at least one pool."); return; }
+                if (!poolIds.length) return failValidation("Select at least one pool.", "qig-fd-scope");
                 hidePopup(popup);
                 resolve({
                     name,
@@ -13456,45 +13515,41 @@ async function clearContextualFilters() {
     const previousState = snapshotFilterPoolState();
     if (currentCard.cardKey || currentCharId != null) {
         const options = [
-            { value: 1, label: "All filters" },
-            { value: 2, label: "Global filters only" },
+            { kind: "all", label: "All filters" },
+            { kind: "global", label: "Global filters only" },
         ];
         if (currentCard.cardKey) {
             options.push({
-                value: 3,
+                kind: "card",
                 label: `${currentCard.cardLabel || "Current card"} card-only filters`,
             });
         }
         if (currentCharId != null) {
             options.push({
-                value: currentCard.cardKey ? 4 : 3,
+                kind: "char",
                 label: `${charName || "This character"} character-wide filters`,
             });
         }
-        const choice = prompt(
-            `Clear filters — type a number:\n${options.map(option => `${option.value}) ${option.label}`).join("\n")}\n\nCancel to abort.`
-        );
-        if (!choice) return;
-        const n = parseInt(choice);
-        if (n === 1) {
+        const picked = await qigChoice("Clear which filters?", options.map(option => option.label));
+        if (picked == null) return;
+        const scopeToClear = options[picked].kind;
+        if (scopeToClear === "all") {
             contextualFilters = [];
-        } else if (n === 2) {
+        } else if (scopeToClear === "global") {
             contextualFilters = contextualFilters.filter(filter => getScopedRecordFromEntity(filter).scope !== FILTER_SCOPE_GLOBAL);
-        } else if (currentCard.cardKey && n === 3) {
+        } else if (scopeToClear === "card") {
             contextualFilters = contextualFilters.filter(filter => {
                 const scopeInfo = getScopedRecordFromEntity(filter);
                 return scopeInfo.scope !== FILTER_SCOPE_CARD || scopeInfo.cardKey !== currentCard.cardKey;
             });
-        } else if ((currentCard.cardKey && n === 4) || (!currentCard.cardKey && n === 3)) {
+        } else {
             contextualFilters = contextualFilters.filter(filter => {
                 const scopeInfo = getScopedRecordFromEntity(filter);
                 return scopeInfo.scope !== FILTER_SCOPE_CHAR || String(scopeInfo.charId) !== String(currentCharId);
             });
-        } else {
-            return;
         }
     } else {
-        if (!confirm("Clear all contextual filters?")) return;
+        if (!(await qigConfirm("Clear all contextual filters?", { okButton: "Clear Filters" }))) return;
         contextualFilters = [];
     }
     await commitFilterPoolStateMutation(previousState);
@@ -13532,7 +13587,7 @@ async function duplicateContextualFilter(id) {
         } else if (currentCharId != null) {
             targetScope = getNormalizedScopedRecord(FILTER_SCOPE_CHAR, { charId: currentCharId });
         } else {
-            toastr.warning("Open a character card to duplicate this filter into scoped mode.");
+            qigToast.info("Open a character card to duplicate this filter into scoped mode.");
             return;
         }
     } else {
@@ -13551,7 +13606,7 @@ async function copyContextualFilterToScope(id, target = "global") {
     if (target === "current-card" || (target === "current" && getCurrentCardKey())) {
         const currentCard = getCurrentCardScopeInfo();
         if (!currentCard.cardKey) {
-            toastr.warning("Open a specific card chat to copy this filter into card-only scope.");
+            qigToast.info("Open a specific card chat to copy this filter into card-only scope.");
             return;
         }
         contextualFilters.push(buildCopiedContextualFilter(filter, {
@@ -13562,7 +13617,7 @@ async function copyContextualFilterToScope(id, target = "global") {
     } else if (target === "current-char" || target === "current") {
         const currentCharId = getCurrentCharId();
         if (currentCharId == null) {
-            toastr.warning("Open a character chat to copy this filter into character scope.");
+            qigToast.info("Open a character chat to copy this filter into character scope.");
             return;
         }
         contextualFilters.push(buildCopiedContextualFilter(filter, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId) }));
@@ -13578,7 +13633,7 @@ async function copyFilterPoolToCurrentCard(poolId) {
     if (!pool) return;
     const currentCard = getCurrentCardScopeInfo();
     if (!currentCard.cardKey) {
-        toastr.warning("Open a specific card chat to copy this pool into card-only scope.");
+        qigToast.info("Open a specific card chat to copy this pool into card-only scope.");
         return;
     }
     const existing = findFilterPoolByName(pool.name, {
@@ -13594,7 +13649,7 @@ async function copyFilterPoolToCurrentCard(poolId) {
     });
     const saved = await commitFilterPoolStateMutation(previousState);
     if (saved && existing) {
-        toastr.info(`Pool "${pool.name}" already exists for the current card.`, "Contextual Filters", { escapeHtml: true });
+        qigToast.info(`Pool "${pool.name}" already exists for the current card.`, "Contextual Filters");
     }
 }
 
@@ -13604,7 +13659,7 @@ async function copyFilterPoolToCurrentChar(poolId) {
     if (!pool) return;
     const currentCharId = getCurrentCharId();
     if (currentCharId == null) {
-        toastr.warning("Open a character chat to copy this pool into character scope.");
+        qigToast.info("Open a character chat to copy this pool into character scope.");
         return;
     }
     const existing = findFilterPoolByName(pool.name, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId) });
@@ -13612,7 +13667,7 @@ async function copyFilterPoolToCurrentChar(poolId) {
     ensureFilterPoolByName(pool.name, { scope: FILTER_SCOPE_CHAR, charId: String(currentCharId), enable: true });
     const saved = await commitFilterPoolStateMutation(previousState);
     if (saved && existing) {
-        toastr.info(`Pool "${pool.name}" already exists for the current character.`, "Contextual Filters", { escapeHtml: true });
+        qigToast.info(`Pool "${pool.name}" already exists for the current character.`, "Contextual Filters");
     }
 }
 
@@ -13657,7 +13712,7 @@ async function moveContextualFilter(draggedId, targetId, position = "after") {
     }
     if (getContextualFilterPriorityValue(dragged) !== getContextualFilterPriorityValue(target)) {
         clearContextualFilterManagerDragState();
-        toastr.info("Drag reordering keeps filters grouped by priority. Drag within the same priority block.");
+        qigToast.info("Drag reordering keeps filters grouped by priority. Drag within the same priority block.");
         renderContextualFilters();
         return;
     }
@@ -14363,12 +14418,12 @@ async function persistCharacterStores(nextSettings, nextRefs, errorMessage) {
             if (!result.cacheSaved) {
                 const failedKeys = result.cacheErrors.map(item => item.localKey).join(", ");
                 log(`Character settings local cache write failed for ${failedKeys}`);
-                toastr?.warning?.("Saved character settings to your SillyTavern account, but this browser's local cache could not be fully updated.");
+                qigToast.warning("Saved character settings to your SillyTavern account, but this browser's local cache could not be fully updated.");
             }
             return true;
         } catch (error) {
             log(`Character settings synchronization failed: ${error.message}`);
-            toastr.error(errorMessage || "Failed to synchronize character settings with SillyTavern. No changes were saved.");
+            qigToast.error(errorMessage || "Failed to synchronize character settings with SillyTavern. No changes were saved.");
             return false;
         }
     });
@@ -14629,7 +14684,7 @@ function ensureContextualFilterManagerScopeSelection(scopeOptions = getContextua
 async function saveCharSettings() {
     const { storageKey, legacyKey } = getCurrentCharStorageInfo();
     if (!storageKey) {
-        toastr.info("Open an individual character chat to save a character override");
+        qigToast.info("Open an individual character chat to save a character override");
         return;
     }
     const s = getSettings();
@@ -14664,7 +14719,7 @@ async function saveCharSettings() {
 async function resetCharSettings() {
     const { storageKey, legacyKey } = getCurrentCharStorageInfo();
     if (!storageKey || !getCurrentCharOverride()) return;
-    if (!confirm(`Remove the QIG override for ${getCurrentCharName() || "this character"}?`)) return;
+    if (!(await qigConfirm(`Remove the QIG override for ${getCurrentCharName() || "this character"}?`, { okButton: "Remove Override" }))) return;
     const nextSettings = { ...charSettings };
     const nextRefs = { ...charRefImages };
     delete nextSettings[storageKey];
@@ -14696,7 +14751,7 @@ async function resetCharSettings() {
     }
     rememberCharSettingsBaseState(getSettings());
     updateCharacterSettingsUI();
-    toastr.success(hadRecoverableBase
+    qigToast.success(hadRecoverableBase
         ? "Character override removed"
         : "Character override removed; current values are now the global settings");
 }
@@ -14871,18 +14926,18 @@ function loadCharSettings() {
 async function saveConnectionProfileNow() {
     const s = getSettings();
     const provider = s.provider;
-    const rawName = prompt("Profile name:");
+    const rawName = await qigInput("Profile name:", { okButton: "Save Profile" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
-        toastr.warning("Profile name cannot be empty");
+        qigToast.warning("Profile name cannot be empty");
         return;
     }
     const keys = PROVIDER_KEYS[provider] || [];
     const profile = {};
     keys.forEach(k => profile[k] = cloneSynchronizedValue(s[k]));
     const existing = !!connectionProfiles[provider]?.[name];
-    if (existing && !confirm(`Profile "${name}" already exists. Overwrite it?`)) return;
+    if (existing && !(await qigConfirm(`Profile "${name}" already exists. Overwrite it?`, { okButton: "Overwrite" }))) return;
     const nextProfiles = cloneSynchronizedValue(connectionProfiles);
     if (!nextProfiles[provider]) nextProfiles[provider] = {};
     nextProfiles[provider][name] = profile;
@@ -14925,7 +14980,7 @@ function loadConnectionProfile(name) {
 
 async function deleteConnectionProfileNow(name) {
     const provider = getSettings().provider;
-    if (!confirm(`Delete profile "${name}"?`)) return;
+    if (!(await qigConfirm(`Delete profile "${name}"?`, { okButton: "Delete Profile" }))) return;
     const nextProfiles = cloneSynchronizedValue(connectionProfiles);
     delete nextProfiles[provider]?.[name];
     if (!await saveLocalStoreBackupNow("qig_profiles", nextProfiles, "Failed to delete profile from your SillyTavern account.")) return;
@@ -15033,7 +15088,7 @@ function getSelectedComfyWorkflowPreset() {
 function loadSelectedComfyWorkflowPreset() {
     const preset = getSelectedComfyWorkflowPreset();
     if (!preset) {
-        toastr.warning("Select a workflow preset first");
+        qigToast.info("Select a workflow preset first");
         return;
     }
     applyComfyWorkflowSnapshot(preset);
@@ -15046,17 +15101,17 @@ function loadSelectedComfyWorkflowPreset() {
 }
 
 async function saveComfyWorkflowPresetAsNow() {
-    const rawName = prompt("Workflow preset name:");
+    const rawName = await qigInput("Workflow preset name:", { okButton: "Save Preset" });
     if (rawName == null) return;
     const name = rawName.trim();
     if (!name) {
-        toastr.warning("Workflow preset name cannot be empty");
+        qigToast.warning("Workflow preset name cannot be empty");
         return;
     }
     const existing = comfyWorkflows.find(w => w.name === name);
     const snapshot = getComfyWorkflowSnapshot();
     if (existing) {
-        if (!confirm(`Workflow preset "${name}" already exists. Overwrite it?`)) return;
+        if (!(await qigConfirm(`Workflow preset "${name}" already exists. Overwrite it?`, { okButton: "Overwrite" }))) return;
         const nextStore = comfyWorkflows.map(workflow => workflow.id === existing.id
             ? { ...workflow, ...snapshot, updatedAt: new Date().toISOString() }
             : workflow);
@@ -15081,10 +15136,10 @@ function saveComfyWorkflowPresetAs() {
 async function updateSelectedComfyWorkflowPresetNow() {
     const preset = getSelectedComfyWorkflowPreset();
     if (!preset) {
-        toastr.warning("Select a workflow preset first");
+        qigToast.info("Select a workflow preset first");
         return;
     }
-    if (!confirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`)) return;
+    if (!(await qigConfirm(`Overwrite workflow preset "${preset.name}" with current Comfy settings?`, { okButton: "Overwrite" }))) return;
     const nextStore = comfyWorkflows.map(workflow => workflow.id === preset.id
         ? { ...workflow, ...getComfyWorkflowSnapshot(), updatedAt: new Date().toISOString() }
         : workflow);
@@ -15101,10 +15156,10 @@ function updateSelectedComfyWorkflowPreset() {
 async function deleteSelectedComfyWorkflowPresetNow() {
     const preset = getSelectedComfyWorkflowPreset();
     if (!preset) {
-        toastr.warning("Select a workflow preset first");
+        qigToast.info("Select a workflow preset first");
         return;
     }
-    if (!confirm(`Delete workflow preset "${preset.name}"?`)) return;
+    if (!(await qigConfirm(`Delete workflow preset "${preset.name}"?`, { okButton: "Delete Preset" }))) return;
     const nextStore = comfyWorkflows.filter(w => w.id !== preset.id);
     if (!await commitComfyWorkflowStore(nextStore)) return;
     renderComfyWorkflowPresets("");
@@ -15322,7 +15377,7 @@ function syncGenerationPresetIndicators() {
 }
 
 async function savePresetNow() {
-    const name = prompt("Preset name:");
+    const name = await qigInput("Preset name:", { okButton: "Save Preset" });
     if (!name) return;
     ensureFilterPoolsState();
     const s = getSettings();
@@ -15410,7 +15465,7 @@ function deletePreset(i) {
 }
 
 async function clearPresetsNow() {
-    if (confirm("Clear all presets?")) {
+    if (await qigConfirm("Clear all presets?", { okButton: "Clear Presets" })) {
         const settings = getSettings();
         const previousActiveId = String(settings.lastLoadedPresetId || "");
         settings.lastLoadedPresetId = "";
@@ -15513,7 +15568,7 @@ function showSetupWizard() {
         const finishWizard = ({ generate = false } = {}) => {
             hidePopup(popup, { restoreFocus: false });
             createUI();
-            document.getElementById("qig-wizard-btn")?.focus();
+            document.querySelector(".qig-wizard-btn")?.focus();
             if (generate) runConfiguredPaletteGeneration();
         };
         popup.querySelector("#qig-wizard-skip").onclick = () => hidePopup(popup);
@@ -15744,7 +15799,7 @@ function exportAllSettings() {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-    toastr.success("Settings exported without API keys or private reference images");
+    qigToast.success("Settings exported without API keys or private reference images");
 }
 
 function replaceObjectContents(target, source) {
@@ -15969,7 +16024,7 @@ function importSettings() {
             const legacyPrivateImages = data.charRefImages !== undefined
                 ? " This legacy file includes private reference images."
                 : "";
-            if (!confirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys and locally trusted executable workflows are kept; credentials and executable workflow bodies in the file are ignored.${legacyPrivateImages}`)) return;
+            if (!(await qigConfirm(`Import validated settings from ${data.exportDate || "unknown date"}? Existing API keys and locally trusted executable workflows are kept; credentials and executable workflow bodies in the file are ignored.${legacyPrivateImages}`, { okButton: "Import Settings", wide: true }))) return;
             await commitSettingsImport(data);
             const contextMediaManager = document.getElementById("qig-context-media-manager");
             if (contextMediaManager) hidePopup(contextMediaManager);
@@ -15990,10 +16045,10 @@ function importSettings() {
             if (settings.provider === "local" && settings.localType === "comfyui") {
                 refreshComfyModelCatalog().catch(error => log(`ComfyUI model refresh failed: ${error.message}`));
             }
-            toastr.success("Settings imported successfully");
+            qigToast.success("Settings imported successfully");
         } catch (err) {
             console.error("[Quick Image Gen] Import failed:", err);
-            toastr.error("Failed to import: " + err.message, "", { escapeHtml: true });
+            qigToast.error("Failed to import: " + err.message, "", { escapeHtml: true });
         }
     };
     input.click();
@@ -16266,23 +16321,23 @@ function addProxyRefImage(src, successMessage = "") {
     if (!value) return false;
     if (!s.proxyRefImages) s.proxyRefImages = [];
     if (s.proxyRefImages.length >= 15) {
-        toastr.warning("Maximum 15 reference images reached");
+        qigToast.warning("Maximum 15 reference images reached");
         return false;
     }
     if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only" && !normalizePublicHttpsImageUrl(value)) {
-        toastr.warning("URL-only mode accepts only public HTTPS image URLs without credentials.");
+        qigToast.warning("URL-only mode accepts only public HTTPS image URLs without credentials.");
         return false;
     }
     const inlineBytes = s.proxyRefImages.reduce((total, source) => total + getInlineImageBytes(source), 0) + getInlineImageBytes(value);
     if (inlineBytes > MAX_IMAGE_BYTES) {
-        toastr.warning("Reference images are limited to 25 MiB total");
+        qigToast.warning("Reference images are limited to 25 MiB total");
         return false;
     }
     s.proxyRefImages.push(value);
     saveSettingsDebounced();
     renderRefImages();
     updateProxyCompatibilityUI();
-    if (successMessage) toastr.success(successMessage);
+    if (successMessage) qigToast.success(successMessage);
     return true;
 }
 
@@ -16410,7 +16465,6 @@ function applyCustomApiStarter(starterId) {
     refreshProviderInputs("custom", { updateProviderVisibility: false });
     updateCustomApiUI();
     syncGenerationPresetIndicators();
-    toastr.success(`Applied ${starter.label} request mapping`);
 }
 
 function updateCustomApiUI() {
@@ -16941,11 +16995,6 @@ function createUI() {
                         <select id="qig-style">${styleOpts}</select>
                         <small>Visual style preset applied to the prompt.</small>
                     </div>
-                </div>
-
-                <div class="qig-quick-actions" aria-label="Quick Image Gen shortcuts">
-                    <button class="menu_button qig-btn-prominent qig-wizard-btn" title="Quick setup: pick a provider, paste a key, choose a style"><span class="fa-solid fa-hat-wizard"></span><span>Quick Setup Wizard</span></button>
-                    <button class="menu_button qig-btn-prominent qig-logs-btn" title="View generation logs and errors"><span class="fa-solid fa-list-check"></span><span>Generation Logs</span></button>
                 </div>
 
                 <div class="qig-collapsible qig-setup-shell">
@@ -18446,7 +18495,7 @@ function createUI() {
     document.getElementById("qig-local-model").addEventListener("change", (e) => {
         const val = (e.target.value || "").toLowerCase();
         if (/flux|unet|\.gguf/.test(val) && normalizeComfyModelLoader(getSettings().comfyModelLoader) !== "unet") {
-            toastr.warning(
+            qigToast.warning(
                 'This looks like a diffusion model. Select the "Diffusion/UNET" model loader and set its CLIP/VAE filenames, or paste a custom workflow.',
                 "Diffusion/UNET Model Detected",
                 { timeOut: 8000 }
@@ -18746,9 +18795,8 @@ function createUI() {
         if (success) {
             s.a1111Model = newModel;
             saveSettingsDebounced();
-            toastr?.success?.('Model switched');
         } else {
-            toastr?.error?.('Failed to switch model');
+            qigToast.warning("Could not switch the model. The backend kept its current model — check that it is still reachable.");
         }
         a1111ModelSelect.disabled = false;
     };
@@ -18849,7 +18897,7 @@ function createUI() {
         try {
             const s = getSettings();
             if (normalizeProxyRefImageSetting(s.proxyRefImageMode) === "url_only") {
-                toastr.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
+                qigToast.warning("This proxy compatibility mode only accepts public image URLs for reference images.");
                 return;
             }
             if (!s.proxyRefImages) s.proxyRefImages = [];
@@ -18923,12 +18971,11 @@ function createUI() {
         if (!url) return;
         const s = getSettings();
         if (!s.nanobananaRefImages) s.nanobananaRefImages = [];
-        if (s.nanobananaRefImages.length >= 15) { toastr.warning("Maximum 15 reference images"); return; }
+        if (s.nanobananaRefImages.length >= 15) { qigToast.warning("Maximum 15 reference images"); return; }
         s.nanobananaRefImages.push(url);
         saveSettingsDebounced();
         renderNanobananaRefImages();
         nanoRefUrl.value = "";
-        toastr.success("Reference image URL added");
     };
     renderNanobananaRefImages();
 
@@ -18965,13 +19012,12 @@ function createUI() {
         const s = getSettings();
         if (!s.nanogptRefImages) s.nanogptRefImages = [];
         const maxReferences = getNanoGptReferenceLimit(s);
-        if (s.nanogptRefImages.length >= maxReferences) { toastr.warning(`Maximum ${maxReferences} reference images`); return; }
-        if (!nanoGptReferencesFitRequest([...s.nanogptRefImages, url])) { toastr.warning("NanoGPT references must fit within the 4 MiB encoded request limit"); return; }
+        if (s.nanogptRefImages.length >= maxReferences) { qigToast.warning(`Maximum ${maxReferences} reference images`); return; }
+        if (!nanoGptReferencesFitRequest([...s.nanogptRefImages, url])) { qigToast.warning("NanoGPT references must fit within the 4 MiB encoded request limit"); return; }
         s.nanogptRefImages.push(url);
         saveSettingsDebounced();
         renderNanogptRefImages();
         nanogptRefUrl.value = "";
-        toastr.success("Reference image URL added");
     };
     renderNanogptRefImages();
 
@@ -19039,16 +19085,18 @@ function createUI() {
     };
     const wireInstructionTemplateButton = (id, onClick) => {
         const el = document.getElementById(id);
-        if (el) el.onclick = (e) => { e.preventDefault(); onClick(); };
+        if (el) el.onclick = (e) => { e.preventDefault(); void onClick(); };
     };
-    const insertInstructionTemplate = (id, key, template) => {
+    const insertInstructionTemplate = async (id, key, template) => {
         const current = String(document.getElementById(id)?.value || "").trim();
-        if (current && current !== template.trim() && !confirm("Replace the current text with the default template?")) return;
+        if (current && current !== template.trim()
+            && !(await qigConfirm("Replace the current text with the default template?", { okButton: "Replace" }))) return;
         setInstructionTemplateValue(id, key, template);
     };
-    const resetInstructionTemplate = (id, key, value) => {
+    const resetInstructionTemplate = async (id, key, value) => {
         const current = String(document.getElementById(id)?.value || "").trim();
-        if (current && current !== String(value).trim() && !confirm("Discard the custom text and restore the default?")) return;
+        if (current && current !== String(value).trim()
+            && !(await qigConfirm("Discard the custom text and restore the default?", { okButton: "Restore Default" }))) return;
         setInstructionTemplateValue(id, key, value);
     };
     wireInstructionTemplateButton("qig-llm-custom-insert-tags", () => insertInstructionTemplate("qig-llm-custom", "llmCustomInstruction", DEFAULT_TAGS_INSTRUCTION_TEMPLATE));
@@ -19197,10 +19245,10 @@ function createUI() {
             const sampleTag = getInjectTagPreview(getInjectTagName(getSettings()));
             const testMatch = extractInjectMatchesFromText(sampleTag, value);
             if (testMatch.length === 0) {
-                toastr.warning("Regex may not capture image descriptions. Test with sample tags.");
+                qigToast.warning("Regex may not capture image descriptions. Test with sample tags.");
             }
         } catch (e) {
-            toastr.error("Invalid regex pattern: " + e.message, "", { escapeHtml: true });
+            qigToast.error("Invalid regex pattern: " + e.message, "", { escapeHtml: true });
         }
     });
     document.getElementById("qig-inject-position").onchange = (e) => {
@@ -19219,14 +19267,14 @@ function createUI() {
         const chat = ctx.chat;
 
         if (!chat || chat.length === 0) {
-            toastr.info("No chat messages to test");
+            qigToast.info("No chat messages to test");
             return;
         }
 
         // Find last AI message
         const lastAiMessage = findLastInjectCandidateMessage(chat);
         if (!lastAiMessage) {
-            toastr.info("No AI messages found");
+            qigToast.info("No AI messages found");
             return;
         }
 
@@ -19234,7 +19282,7 @@ function createUI() {
         try {
             detection = extractInjectPromptsFromMessage(lastAiMessage.message, s);
         } catch (e) {
-            toastr.error("Invalid regex: " + e.message, "", { escapeHtml: true });
+            qigToast.error("Invalid regex: " + e.message, "", { escapeHtml: true });
             return;
         }
 
@@ -19244,7 +19292,7 @@ function createUI() {
             ? `Found ${detection.matches.length} tag(s):\n${detection.matches.map(match => `[${match.sources.join(", ")}] ${match.prompt}`).join("\n")}`
             : `No tags found in last AI message or reasoning.\n\nScanned sources: ${sourceSummary}\n\nMessage preview:\n${visiblePreview}...\n\nRegex used:\n${detection.regexPattern}`;
 
-        alert(result);
+        await qigNotice(result, { title: "Inject tag detection", wide: true });
     };
 
     // LLM Override bindings
@@ -19589,7 +19637,7 @@ function bindMessageGenerateActionClicks() {
         event.stopPropagation();
 
         if (isGenerating) {
-            toastr.warning("Generation already in progress");
+            qigToast.warning("Generation already in progress");
             return;
         }
 
@@ -19602,7 +19650,7 @@ function bindMessageGenerateActionClicks() {
         );
 
         if (!Number.isInteger(messageIndex)) {
-            toastr.error("Could not find the target chat message");
+            qigToast.warning("Could not find the target chat message. It may have been deleted or the chat changed.");
             return;
         }
 
@@ -19611,7 +19659,7 @@ function bindMessageGenerateActionClicks() {
             await generateImage();
         } catch (e) {
             log(`Message action: Generation failed for message ${messageIndex}: ${e.message}`);
-            toastr.error("Failed to generate from that message: " + e.message, "", { escapeHtml: true });
+            qigToast.error("Failed to generate from that message: " + e.message, "", { escapeHtml: true });
         } finally {
             clearTransientGenerationTarget(transientTarget);
         }
@@ -19669,6 +19717,7 @@ function addInputButton() {
         if (isGenerating) {
             if (!requestGenerationCancel()) return;
             log("User cancelled generation via palette button");
+            qigToast.info("Cancelling generation...");
             return;
         }
         if (isGenerationStartDebounced(now)) return;
@@ -19693,7 +19742,7 @@ function addInputButton() {
 async function generateImageInjectPalette() {
     if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
+    if (initialSettings.confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return { status: "cancelled", generated: 0, failed: 0 };
 
     const mySerial = ++_paletteInjectSerial;
     const run = beginGeneration({ settings: initialSettings, disableGenerateButton: true, clearPendingAuto: true });
@@ -19803,7 +19852,7 @@ async function generateImageInjectPalette() {
                 debugLog(`Palette inject: AI message scanned: ${aiMsgPreview}...`);
                 debugLog(`Palette inject: LLM response received: ${llmPreview}...`);
                 debugLog(`Palette inject: Full instruction sent: ${fullInstruction.substring(0, 300)}...`);
-                toastr.warning("No image tags found. Check console for details.", "Image Generation");
+                qigToast.error("No image tags found in the AI reply. Open Logs to see the scanned sources and the regex that was used.", "Image Generation");
                 log(`Palette inject: Diagnostic info - regex ${regexPreview}${regexPattern.length > 100 ? "..." : ""}, sources ${aiSources}`);
                 if (debugLoggingEnabled) {
                     debugLog(`Palette inject diagnostics: ${JSON.stringify({
@@ -19879,11 +19928,15 @@ async function generateImageInjectPalette() {
                         targetSnapshot: sourceTargetSnapshot,
                         run,
                     });
-                    toastr.success(`Palette inject: ${results.length} image(s) generated`);
                 }
             } finally {
                 setGenerationSeedValue(s, originalSeed);
             }
+        }
+        // Reported once for the whole message rather than once per matched tag.
+        if (generatedCount > 0) {
+            const failedSuffix = failedCount > 0 ? `; ${failedCount} failed` : "";
+            qigToast.success(`Palette inject: ${generatedCount} image(s) generated${failedSuffix}`);
         }
         return {
             status: failedCount > 0 ? "partial" : "success",
@@ -19893,11 +19946,11 @@ async function generateImageInjectPalette() {
     } catch (e) {
         if (e.name === "AbortError") {
             log("Palette inject: Generation cancelled by user");
-            toastr.info("Generation cancelled");
+            qigToast.info("Generation cancelled");
             return { status: "cancelled", generated: generatedCount, failed: failedCount };
         } else {
             log(`Palette inject: Error: ${e.message}`);
-            toastr.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+            qigToast.error("Palette inject failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
             return {
                 status: generatedCount > 0 ? "partial" : "failed",
                 generated: generatedCount,
@@ -19933,10 +19986,10 @@ async function generateImageFromPlainDescription() {
     const request = await showPlainDescriptionDialog();
     if (!request) return;
     if (isGenerating) {
-        toastr.warning("Generation already in progress");
+        qigToast.warning("Generation already in progress");
         return;
     }
-    if (getSettings().confirmBeforeGenerate && !confirm("Generate image?")) return;
+    if (getSettings().confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return;
 
     let run = null;
     let s = null;
@@ -20049,10 +20102,10 @@ async function generateImageFromPlainDescription() {
     } catch (e) {
         if (e.name === "AbortError") {
             log("Plain description generation cancelled by user");
-            toastr.info("Generation cancelled");
+            qigToast.info("Generation cancelled");
         } else {
             log(`Plain description error: ${e.message}`);
-            toastr.error("Plain description generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+            qigToast.error("Plain description generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
         }
     } finally {
         if (s && originalSeed != null) setGenerationSeedValue(s, originalSeed);
@@ -20066,11 +20119,11 @@ async function generateImage() {
     if (isGenerating) return { status: "busy", generated: 0, failed: 0 };
     const usingTransientSettingsOverride = !!transientGenerationSettingsState.current;
     const initialSettings = getGenerationSettingsForRun();
-    if (initialSettings.confirmBeforeGenerate && !confirm("Generate image?")) return { status: "cancelled", generated: 0, failed: 0 };
+    if (initialSettings.confirmBeforeGenerate && !(await qigConfirm("Generate image?", { okButton: "Generate" }))) return { status: "cancelled", generated: 0, failed: 0 };
     const ctx = getContext();
     const activeMessageTarget = getTransientGenerationTarget(ctx);
     if (activeMessageTarget?.stale) {
-        toastr.error("The selected chat message changed before generation could start");
+        qigToast.warning("The selected chat message changed before generation could start. Try again from the current message.");
         return { status: "failed", generated: 0, failed: 1, message: "Selected chat message changed" };
     }
     const useChatMessageScene = shouldUseChatMessageScene(initialSettings, ctx);
@@ -20292,11 +20345,11 @@ async function generateImage() {
     } catch (e) {
         if (e.name === "AbortError") {
             log("Generation cancelled by user");
-            toastr.info("Generation cancelled");
+            qigToast.info("Generation cancelled");
             return { status: "cancelled", generated: 0, failed: 0 };
         } else {
             log(`Error: ${e.message}`);
-            toastr.error("Generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+            qigToast.error("Generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
             return { status: "failed", generated: 0, failed: 1, message: e.message };
         }
     } finally {
@@ -20774,7 +20827,9 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
         s = run.settings;
         startedGeneration = true;
 
-        // Generate images for each extracted prompt
+        // Generate images for each extracted prompt. Per-tag outcomes are counted and
+        // reported once after the loop, so a message with many tags cannot stack a
+        // toast per tag.
         const sceneTextForFilters = getMessages(s, ctx) || "";
         const worldInfoContext = await resolveWorldInfoForPromptPipeline(s, {
             context: ctx,
@@ -20782,6 +20837,8 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
             sourceText: sceneTextForFilters || matches.join("\n"),
             signal: run.signal,
         });
+        let injectGeneratedCount = 0;
+        let injectFailedCount = 0;
         for (const extractedPrompt of matches) {
             const originalSeed = getGenerationSeedValue(s);
             try {
@@ -20836,25 +20893,35 @@ async function processInjectMessage(messageText, messageIndex, job = null) {
                         run,
                     });
                     if (sourceMessage) consumedMessagePrompts.add(extractedPrompt);
-                    toastr.success(`Inject mode: ${results.length} image(s) generated`);
+                    injectGeneratedCount += results.length;
                 }
             } catch (e) {
                 if (e.name === "AbortError") {
                     log("Inject: Generation cancelled by user");
-                    toastr.info("Generation cancelled");
+                    qigToast.info("Generation cancelled");
                     break; // Exit the entire match loop on cancel
                 } else {
+                    injectFailedCount += 1;
                     log(`Inject: Generation error: ${e.message}`);
-                    toastr.error("Inject generation failed: " + e.message, "", { timeOut: 0, extendedTimeOut: 0, closeButton: true, escapeHtml: true });
+                    // One sticky toast for the whole message, not one per tag.
+                    qigToast.notifyOnce("inject-generation-failed", "error", "Inject generation failed: " + e.message, "", {
+                        timeOut: 0,
+                        extendedTimeOut: 0,
+                        closeButton: true,
+                    });
                 }
             } finally {
                 setGenerationSeedValue(s, originalSeed);
             }
         }
+        if (injectGeneratedCount > 0) {
+            const failedSuffix = injectFailedCount > 0 ? `; ${injectFailedCount} failed` : "";
+            qigToast.success(`Inject mode: ${injectGeneratedCount} image(s) generated${failedSuffix}`);
+        }
     } catch (error) {
         if (error.name !== "AbortError") {
             log(`Inject: ${error.message}`);
-            toastr?.error?.("Inject generation failed: " + error.message, "", { escapeHtml: true });
+            qigToast.error("Inject generation failed: " + error.message, "", { escapeHtml: true });
         }
     } finally {
         if (run && !run.signal.aborted && s && sourceMessage && consumedMessagePrompts.size > 0) {
@@ -20936,7 +21003,7 @@ async function runQigSlashGenerateCommand(args = {}, unnamedPrompt = "") {
     } catch (e) {
         const message = e?.message || String(e);
         log(`Slash command generation failed: ${message}`);
-        toastr?.error?.("Quick Image Gen failed: " + message);
+        qigToast.error("Quick Image Gen failed: " + message);
         return "QIG failed: " + message;
     }
 }
@@ -21242,6 +21309,24 @@ jQuery(function () {
                 console.warn("[ImageGen] Could not import RossAscends-mods:", e.message);
             }
 
+            // Imported before loadSettings() so the legacy-import question uses a
+            // native dialog rather than the browser one.
+            try {
+                const popupModule = await import("../../../popup.js");
+                dialogHost = createDialogHost({
+                    callGenericPopup: popupModule.callGenericPopup,
+                    popupType: popupModule.POPUP_TYPE,
+                    popupResult: popupModule.POPUP_RESULT,
+                    escapeHtml,
+                    nativeConfirm: (message) => globalThis.confirm?.(message),
+                    nativeAlert: (message) => globalThis.alert?.(message),
+                    nativePrompt: (message, value) => globalThis.prompt?.(message, value),
+                    onError: (error) => log(`Popup dialog failed, used browser dialog instead: ${error.message}`),
+                });
+            } catch (e) {
+                console.warn("[ImageGen] Could not import popup module, using browser dialogs:", e.message);
+            }
+
             await loadSettings();
             accountStorageScope = createAccountStorageScope(getSettings()?._syncCacheId);
             promptHistory = accountStorageScope
@@ -21276,21 +21361,44 @@ jQuery(function () {
             bindHostEventHandlers(eventSource, event_types);
         } catch (err) {
             console.error("[Quick Image Gen] Initialization failed:", err);
+            reportInitializationFailure(err);
         }
     })();
 });
 
-
-let _saveToServerToastTs = 0;
-function warnSaveToServer(msg) {
-    log(msg);
-    if (typeof toastr !== "undefined") {
-        const now = Date.now();
-        if (now - _saveToServerToastTs > 4000) {
-            toastr.warning(msg);
-            _saveToServerToastTs = now;
-        }
+/**
+ * A failed init used to leave nothing but a console line, so the drawer simply never
+ * appeared. Surface it in the extensions panel — where the drawer should have been —
+ * and as a sticky toast, so the failure is attributable instead of looking like the
+ * extension was never installed.
+ */
+function reportInitializationFailure(err) {
+    const detail = err?.message ? String(err.message) : "Unknown error";
+    // Safe this early: the notifier reports failure rather than throwing when
+    // SillyTavern has not defined `toastr` yet.
+    qigToast.error(
+        `Quick Image Gen could not start: ${detail}. Check the browser console for details.`,
+        "Quick Image Gen",
+        { timeOut: 0, extendedTimeOut: 0 },
+    );
+    try {
+        const mount = document.getElementById("extensions_settings");
+        if (!mount || document.getElementById("qig-init-error")) return;
+        const notice = document.createElement("div");
+        notice.id = "qig-init-error";
+        notice.className = "qig-field-error";
+        notice.setAttribute("role", "alert");
+        notice.textContent = `Quick Image Gen failed to load: ${detail}. Reload SillyTavern to retry; if it persists, check the browser console and report the error.`;
+        mount.appendChild(notice);
+    } catch (reportError) {
+        console.error("[Quick Image Gen] Could not display the initialization failure:", reportError);
     }
+}
+
+
+function warnSaveToServer(msg) {
+    // Every failed save is logged; the toast is throttled so a batch cannot flood it.
+    qigToast.warning(msg, "", { throttleKey: "save-to-server", logMessage: true });
 }
 
 function getProviderModelId(settings, provider = settings?.provider) {
@@ -21536,7 +21644,7 @@ async function downloadWithMetadata(url, filename, prompt, negative, settings, o
     } catch (err) {
         console.error("Download with metadata failed:", err);
         if (options.notify !== false) {
-            toastr?.error?.("Could not download this image safely. The source may be unavailable or too large.");
+            qigToast.error("Could not download this image safely. The source may be unavailable or too large.");
         }
         return { success: false, error: err };
     }
@@ -21628,7 +21736,7 @@ async function handleMetadataDrop(e) {
             if (importedBackend && importedBackend !== s.localType) {
                 identityChanges.push(`local backend ${s.localType || "a1111"} → ${importedBackend}`);
             }
-            if (identityChanges.length && !confirm(`Importing this metadata will change ${identityChanges.join(", ")}. Continue?`)) {
+            if (identityChanges.length && !(await qigConfirm(`Importing this metadata will change ${identityChanges.join(", ")}. Continue?`, { okButton: "Import Metadata" }))) {
                 showStatus("Metadata import cancelled");
                 setTimeout(() => showStatus(null), 2000);
                 return;
@@ -21760,7 +21868,7 @@ async function handleMetadataDrop(e) {
                         s.sampler = mapped;
                         setValue("qig-sampler", s.sampler);
                         if (oldSampler !== mapped) {
-                            toastr.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`, "Quick Image Gen", { escapeHtml: true });
+                            qigToast.info(`Sampler changed from "${oldSampler}" to "${mapped}" (from image metadata: "${params.sampler}")`, "Quick Image Gen", { escapeHtml: true });
                         }
                     }
                 }
@@ -21778,7 +21886,7 @@ async function handleMetadataDrop(e) {
                         mapCivitaiSdcppSampler(params.scheduler);
                         s.civitaiScheduler = params.scheduler;
                     } catch {
-                        toastr.warning(`Unsupported CivitAI sampler in image metadata: "${params.scheduler}"`, "Quick Image Gen", { escapeHtml: true });
+                        qigToast.warning(`Unsupported CivitAI sampler in image metadata: "${params.scheduler}"`, "Quick Image Gen", { escapeHtml: true });
                     }
                 }
             }

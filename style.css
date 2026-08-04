@@ -242,14 +242,12 @@
     border-color: var(--qig-accent);
 }
 
-.qig-quick-actions,
 .qig-action-strip {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
     gap: 6px;
 }
 
-.qig-quick-actions .menu_button,
 .qig-action-strip .menu_button,
 .qig-inline-control .menu_button {
     display: inline-flex;
@@ -1773,7 +1771,6 @@ button.qig-message-generate {
         width: 100%;
     }
 
-    .qig-quick-actions,
     .qig-action-strip {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
@@ -2387,4 +2384,37 @@ button.qig-message-generate {
 #qig-settings small[style*="font-size:10px"] {
     font-size: 11px !important;
     opacity: 0.85 !important;
+}
+
+/* Content rendered inside SillyTavern's own popups, which supply the frame. */
+.qig-dialog-title {
+    margin: 0 0 8px;
+    font-size: 1.1em;
+}
+
+.qig-dialog-text {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    text-align: left;
+    line-height: 1.5;
+}
+
+/* Paired with a glyph so the failure reads without relying on colour. */
+.qig-field-error {
+    margin: 8px 0 0;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    border: 1px solid color-mix(in srgb, orangered 50%, var(--qig-line));
+    background: color-mix(in srgb, orangered 12%, transparent);
+    color: var(--SmartThemeBodyColor);
+}
+
+.qig-field-error::before {
+    content: "\26A0 ";
+}
+
+[aria-invalid="true"] {
+    outline: 1px solid color-mix(in srgb, orangered 60%, var(--qig-line));
+    outline-offset: 1px;
 }
