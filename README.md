@@ -83,7 +83,7 @@ When the Chat scene source and the LLM prompt toggle are both on, and `Use two-s
 1. Ask the Text AI for a plain visual scene description drawn from the selected chat range.
 2. Ask the Text AI to convert that description into the selected prompt style.
 
-An optional `Two-step custom instruction` field lets you direct the second pass.
+An optional `Scene description instruction` field lets you direct the first pass. `Insert default` fills the editor with the built-in instruction so you can tweak it instead of writing one from scratch; `Reset` returns to the built-in adaptive default.
 
 ### Batch generation
 
@@ -106,7 +106,22 @@ When `Use LLM to create image prompt` is enabled, your Text AI rewrites the chat
 
 - **Tags (Danbooru)**: tag-list format (`1girl, long hair, blue eyes, ...`).
 - **Natural (Description)**: prose description.
-- **Custom instruction**: your own system prompt directs the conversion.
+- **Custom instruction**: your own system prompt directs the conversion. `Insert Tags default` and `Insert Natural default` fill the editor with the exact built-in instruction text as a starting point; `Reset` clears the override so the built-in adaptive instruction is used again.
+
+### Use-case guide
+
+What each prompt option is for, with typical situations:
+
+- **Prefill**: pre-writes the first words of the Text AI's reply so the model continues from them instead of starting fresh. Use it when your model wraps prompts in commentary ("Sure! Here's your image prompt: ..."), adds markdown fences, or drifts out of format. A prefill like `Image prompt:` or `1girl,` locks the output shape from the first token.
+- **Tags style**: for booru-trained image models (NovelAI, Illustrious, Pony, most anime SD checkpoints). These respond to comma-separated tags and get worse results from full sentences.
+- **Natural style**: for instruction-following image models (GPT Image, Nanobanana/Gemini, Flux, photorealistic SDXL merges). These do better with a written scene description than a tag list.
+- **Custom instruction**: full control over the conversion — force a fixed camera angle, an art medium, a house tagging scheme, or a different output language. Start from an inserted default rather than a blank box.
+- **Two-step prompt pipeline**: for long or dialogue-heavy chat scenes. Single-pass conversion sometimes echoes dialogue or fixates on a minor detail; the first pass distills the selected messages into one plain visual moment, and the second pass formats that moment into the selected style. Costs one extra Text AI call per generation. Direct the first pass with the `Scene description instruction`, for example "describe only the environment, not the characters".
+- **Review before generating**: shows every request in an editable dialog before it is sent. The fastest way to learn what each toggle actually changes, and the recommended mode while tuning custom instructions or filters.
+- **Preserve character identity**: keeps species, age, body traits, and canonical appearance requirements in the request. Turn it off when generating scenery or objects, or when identity enforcement fights a heavily stylized look.
+- **Include matched World Info**: adds lore whose keywords appear in the selected scene (canonical outfits, locations, races) so the Text AI can use those details. Constant entries always insert; keyword entries insert when they match the scene text or recent messages.
+- **Message range**: which chat messages form the scene. `-1` is the last message, `last3` the three newest, `5-9` a specific past moment you want illustrated, and `-1,3` a mix of both.
+- **Quality / lighting / artist toggles**: append extra requirements that mostly help booru-style checkpoints. Leave them off for GPT Image or Gemini-class models, which follow the plain description on their own.
 
 ### Prompt review, identity, and World Info
 
@@ -178,7 +193,7 @@ Supported tag formats:
 - `<image>prompt text</image>` (tag name configurable, default `image`)
 - `<pic prompt="prompt text">` (legacy)
 
-Inject settings: tag name, inject prompt template, extraction regex, injection position (`afterScenario`), tag handling, auto-clean. Legacy `inline` settings migrate to source-message replacement because that was their prior runtime behavior. `Test Inject Detection` checks current chat messages for extractable tags without generating.
+Inject settings: tag name, inject prompt template, extraction regex, injection position (`afterScenario`), tag handling, auto-clean. The prompt template and extraction regex each have a `Reset to default` button that restores the generated default for the current tag name. Legacy `inline` settings migrate to source-message replacement because that was their prior runtime behavior. `Test Inject Detection` checks current chat messages for extractable tags without generating.
 
 ## Local Generation (A1111 / ComfyUI)
 
@@ -406,6 +421,18 @@ Setup:
 5. Open `/api/plugins/quick-image-gen-relay/healthz` while logged in. A blank response with HTTP 204 means the plugin and required pre-parser installer are registered; HTTP 503 means the relay is disabled. Relay POSTs additionally detect and reject a pre-parser mounted after the host parser.
 
 SillyTavern server plugins are not sandboxed. Only install server plugins from developers you trust. This plugin does not accept arbitrary target URLs and does not store or log provider API keys. CivitAI cancellation follows the current live v2 OpenAPI and official JavaScript client contract: authenticated `DELETE /v2/consumer/workflows/{workflowId}` (`DeleteWorkflow` / `deleteWorkflow()`).
+
+## Updating and Rollback
+
+Update from `Extensions -> Manage extensions -> Quick Image Gen -> Update`.
+
+If an update breaks your setup, switch back to the previous version line without leaving SillyTavern:
+
+1. Open `Extensions -> Manage extensions -> Quick Image Gen`.
+2. Open the branch selector and pick the previous-version branch (for example `v2.8`).
+3. Reload when prompted.
+
+`main` is always the current release. When a new version line starts, a `v<major.minor>` branch is kept at the last release of the previous line. Rolling back does not delete your settings; options added by newer versions are ignored until you return to `main`.
 
 ## Migration Notes
 
