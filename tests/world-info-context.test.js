@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     buildWorldInfoScanChat,
+    composeWorldInfoScanChat,
     formatWorldInfoScanMessage,
     formatWorldInfoRecords,
     getWorldInfoContextBudget,
@@ -138,6 +139,22 @@ test("clamps scan endpoints to the available message range", () => {
     assert.deepEqual(buildWorldInfoScanChat(messages, 99, formatMessage), ["two", "one", "zero"]);
     assert.deepEqual(buildWorldInfoScanChat(messages, -99, formatMessage), ["zero"]);
     assert.deepEqual(buildWorldInfoScanChat([], 10, formatMessage), []);
+});
+
+test("scene text leads the scan chat so keyword entries always see it", () => {
+    const history = ["newest message", "older message"];
+
+    assert.deepEqual(composeWorldInfoScanChat("selected scene", history), [
+        "selected scene",
+        "newest message",
+        "older message",
+    ]);
+    assert.deepEqual(composeWorldInfoScanChat("  ", history), history);
+    assert.deepEqual(composeWorldInfoScanChat("scene only", null), ["scene only"]);
+    assert.deepEqual(composeWorldInfoScanChat("", undefined), []);
+
+    const returned = composeWorldInfoScanChat("", history);
+    assert.notEqual(returned, history);
 });
 
 test("scan message formatting skips system messages and follows the host name setting", () => {

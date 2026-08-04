@@ -186,6 +186,7 @@ import {
 } from "./lib/prompt-pipeline.js";
 import {
     buildWorldInfoScanChat,
+    composeWorldInfoScanChat,
     formatWorldInfoScanMessage,
     getWorldInfoContextBudget,
     resolveWorldInfoContext,
@@ -5333,7 +5334,7 @@ async function resolveWorldInfoForPromptPipeline(settings, {
 
     try {
         const includeNames = hostWorldInfoModule?.world_info_include_names !== false;
-        const scanChat = Number.isInteger(throughIndex) && chat.length
+        const historyChat = Number.isInteger(throughIndex) && chat.length
             ? buildWorldInfoScanChat(chat, throughIndex, (message) => {
                 const source = resolveSceneMessageSource(message);
                 return formatWorldInfoScanMessage(message, {
@@ -5342,7 +5343,10 @@ async function resolveWorldInfoForPromptPipeline(settings, {
                     includeNames,
                 });
             })
-            : (explicitSource ? [explicitSource] : []);
+            : [];
+        // The scene being illustrated always leads the scan so keyword entries match it
+        // even when it spans more messages than the host's World Info scan depth covers.
+        const scanChat = composeWorldInfoScanChat(explicitSource, historyChat);
         if (!scanChat.length) return { records: [], text: "" };
         const maxContext = getWorldInfoContextBudget(hostScriptModule);
         const resolved = await runSerializedTextAITask(() => resolveWorldInfoContext({
