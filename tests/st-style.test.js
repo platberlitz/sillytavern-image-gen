@@ -33,6 +33,22 @@ test("resolves official character prompts by avatar stem, including character ze
     });
 });
 
+test("a character prompt without a negative entry never leaks into the negative", () => {
+    const style = resolveSTStyleSettings({
+        character_prompts: { "Alice.Card": "card positive" },
+    }, context());
+
+    assert.equal(style.charPositive, "card positive");
+    assert.equal(style.charNegative, "");
+
+    const legacy = resolveSTStyleSettings({
+        character_prompts: { Alice: "legacy positive" },
+    }, context());
+
+    assert.equal(legacy.charPositive, "legacy positive");
+    assert.equal(legacy.charNegative, "");
+});
+
 test("uses shareable card prompts before legacy display-name entries", () => {
     const ctx = context();
     ctx.characters[0].data.extensions.sd_character_prompt = {
