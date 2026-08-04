@@ -434,6 +434,36 @@ If an update breaks your setup, switch back to the previous version line without
 
 `main` is always the current release. When a new version line starts, a `v<major.minor>` branch is kept at the last release of the previous line. Rolling back does not delete your settings; options added by newer versions are ignored until you return to `main`.
 
+## Changelog
+
+### 3.0.0
+
+No breaking changes. Settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
+
+**Fixed**
+
+- Character-specific image prompts no longer end up in the negative prompt. A character set up with only a positive prompt had that same text applied as its negative prompt, so the description was being requested and suppressed at the same time. Characters that have a real negative prompt configured were never affected.
+- World Info entries that trigger on keywords now match the scene you are illustrating. Only always-on (`constant`) entries inserted reliably before, because the scan read the newest chat messages instead of the messages you actually selected. Scenes longer than SillyTavern's World Info scan depth were the common case.
+
+**Added**
+
+- The built-in instructions QIG sends to your Text AI are now readable and editable instead of hidden. `Insert Tags default` and `Insert Natural default` fill the custom instruction box with the real built-in text, and `Insert default` does the same for the two-step scene description. Both boxes have a `Reset` button.
+- `Reset to default` for the inject prompt template, the inject extraction regex, and the Reverse Proxy chat-image system prompt.
+- A use-case guide explaining what each prompt option is for and when to reach for it.
+- Rollback instructions, plus a `v2.8` branch for returning to the previous version line.
+
+Leaving an instruction box empty still means "use the built-in default", so existing setups behave exactly as before. The identity, quality, lighting, and artist toggles still add their requirements on top of whichever instruction is in use.
+
+### 2.9.0
+
+- Prompt review before generating, and optional matched World Info in Text AI context.
+
+### 2.8.0
+
+- Image delivery and runtime safety hardening.
+
+Earlier versions predate this changelog; see the commit history.
+
 ## Migration Notes
 
 - The legacy `Edit LLM prompt before generation` setting migrates to `Review before generating`.
