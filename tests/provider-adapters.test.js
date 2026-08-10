@@ -462,6 +462,18 @@ test('forced hosted output materialization enforces host allowlists and byte con
   }), /untrusted host/);
 });
 
+test('forced output retrieval can fall back to browser loading after CORS failures', async () => {
+  const source = await materializeProviderImageSource('https://cdn.proxy.example/image.png', {
+    requestUrl: 'https://proxy.example/v1/images/generations',
+    forceFetch: true,
+    allowedHostSuffixes: ['proxy.example'],
+    allowBrowserFallback: true,
+    fetchImpl: async () => { throw new TypeError('Failed to fetch'); },
+  });
+
+  assert.equal(source, 'https://cdn.proxy.example/image.png');
+});
+
 test('forced output credentials can be restricted to an exact origin', async () => {
   const calls = [];
   const fetchImpl = async (url, options) => {

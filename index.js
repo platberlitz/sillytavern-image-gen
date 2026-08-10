@@ -8706,7 +8706,10 @@ async function genProxy(prompt, negative, s, signal, options = {}) {
                 headers: {},
                 signal: controller.signal,
                 fetchImpl: corsFetch,
-                allowBrowserFallback: false,
+                allowBrowserFallback: true,
+                forceFetch: true,
+                allowedHostSuffixes: [new URL(requestUrl).hostname],
+                materializeBytes: createTransientImageObjectUrl,
             });
         };
         if (endpointMode === "images_generations"
