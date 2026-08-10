@@ -452,7 +452,6 @@ const QIG_DEFAULT_COLLAPSED_SECTIONS = {
     sectionCreate: true,
     sectionContext: true,
     sectionAutomation: true,
-    providerSettings: false,
     promptAdvanced: true,
     injectOptions: true,
     advancedSettings: true,
@@ -632,7 +631,6 @@ function setupSettingsSearch() {
             ["sectionCreate", "qig-section-create-toggle", "qig-section-create-content"],
             ["sectionContext", "qig-section-context-toggle", "qig-section-context-content"],
             ["sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content"],
-            ["providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content"],
             ["promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content"],
             ["injectOptions", "qig-inject-options-toggle", "qig-inject-options"],
             ["advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings"],
@@ -16850,8 +16848,6 @@ function createUI() {
     const sectionContextExpanded = collapsed.sectionContext ? "false" : "true";
     const sectionAutomationHidden = collapsed.sectionAutomation ? "hidden" : "";
     const sectionAutomationExpanded = collapsed.sectionAutomation ? "false" : "true";
-    const providerSettingsHidden = collapsed.providerSettings ? "hidden" : "";
-    const providerSettingsExpanded = collapsed.providerSettings ? "false" : "true";
     const promptAdvancedHidden = collapsed.promptAdvanced ? "hidden" : "";
     const promptAdvancedExpanded = collapsed.promptAdvanced ? "false" : "true";
     const injectOptionsCollapsed = collapsed.injectOptions && !s.injectEnabled;
@@ -16997,15 +16993,7 @@ function createUI() {
                         <div class="qig-card-title">Output</div>
                         <small class="qig-muted">Set image dimensions and count. Unsupported controls are hidden for the active provider.</small>
                     </div>
-                    <div class="qig-provider-card qig-collapsible">
-                        <button id="qig-provider-settings-toggle" type="button" class="qig-collapsible__header" aria-expanded="${providerSettingsExpanded}" aria-controls="qig-provider-settings-content">
-                            <span>
-                                <span class="qig-card-title">Active Provider Settings</span>
-                                <small>Credentials, model IDs, and provider-specific options for ${esc(activeProviderName)}.</small>
-                            </span>
-                            <span class="qig-collapsible__icon fa-solid ${collapsed.providerSettings ? "fa-chevron-right" : "fa-chevron-down"}" aria-hidden="true"></span>
-                        </button>
-                        <div id="qig-provider-settings-content" class="qig-collapsible__content" ${providerSettingsHidden}>
+                    <div class="qig-provider-card">
                 <div id="qig-pollinations-settings" class="qig-provider-section">
                     <label>Pollinations API Key <small>(optional, required for paid models)</small></label>
                     <input id="qig-pollinations-key" type="password" value="${esc(s.pollinationsKey)}" placeholder="pk_... or sk_...">
@@ -17800,7 +17788,6 @@ function createUI() {
                         <small class="qig-muted">Use reference tokens in the template. Multipart mode converts inline images to uploaded file parts; JSON mode sends data URLs.</small>
                     </div>
                 </div>
-                        </div>
                     </div>
                     </div>
                 </section>
@@ -18273,7 +18260,6 @@ function createUI() {
     setupQigCollapsibleSection("sectionCreate", "qig-section-create-toggle", "qig-section-create-content");
     setupQigCollapsibleSection("sectionContext", "qig-section-context-toggle", "qig-section-context-content");
     setupQigCollapsibleSection("sectionAutomation", "qig-section-automation-toggle", "qig-section-automation-content");
-    setupQigCollapsibleSection("providerSettings", "qig-provider-settings-toggle", "qig-provider-settings-content");
     setupQigCollapsibleSection("promptAdvanced", "qig-prompt-advanced-toggle", "qig-prompt-advanced-content");
     setupQigCollapsibleSection("injectOptions", "qig-inject-options-toggle", "qig-inject-options");
     setupQigCollapsibleSection("advancedSettings", "qig-advanced-settings-toggle", "qig-advanced-settings");
