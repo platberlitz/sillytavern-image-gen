@@ -8,6 +8,14 @@
     --qig-line-strong: color-mix(in srgb, var(--SmartThemeBorderColor) 45%, var(--SmartThemeBodyColor) 55%);
     --qig-text-soft: color-mix(in srgb, var(--SmartThemeBodyColor) 82%, var(--SmartThemeBlurTintColor) 18%);
     --qig-success: color-mix(in srgb, var(--qig-accent) 76%, var(--SmartThemeBodyColor) 24%);
+    --qig-danger: #e94560;
+    --qig-warning: #c98b2e;
+    --qig-scrim: rgba(0, 0, 0, 0.72);
+    --qig-backdrop: rgba(0, 0, 0, 0.9);
+    --qig-badge-global: #3572b8;
+    --qig-badge-card: #b06010;
+    --qig-badge-char: #35793c;
+    --qig-speed: 180ms;
     --qig-ease: cubic-bezier(0.22, 1, 0.36, 1);
     --qig-radius: 8px;
 }
@@ -341,7 +349,7 @@
 .qig-settings-search-status {
     font-size: 11px;
     font-weight: 600;
-    color: var(--qig-text-muted);
+    color: var(--qig-text-soft);
     padding-left: 2px;
 }
 
@@ -625,7 +633,7 @@
     width: 40px;
     height: 40px;
     object-fit: cover;
-    border: 1px solid #333;
+    border: 1px solid var(--qig-line);
     border-radius: 4px;
 }
 
@@ -638,7 +646,7 @@
     padding: 0;
     border: 0;
     border-radius: 50%;
-    background: #e94560;
+    background: var(--qig-danger);
     color: var(--SmartThemeBodyColor);
     font-size: 13px;
     line-height: 1;
@@ -647,7 +655,7 @@
 
 .qig-reference-image--invalid img,
 .qig-reference-image--invalid {
-    border-color: #e94560;
+    border-color: var(--qig-danger);
 }
 
 .qig-row {
@@ -949,7 +957,7 @@
     border: 0;
     border-radius: 50%;
     color: var(--SmartThemeBodyColor);
-    background: color-mix(in srgb, #e94560 72%, transparent);
+    background: color-mix(in srgb, var(--qig-danger) 72%, transparent);
     cursor: pointer;
 }
 
@@ -1036,7 +1044,7 @@
     left: 0;
     right: 0;
     bottom: 0;
-    background: rgba(0,0,0,0.9);
+    background: var(--qig-backdrop);
     z-index: 99999;
     justify-content: center;
     align-items: center;
@@ -1089,7 +1097,7 @@
 }
 
 .qig-close-btn:hover {
-    background: rgba(255,255,255,0.1);
+    background: color-mix(in srgb, var(--SmartThemeBodyColor) 10%, transparent);
 }
 
 .qig-gallery-panel {
@@ -1139,7 +1147,7 @@
     padding: 0;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 6px;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--qig-surface);
     color: var(--SmartThemeBodyColor);
     cursor: pointer;
 }
@@ -1163,15 +1171,15 @@
     left: 0;
     overflow: hidden;
     padding: 3px 5px;
-    background: rgba(0, 0, 0, 0.72);
-    color: #ddd;
+    background: var(--qig-scrim);
+    color: #fff;
     font-size: 9px;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
 .qig-gallery-card--ephemeral {
-    border-color: #c98b2e;
+    border-color: var(--qig-warning);
 }
 
 .qig-gallery-unavailable {
@@ -1224,7 +1232,7 @@
     max-height: 60vh;
     overflow-y: auto;
     white-space: pre-wrap;
-    background: rgba(0,0,0,0.3);
+    background: var(--qig-surface);
     padding: 12px;
     margin: 0;
     font-family: monospace;
@@ -1281,7 +1289,7 @@
 .qig-form-section {
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
-    background: rgba(0, 0, 0, 0.18);
+    background: var(--qig-surface);
     padding: 14px;
 }
 
@@ -1329,7 +1337,7 @@
     padding: 8px 10px;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--qig-surface-soft);
     font-size: 11px;
 }
 
@@ -1352,22 +1360,22 @@
 }
 
 .qig-scope-badge--global {
-    background: #4a90d9;
+    background: var(--qig-badge-global);
 }
 
 .qig-scope-badge--card {
-    background: #d9822b;
+    background: var(--qig-badge-card);
 }
 
 .qig-scope-badge--char {
-    background: #5cb85c;
+    background: var(--qig-badge-char);
 }
 
 .qig-filter-summary {
     padding: 12px;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
-    background: rgba(0, 0, 0, 0.18);
+    background: var(--qig-surface);
 }
 
 .qig-filter-summary-grid {
@@ -1379,8 +1387,8 @@
 .qig-filter-summary-card {
     padding: 8px 10px;
     border-radius: 8px;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--qig-line);
+    background: var(--qig-surface-soft);
 }
 
 .qig-filter-summary-label {
@@ -1491,7 +1499,7 @@
     flex-direction: column;
     border: 1px solid var(--SmartThemeBorderColor);
     border-radius: 10px;
-    background: rgba(0, 0, 0, 0.18);
+    background: var(--qig-surface);
     overflow: hidden;
 }
 
