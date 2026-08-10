@@ -1725,29 +1725,9 @@
         grid-template-columns: 1fr;
     }
 
-    .qig-action-bar {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 6px;
-    }
-
-    #qig-generate-btn.qig-primary-action {
-        grid-column: 1 / -1;
-    }
-
-    .qig-action-bar__secondary,
-    .qig-action-bar__prominent,
-    #qig-generate-btn.qig-primary-action {
-        width: 100%;
-        min-height: 44px;
-    }
-
     .qig-shortcut-hint,
     .qig-hero-note {
         display: none;
-    }
-
-    #qig-generate-btn.qig-primary-action {
-        width: 100%;
     }
 
     .qig-action-strip {
@@ -1791,12 +1771,6 @@
 
     #qig-settings textarea {
         font-size: 16px;
-    }
-
-    #qig-settings #qig-profile-del {
-        width: 44px;
-        min-width: 44px;
-        min-height: 44px;
     }
 
     .qig-size-row {
