@@ -456,7 +456,7 @@ const QIG_DEFAULT_COLLAPSED_SECTIONS = {
     promptAdvanced: true,
     injectOptions: true,
     advancedSettings: true,
-    setupPanel: false,
+    setupPanel: true,
 };
 let qigKeyboardShortcutsBound = false;
 
