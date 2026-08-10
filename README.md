@@ -436,6 +436,24 @@ If an update breaks your setup, switch back to the previous version line without
 
 ## Changelog
 
+### 3.0.1
+
+No breaking changes. Existing settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
+
+**Fixed**
+
+- Palette icons beside messages and the input bar now use SillyTavern's own controls. The empty square is gone, themes can style both controls properly, and hover feedback works again after generation.
+- NovelAI-compatible proxies now map requested sizes to the nearest official resolution instead of reducing every choice to portrait, landscape, or square. Saved metadata reports the dimensions actually sent.
+- Reverse Proxy image results are now materialised before generation finishes. Temporary URLs are copied into QIG when the proxy permits it; expired or unreadable URLs fail instead of becoming broken gallery entries, while CORS-only failures keep the existing browser fallback.
+- Light-theme gallery surfaces, logs, filter cards, scope badges, warnings, scrims, and settings microcopy now use QIG's theme tokens. The tiny 60%-opacity helper text is back to a readable 11px.
+- Settings search now reveals matching active-provider fields instead of leaving them hidden behind another collapsed section.
+- Drawer actions now respond to the drawer's own width instead of duplicate viewport rules.
+
+**Changed**
+
+- `More settings` starts collapsed on fresh profiles. Existing saved collapse state still wins.
+- Removed the extra `Active Provider Settings` disclosure. Provider controls now sit directly under `Image Provider & Output`, where search can reach them.
+
 ### 3.0.0
 
 No breaking changes. Settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
