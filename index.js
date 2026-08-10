@@ -110,6 +110,7 @@ import {
 } from "./lib/provider-adapters.js";
 import {
     buildNanoGptReferenceFields,
+    getClosestSupportedImageSize,
     getFalEffectiveGuidance,
     getFalEffectiveSteps,
     getGlmImageResolution,
@@ -7025,7 +7026,7 @@ async function genNovelAI(prompt, negative, s, signal) {
             ? proxyUrl
             : buildNovelAIProxyRequestUrl(proxyUrl, "chat");
         assertSafeConfigurableEndpoint(v1Url, "NovelAI proxy URL");
-        const v1Size = s.width > s.height ? "1216:832" : s.width < s.height ? "832:1216" : "1024:1024";
+        const v1Size = getClosestSupportedImageSize(s, NAI_RESOLUTIONS.map(r => `${r.w}x${r.h}`)).replace("x", ":");
         const [v1Width, v1Height] = v1Size.split(":").map(Number);
         const v1Payload = {
             model: s.naiModel,
@@ -7132,56 +7133,6 @@ function getConfiguredImageSize(settings = getSettings()) {
     const width = Number(settings?.width) || 1024;
     const height = Number(settings?.height) || 1024;
     return `${width}x${height}`;
-}
-
-function parseSupportedImageSizeOption(option, targetPixels) {
-    const size = String(option || "").trim();
-    const dimensionMatch = size.match(/^(\d+)x(\d+)$/i);
-    if (dimensionMatch) {
-        const width = Number(dimensionMatch[1]);
-        const height = Number(dimensionMatch[2]);
-        if (width > 0 && height > 0) return { size, ratio: width / height, pixels: width * height };
-    }
-
-    const ratioMatch = size.match(/^(\d+(?:\.\d+)?):(\d+(?:\.\d+)?)$/);
-    if (ratioMatch) {
-        const width = Number(ratioMatch[1]);
-        const height = Number(ratioMatch[2]);
-        if (width > 0 && height > 0) return { size, ratio: width / height, pixels: targetPixels };
-    }
-
-    return null;
-}
-
-function getClosestSupportedImageSize(settings, supportedSizes) {
-    const width = Number(settings?.width) || 1024;
-    const height = Number(settings?.height) || 1024;
-    const configuredSize = `${width}x${height}`;
-    if (!Array.isArray(supportedSizes) || !supportedSizes.length) return configuredSize;
-
-    const targetPixels = width * height;
-    const targetRatio = width / height;
-    const parsedSizes = supportedSizes
-        .map(size => parseSupportedImageSizeOption(size, targetPixels))
-        .filter(Boolean);
-    if (!parsedSizes.length) return configuredSize;
-
-    const exact = parsedSizes.find(size => size.size.toLowerCase() === configuredSize.toLowerCase());
-    if (exact) return exact.size;
-
-    let best = parsedSizes[0];
-    let bestScore = Infinity;
-    for (const size of parsedSizes) {
-        const ratioScore = Math.abs(Math.log(size.ratio / targetRatio));
-        const pixelScore = Math.abs(Math.log(size.pixels / targetPixels));
-        const score = (ratioScore * 3) + pixelScore;
-        if (score < bestScore) {
-            best = size;
-            bestScore = score;
-        }
-    }
-
-    return best.size;
 }
 
 function getOpenAICompatibleImageSize(provider, model, settings = getSettings()) {

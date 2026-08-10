@@ -20,6 +20,7 @@ import {
 } from "../lib/hosted-provider.js";
 import {
     buildNanoGptReferenceFields,
+    getClosestSupportedImageSize,
     getFalEffectiveSteps,
     getFalEffectiveGuidance,
     getNanoGptEffectiveResolution,
@@ -33,6 +34,19 @@ import {
     registerPollinationsModelMetadata,
     validateReplicateSdxlVersion,
 } from "../lib/provider-capabilities.js";
+
+const NAI_RESOLUTIONS = [
+    "512x768", "768x512", "640x640", "832x1216", "1216x832", "1024x1024",
+    "1024x1536", "1536x1024", "1472x1472", "1088x1920", "1920x1088",
+];
+
+test("NovelAI proxy sizes map to the nearest official resolution", () => {
+    assert.equal(getClosestSupportedImageSize({ width: 832, height: 1216 }, NAI_RESOLUTIONS), "832x1216");
+    assert.equal(getClosestSupportedImageSize({ width: 1024, height: 1536 }, NAI_RESOLUTIONS), "1024x1536");
+    assert.equal(getClosestSupportedImageSize({ width: 512, height: 512 }, NAI_RESOLUTIONS), "640x640");
+    assert.equal(getClosestSupportedImageSize({ width: 2048, height: 1024 }, NAI_RESOLUTIONS), "1920x1088");
+    assert.equal(getClosestSupportedImageSize({ width: 900, height: 700 }, []), "900x700");
+});
 
 test("CivitAI v2 workflow payload follows the mandatory imageGen contract", () => {
     const body = buildCivitaiWorkflowBody({
