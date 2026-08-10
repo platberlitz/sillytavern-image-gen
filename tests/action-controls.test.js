@@ -20,6 +20,20 @@ test("icon actions are native named buttons", () => {
     assert.equal(button.getAttribute("aria-label"), "Generate image from message 3");
 });
 
+test("icon actions can use host-native div controls", () => {
+    const dom = new JSDOM();
+    const button = createAccessibleIconButton(dom.window.document, {
+        tagName: "div",
+        label: "Generate image",
+    });
+
+    assert.equal(button.tagName, "DIV");
+    assert.equal(button.getAttribute("role"), "button");
+    assert.equal(button.getAttribute("tabindex"), "0");
+    assert.equal(button.getAttribute("aria-label"), "Generate image");
+    assert.equal(button.hasAttribute("type"), false);
+});
+
 test("the main generation control remains an enabled Cancel action without a palette", () => {
     const hiddenPalette = resolveMainGenerationControlState({
         active: true,

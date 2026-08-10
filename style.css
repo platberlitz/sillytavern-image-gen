@@ -998,35 +998,6 @@
     line-height: 1.2;
 }
 
-#qig-input-btn {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    cursor: pointer;
-    padding: 2px 5px;
-    font-size: 1em;
-    line-height: 1;
-    opacity: 0.7;
-}
-#qig-input-btn:hover {
-    opacity: 1;
-}
-
-#qig-input-btn:focus-visible,
-.qig-message-generate:focus-visible {
-    outline: 2px solid var(--SmartThemeQuoteColor);
-    outline-offset: 2px;
-}
-
-button.qig-message-generate {
-    appearance: none;
-    border: 0;
-    background: transparent;
-    color: inherit;
-    font: inherit;
-}
-
 .qig-message-generate--fallback {
     margin-left: 4px;
 }

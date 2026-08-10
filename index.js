@@ -3533,12 +3533,10 @@ function setGenerationActiveUI(active, { disableGenerateButton = false } = {}) {
             paletteBtn.classList.remove("fa-palette");
             paletteBtn.classList.add("fa-spinner", "fa-spin");
             paletteBtn.title = "Cancel Generation";
-            paletteBtn.style.opacity = "0.7";
         } else {
             paletteBtn.classList.remove("fa-spinner", "fa-spin");
             paletteBtn.classList.add("fa-palette");
             paletteBtn.title = "Generate Image (right-click for presets)";
-            paletteBtn.style.opacity = "0.7";
         }
     }
 
@@ -19521,7 +19519,8 @@ function getMessageGenerateActionMount(messageElement) {
 
 function createMessageGenerateActionButton(messageIndex) {
     const button = createAccessibleIconButton(document, {
-        className: `mes_button fa-solid fa-palette ${QIG_MESSAGE_ACTION_CLASS}`,
+        tagName: "div",
+        className: `mes_button fa-solid fa-palette interactable ${QIG_MESSAGE_ACTION_CLASS}`,
         label: `Generate image from message ${messageIndex + 1} with Quick Image Gen`,
         title: "Generate image from this message with Quick Image Gen",
     });
@@ -19705,6 +19704,7 @@ function addInputButton() {
     if (getSettings().disablePaletteButton) return;
 
     const btn = createAccessibleIconButton(document, {
+        tagName: "div",
         id: "qig-input-btn",
         className: "fa-solid fa-palette interactable",
         label: "Generate image; right-click for presets",
