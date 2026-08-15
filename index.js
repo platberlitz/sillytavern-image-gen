@@ -5889,11 +5889,14 @@ async function prepareQigFinalPrompt({
     forcePromptWasLLM = false,
 } = {}) {
     let pipelineState = createPromptPipelineState({ sourceText: sourcePrompt, worldInfoText });
+    // Filled by the first pass; later passes (Back from the final review) reuse it.
+    const reviewedRequest = { request: "", prefill: "" };
 
     while (true) {
         const generatedPrompt = await generateLLMPrompt(settings, sourcePrompt, signal, {
             isMultiMessageScene,
             worldInfoText,
+            reviewedRequest,
         });
         if (signal?.aborted) throw getAbortError(signal);
         const promptWasLLM = forcePromptWasLLM || (settings.useLLMPrompt && generatedPrompt !== sourcePrompt);
@@ -6804,7 +6807,18 @@ Tags:`;
 
         let effectivePrefill = resolvedPrefill;
         instructionWithEntropy = appendWorldInfoToRequest(instructionWithEntropy, options.worldInfoText);
-        if (s.reviewBeforeGenerate || !!options.worldInfoText) {
+        // Going back from the final prompt review re-runs the Text AI with the request the user
+        // already reviewed; it must not make them sit through the request window a second time.
+        const reviewedRequest = options.reviewedRequest;
+        if (reviewedRequest?.request) {
+            // Keep the user's edits, but the previous pass's cache-busting stamp with them would
+            // hand back the cached answer; swap in this pass's stamp so "Re-run" actually re-runs.
+            instructionWithEntropy = reviewedRequest.request
+                .replace(/^\[\d{10,}\]\n/, `[${timestamp}]\n`)
+                .replace(/\{\{\d{10,}_[a-z0-9]+\}\}/, entropyInline)
+                .replace(/\[ref:[a-z0-9]+\]/, `[ref:${randomPart}]`);
+            effectivePrefill = reviewedRequest.prefill ?? effectivePrefill;
+        } else if (s.reviewBeforeGenerate || !!options.worldInfoText) {
             const reviewed = await reviewTextAIRequest(instructionWithEntropy, {
                 title: "Review Image Prompt Request",
                 description: "Review the exact QIG instruction and assistant prefill sent to Text AI. The selected scene, character context, enabled identity rules, and matched lore are editable here.",
@@ -6813,6 +6827,10 @@ Tags:`;
             });
             instructionWithEntropy = reviewed.request;
             effectivePrefill = reviewed.prefill;
+            if (reviewedRequest) {
+                reviewedRequest.request = instructionWithEntropy;
+                reviewedRequest.prefill = effectivePrefill;
+            }
         }
 
         log(isCustom ? "Custom instruction mode" : "Built-in instruction mode");
@@ -11406,7 +11424,10 @@ function displayImage(entryOrUrl, skipGallery, returnFocusElement = null) {
                 if (s.insertAsHiddenReply) {
                     await insertImageAsHiddenReply(entry);
                 } else {
-                    await insertImageIntoMessage(entry, resolveManualInsertFallbackIndex(getContext()?.chat, s), { ignoreSourceIdentity: true });
+                    // No explicit index: the entry carries the message it was generated from
+                    // (per-message palette button), and insertImageIntoMessage prefers that over
+                    // the "latest message" fallback setting.
+                    await insertImageIntoMessage(entry, popupInsertTargetIndex, { ignoreSourceIdentity: true });
                 }
                 announceChatInsert("Image inserted into the chat.");
             } catch (err) {
@@ -11614,7 +11635,7 @@ function displayBatchResults(results, returnFocusElement = null) {
             e.stopPropagation();
             try {
                 for (const entry of entries) {
-                    await insertImageIntoMessage(entry, resolveManualInsertFallbackIndex(getContext()?.chat, getSettings()), { ignoreSourceIdentity: true });
+                    await insertImageIntoMessage(entry, null, { ignoreSourceIdentity: true });
                 }
                 // Undo only reverses the last one, so don't offer it for a multi-image insert.
                 rememberChatInsertUndo(null);
@@ -11656,7 +11677,7 @@ function displayBatchResults(results, returnFocusElement = null) {
             e.stopPropagation();
             try {
                 const activeEntry = getCurrentEntry();
-                await insertImageIntoMessage(activeEntry, resolveManualInsertFallbackIndex(getContext()?.chat, getSettings()), { ignoreSourceIdentity: true });
+                await insertImageIntoMessage(activeEntry, null, { ignoreSourceIdentity: true });
                 announceChatInsert("Image inserted into the chat.");
             } catch (err) {
                 console.error("[Quick Image Gen] Insert failed:", err);
@@ -11873,7 +11894,9 @@ function showPromptReviewStage({
                     <textarea id="qig-review-prefill" class="qig-review-prefill" rows="3" spellcheck="false"></textarea>
                     <p class="qig-review-field-note">When the connection supports it, this becomes the assistant's starting words; otherwise it is sent as an instruction to continue from this text.</p>` : ""}
                 </div>`;
-        const backLabel = isResult ? "Re-run Text AI" : "Back";
+        // On the final review, Back re-runs the Text AI with the request already reviewed
+        // (no second request window), so name it for what it does.
+        const backLabel = (isResult || isFinal) ? "Re-run Text AI" : "Back";
         const primaryLabel = isRequest ? "Run Text AI" : (isFinal ? "Generate" : "Continue");
         const activeStage = isFinal ? 3 : (isResult ? 2 : 1);
         const popup = createPopup("qig-prompt-review-popup", title, `
