@@ -436,6 +436,15 @@ If an update breaks your setup, switch back to the previous version line without
 
 ## Changelog
 
+### 3.1.1
+
+No breaking changes.
+
+**Fixed**
+
+- Going back from the final prompt review no longer makes you sit through the Text AI request window again. It re-runs the Text AI with the request as you already edited it (with a fresh cache-busting stamp, so it is a real re-run), and the button now says `Re-run Text AI`.
+- The per-message palette button now inserts into the message it was clicked on. The finished-image and batch dialogs were ignoring the source message and always using the "latest message" fallback. Images generated from the panel still follow the manual insert target setting.
+
 ### 3.1.0
 
 No breaking changes. Existing settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
