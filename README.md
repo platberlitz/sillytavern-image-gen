@@ -436,6 +436,37 @@ If an update breaks your setup, switch back to the previous version line without
 
 ## Changelog
 
+### 3.1.0
+
+No breaking changes. Existing settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
+
+**Fixed**
+
+- The Logs window opened empty every time. The log store had moved to a redacting buffer and the window still read it as a plain list.
+- Escape now closes the dialog you are looking at, and only that dialog. SillyTavern returned focus to the launcher button after every click, so key presses never reached QIG's own dialogs and Escape fell through to the app behind. Focus now stays inside the dialog.
+- `Ctrl+Enter` now generates from inside QIG's own prompt and settings fields, and no longer double-fires SillyTavern's regenerate confirmation. SillyTavern keeps its own shortcut everywhere outside the extension.
+- The floating status no longer claims "Generating" while it is waiting for you in the prompt review dialog, and the panel heading says "Generating" only while something is being generated.
+- Arrow keys keep working in the batch viewer after clicking inside it.
+- The mobile toolbar is opaque again; settings no longer show through it while scrolling.
+- Five hardcoded colours in indent guides and clear buttons now follow the theme.
+- Repeated tags are stripped from the final positive and negative prompts, keeping the first occurrence of each. Weighted variants like `(masterpiece:1.2)` are left alone.
+- Two hidden preview images no longer carry an empty `src`.
+- Settings search only counts settings it can show. Provider sections other than the active one are now moved out of the page instead of hidden, so they no longer inflate the match count or the tab order.
+
+**Changed**
+
+- The finished-image and batch dialogs lead with a single **Insert into Chat** action; the other actions use the same icon set as the rest of the extension instead of emoji.
+- Inserting an image into the chat now confirms itself and offers an eight-second undo. Undo reverses exactly what it added and refuses if the chat has changed since. Inserting a whole batch does not offer undo.
+- Quick Setup takes you straight to the provider settings it names for local, proxy, and custom providers, opening the drawer and sections and focusing the first field.
+- The local A1111 panel keeps Model and LoRAs in front; VAE, CLIP skip, scheduler, face restore, tiling, and variation seed sit in a `Model tuning` group that starts closed.
+- The Prompt field dims and says it is not used while the source is `Chat scene` or `AI-tagged`.
+- "Recipe" is now "Preset" everywhere; the section is `Presets & Prompting`.
+- The Contextual Filters summary is one sentence instead of three number tiles.
+- The panel no longer repeats its own name under the drawer header, and the palette right-click menu is a real menu to assistive software with arrow-key navigation.
+- Empty gallery, prompt history, and log views say what fills them.
+- Small text was raised to a 12px floor throughout, and helper text is no longer faded. Delete and remove buttons inside dialogs are thumb-sized on phones.
+- Counts read as sentences ("Generating 1 image", "2 links skipped"), the wizard is titled "Set up Quick Image Gen", and two developer-facing warnings were rewritten in plain language.
+
 ### 3.0.1
 
 No breaking changes. Existing settings, presets, connection profiles, character overrides, and contextual filters carry over untouched.
