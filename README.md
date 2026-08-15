@@ -49,12 +49,12 @@ QIG synchronizes active settings, Connection Profiles, generation presets, Comfy
 ## Quick Start
 
 1. Open the QIG panel in SillyTavern. On a fresh install a Quick Setup wizard opens: pick a provider, paste a key if needed, choose a style. Re-open it any time with the `Quick Setup` button.
-2. Fresh installs also get three starter presets (free Pollinations recipes) in the Preset dropdown.
+2. Fresh installs also get three starter presets for free Pollinations models in the Preset dropdown.
 3. Fresh installs default **Prompt source** to `Chat scene`, which pulls context from the current chat. Switch it to `Manual` to type your own prompt.
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
-5. Save the generation recipe as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
+5. Save the generation setup as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
 
-The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Recipes & Prompting, Context Rules & Media, then Automation & Delivery. Connection profiles still keep credentials and models separate from portable generation presets. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Presets & Prompting, Context Rules & Media, then Automation & Delivery. Connection profiles still keep credentials and models separate from portable generation presets. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
 
 ### Prompt source
 
@@ -402,7 +402,7 @@ Store provider connection settings (API keys, model IDs, URLs, provider-specific
 
 ### Generation Presets
 
-Store the core generation recipe: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Custom API presets store the declarative request/response and polling mapping, while the connection profile keeps URLs, auth, model, and reference images local. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a recipe.
+Store the core generation setup: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Custom API presets store the declarative request/response and polling mapping, while the connection profile keeps URLs, auth, model, and reference images local. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a preset.
 
 An active preset is highlighted only while the covered settings still match it. Editing a covered value returns the selector to **Current settings**.
 
@@ -445,7 +445,7 @@ No breaking changes. Existing settings, presets, connection profiles, character 
 - Palette icons beside messages and the input bar now use SillyTavern's own controls. The empty square is gone, themes can style both controls properly, and hover feedback works again after generation.
 - NovelAI-compatible proxies now map requested sizes to the nearest official resolution instead of reducing every choice to portrait, landscape, or square. Saved metadata reports the dimensions actually sent.
 - Reverse Proxy image results are now materialised before generation finishes. Temporary URLs are copied into QIG when the proxy permits it; expired or unreadable URLs fail instead of becoming broken gallery entries, while CORS-only failures keep the existing browser fallback.
-- Light-theme gallery surfaces, logs, filter cards, scope badges, warnings, scrims, and settings microcopy now use QIG's theme tokens. The tiny 60%-opacity helper text is back to a readable 11px.
+- Light-theme gallery surfaces, logs, filter cards, scope badges, warnings, scrims, and settings microcopy now use QIG's theme tokens. The tiny 60%-opacity helper text is back to a readable size.
 - Settings search now reveals matching active-provider fields instead of leaving them hidden behind another collapsed section.
 - Drawer actions now respond to the drawer's own width instead of duplicate viewport rules.
 
