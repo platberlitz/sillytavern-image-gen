@@ -155,6 +155,7 @@ import {
 } from "./lib/context-media.js";
 import {
     applyStateBeforePersistence,
+    buildChatHistoryMessages,
     createAccountStorageScope,
     createAbortableSerializedRunner,
     createConversationCheckpoint,
@@ -1252,6 +1253,7 @@ const defaultSettings = {
     llmOverrideProfileId: "",
     llmOverridePreset: "",
     llmOverrideMaxTokens: 500,
+    llmOverrideChatDepth: 0,
     // ComfyUI Flux/UNET support
     comfySkipNegativePrompt: false,
     comfyFluxClipModel1: "",
@@ -6216,6 +6218,26 @@ function extractLLMResponse(response) {
     return extractLLMResponseDetails(response).text;
 }
 
+// Recent chat turns for the separate AI. Off (0) by default: helper requests are standalone,
+// and the override profile may point at a different provider than the chat does. The history
+// ends at the scene being illustrated and skips hidden messages and QIG's own image messages.
+function buildOverrideChatHistory(s, ctx) {
+    const sceneEntries = shouldUseChatMessageScene(s, ctx) ? getSceneMessageEntries(s, ctx) : [];
+    const throughIndex = sceneEntries.reduce((latest, entry) => (
+        Number.isInteger(entry?.index) ? Math.max(latest, entry.index) : latest
+    ), -1);
+    return buildChatHistoryMessages(ctx?.chat, {
+        depth: s?.llmOverrideChatDepth,
+        throughIndex: throughIndex >= 0 ? throughIndex : null,
+        formatMessage: (message) => {
+            if (!message || message.is_system || isGeneratedImageMessage(message)) return null;
+            const text = resolveSceneMessageSource(message)?.text;
+            if (!text) return null;
+            return { role: message.is_user ? "user" : "assistant", content: `${getSceneMessageSpeakerName(message, ctx)}: ${text}` };
+        },
+    });
+}
+
 async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { assistantPrefill = "", returnMeta = false, settings = null } = {}) {
     const s = settings || activeGenerationRun?.settings || getSettings();
     const requestedMaxTokens = s.llmOverrideMaxTokens || 500;
@@ -6250,16 +6272,17 @@ async function callOverrideLLM(instruction, systemPrompt = "", signal = null, { 
         return returnMeta ? fallbackMeta : fallbackText;
     }
 
+    const context = getContext();
+    const history = buildOverrideChatHistory(s, context);
     const messages = [];
     if (systemPrompt) messages.push({ role: "system", content: systemPrompt });
-    messages.push({ role: "user", content: instruction });
+    messages.push(...history, { role: "user", content: instruction });
     if (assistantPrefill) messages.push({ role: "assistant", content: assistantPrefill });
 
     const requestedPreset = s.llmOverridePreset || "";
-    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${requestedPreset || "profile default"})`);
+    log(`LLM Override: Using connection profile '${s.llmOverrideProfileId}' (preset: ${requestedPreset || "profile default"}${history.length ? `, ${plural(history.length, "chat message")} of history` : ""})`);
 
     try {
-        const context = getContext();
         const response = await runWithInternalLLMRequest("LLM override profile request", () =>
             runSerializedTextAITask(() => sendIsolatedConnectionManagerRequest({
                 service: CMRS,
@@ -15886,6 +15909,7 @@ function refreshAllUI(s) {
         "qig-llm-override-profile": "llmOverrideProfileId",
         "qig-llm-override-preset-select": "llmOverridePreset",
         "qig-llm-override-max": "llmOverrideMaxTokens",
+        "qig-llm-override-history": "llmOverrideChatDepth",
         "qig-proxy-chat-system": "proxyChatImageSystemPrompt",
         "qig-proxy-chat-max-tokens": "proxyChatImageMaxTokens"
     };
@@ -16911,6 +16935,7 @@ function normalizeGenerationNumericSettings(settings) {
     normalize("proxyComfyTimeout", defaultSettings.proxyComfyTimeout, 10, 600, 1, 10);
     normalize("proxyChatImageMaxTokens", defaultSettings.proxyChatImageMaxTokens, PROXY_CHAT_IMAGE_MAX_TOKENS_MIN, PROXY_CHAT_IMAGE_MAX_TOKENS_MAX, 1, PROXY_CHAT_IMAGE_MAX_TOKENS_MIN);
     normalize("llmOverrideMaxTokens", defaultSettings.llmOverrideMaxTokens, 50, 4096, 1, 50);
+    normalize("llmOverrideChatDepth", defaultSettings.llmOverrideChatDepth, 0, 1000, 1, 0);
     normalize("batchCount", defaultSettings.batchCount, 1, 10, 1, 1);
     normalize("hostedTimeout", defaultSettings.hostedTimeout, 30, 1800, 1, 30);
     return settings;
@@ -18419,6 +18444,9 @@ function createUI() {
                         <select id="qig-llm-override-preset-select" style="width:100%;"></select>
                         <label style="font-size: 12px;margin-top:4px;">Max Tokens</label>
                         <input id="qig-llm-override-max" type="number" value="${esc(s.llmOverrideMaxTokens || 500)}" min="50" max="4096" style="width:100%;">
+                        <label style="font-size: 12px;margin-top:4px;">Chat history messages</label>
+                        <input id="qig-llm-override-history" type="number" value="${esc(s.llmOverrideChatDepth || 0)}" min="0" max="1000" style="width:100%;">
+                        <small>Recent chat messages sent ahead of the request, for instructions that refer to the conversation so far. 0 sends the request on its own.</small>
                     </div>
                     </div>
                 </div>
@@ -19567,6 +19595,7 @@ function createUI() {
         saveSettingsDebounced();
     };
     bind("qig-llm-override-max", "llmOverrideMaxTokens", true);
+    bind("qig-llm-override-history", "llmOverrideChatDepth", true);
     const widthEl = document.getElementById("qig-width");
     const heightEl = document.getElementById("qig-height");
     const onSizeChange = () => {

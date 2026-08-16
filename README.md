@@ -122,6 +122,7 @@ What each prompt option is for, with typical situations:
 - **Include matched World Info**: adds lore whose keywords appear in the selected scene (canonical outfits, locations, races) so the Text AI can use those details. Constant entries always insert; keyword entries insert when they match the scene text or recent messages.
 - **Message range**: which chat messages form the scene. `-1` is the last message, `last3` the three newest, `5-9` a specific past moment you want illustrated, and `-1,3` a mix of both.
 - **Quality / lighting / artist toggles**: append extra requirements that mostly help booru-style checkpoints. Leave them off for GPT Image or Gemini-class models, which follow the plain description on their own.
+- **Use separate AI for image prompts**: sends the Text AI requests to a Connection Manager profile instead of your main chat model. Those requests are standalone - the profile only sees QIG's request, not the chat. If your custom instruction talks about 'the conversation so far', set `Chat history messages` above 0 and that many recent messages go ahead of the request (ending at the scene being illustrated; hidden messages and QIG's own image messages are skipped). It's off by default because the chat then goes to whatever provider that profile points at.
 
 ### Prompt review, identity, and World Info
 

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     applyStateBeforePersistence,
+    buildChatHistoryMessages,
     createAccountStorageScope,
     createAbortableSerializedRunner,
     createConversationCheckpoint,
@@ -161,6 +162,23 @@ test("Connection Manager preset overrides use cloned request state and reject mu
         preset: "temporary",
     }), /does not support an isolated preset override/);
     assert.equal(profile.preset, "base");
+});
+
+test("separate-AI chat history ends at the scene, skips filtered messages without counting them, and reads oldest first", () => {
+    const chat = [
+        { name: "A", mes: "one" },
+        { name: "B", mes: "two", is_system: true },
+        { name: "A", mes: "three" },
+        { name: "B", mes: "four" },
+        { name: "A", mes: "five" },
+    ];
+    const formatMessage = (message) => (message.is_system ? null : `${message.name}: ${message.mes}`);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: 2, throughIndex: 3, formatMessage }), ["A: three", "B: four"]);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: 2, throughIndex: 2, formatMessage }), ["A: one", "A: three"]);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: 1, formatMessage }), ["A: five"]);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: 9, throughIndex: 99, formatMessage }), ["A: one", "A: three", "B: four", "A: five"]);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: 0, formatMessage }), []);
+    assert.deepEqual(buildChatHistoryMessages(chat, { depth: "3", throughIndex: 0, formatMessage }), ["A: one"]);
 });
 
 test("Connection Manager cancellation waits for abort-ignoring official work to settle", async () => {
