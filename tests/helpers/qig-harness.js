@@ -389,13 +389,17 @@ export async function createQigHarness(options = {}) {
         async waitForInit(timeoutMs = 15000) {
             const deadline = Date.now() + timeoutMs;
             for (;;) {
-                if (this.document.getElementById("qig-settings")) return;
                 const failure = this.document.getElementById("qig-init-error");
                 if (failure) {
                     throw new Error(`QIG init failed: ${(failure.textContent || "").trim().slice(0, 4000)}`);
                 }
                 if (Date.now() > deadline) {
                     throw new Error("QIG init timed out");
+                }
+                // The settings panel appears before the final boot step (host event
+                // subscriptions), so keep polling until the whole boot has finished.
+                if (this.document.getElementById("qig-settings") && this.host.eventSource.listenerCount > 0) {
+                    return;
                 }
                 await new Promise((resolve) => setTimeout(resolve, 25));
             }
@@ -457,6 +461,7 @@ export async function createQigHarness(options = {}) {
     install("Element", window.Element);
     install("HTMLElement", window.HTMLElement);
     install("Node", window.Node);
+    install("Option", window.Option);
     install("indexedDB", indexedDB);
     install("IDBKeyRange", IDBKeyRange);    install("MutationObserver", window.MutationObserver);
     install("requestAnimationFrame", window.requestAnimationFrame.bind(window));
