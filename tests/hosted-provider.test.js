@@ -421,3 +421,22 @@ test("hosted output credentials stay on the exact authenticated result origin", 
     });
     assert.deepEqual(calls.map(call => call.headers.Authorization), [undefined, "Bearer canary"]);
 });
+
+test("SSE event names reach the callback and a terminal error never promotes the preview", async () => {
+    const stream = new Response([
+        'event: image_generation.partial_image\n',
+        'data: {"image":"https://fal.media/preview.png"}\n\n',
+        'event: error\n',
+        'data: {"reason":"generation failed"}\n\n',
+        'data: [DONE]\n\n',
+    ].join(""), { headers: { "content-type": "text/event-stream" } });
+    const seen = [];
+    await assert.rejects(readSseDataStream(stream, (data, eventName) => {
+        const parsed = JSON.parse(data);
+        seen.push({ eventName, parsed });
+        if (parsed.reason || eventName === "error") throw new Error(parsed.reason || "SSE error event");
+        return { value: parsed.image, provisional: eventName === "image_generation.partial_image" };
+    }), /generation failed/);
+    assert.deepEqual(seen.map(entry => entry.eventName), ["image_generation.partial_image", "error"]);
+    assert.equal(seen[0].parsed.image, "https://fal.media/preview.png");
+});

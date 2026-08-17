@@ -419,7 +419,7 @@ test("imports retain locally trusted endpoints instead of pairing file URLs with
     });
 });
 
-test("export parse and commit merge preserve local Custom records while replacing portable records", () => {
+test("export parse and commit merge preserve unmatched local records while importing portable records", () => {
     const current = {
         connectionProfiles: {
             custom: {
@@ -450,11 +450,34 @@ test("export parse and commit merge preserve local Custom records while replacin
     const committed = mergeSettingsImportStores(current, parsed);
 
     assert.deepEqual(Object.keys(committed.connectionProfiles), ["proxy", "custom"]);
-    assert.deepEqual(committed.connectionProfiles.proxy, { Imported: { proxyModel: "new-model" } });
+    assert.deepEqual(committed.connectionProfiles.proxy, {
+        Imported: { proxyModel: "new-model" },
+        Old: { proxyModel: "old-model", proxyKey: "old-secret" },
+    });
     assert.deepEqual(committed.connectionProfiles.custom, current.connectionProfiles.custom);
-    assert.deepEqual(committed.generationPresets.map(record => record.id), ["portable-new", "custom-private"]);
-    assert.equal(committed.generationPresets[1].customApiKey, "preset-secret");
+    assert.deepEqual(committed.generationPresets.map(record => record.id), ["portable-new", "portable-old", "custom-private"]);
+    assert.equal(committed.generationPresets[2].customApiKey, "preset-secret");
     assert.doesNotMatch(JSON.stringify(exported), /must-not-export|custom-export|ExportCanary/);
+});
+
+test("import shadowing replaces a matching local portable record without dropping others", () => {
+    const committed = mergeSettingsImportStores(
+        {
+            connectionProfiles: { proxy: { Shared: { proxyModel: "old", proxyKey: "kept-secret" }, Alone: { proxyModel: "solo" } } },
+            generationPresets: [
+                { id: "shared", name: "Old Shared", provider: "proxy" },
+                { id: "alone", name: "Local Only", provider: "novelai" },
+            ],
+        },
+        {
+            connectionProfiles: { proxy: { Shared: { proxyModel: "imported" } } },
+            generationPresets: [{ id: "shared", name: "Imported Shared", provider: "proxy" }],
+        },
+    );
+    assert.deepEqual(committed.connectionProfiles.proxy.Shared, { proxyModel: "imported", proxyKey: "kept-secret" });
+    assert.deepEqual(committed.connectionProfiles.proxy.Alone, { proxyModel: "solo" });
+    assert.deepEqual(committed.generationPresets.map(record => record.id), ["shared", "alone"]);
+    assert.equal(committed.generationPresets[0].name, "Imported Shared");
 });
 
 test("storage staging rolls back every key when a write fails", () => {
@@ -510,4 +533,57 @@ test("rollback attempts every key after an individual restore failure", () => {
     assert.equal(values.has("first"), false);
     assert.equal(values.get("second"), "old-second");
     assert.deepEqual(restored, ["second"]);
+});
+
+test("internal underscore-prefixed fields never survive export or import", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            width: 768,
+            _replacementMapsMigrated: true,
+            _legacyTemplatesIgnored: true,
+            _charSettingsBaseState: { width: 512 },
+            _syncCacheId: "internal-cache-owner",
+        },
+    });
+    assert.deepEqual(exported.activeSettings, { width: 768 });
+    assert.doesNotMatch(JSON.stringify(exported), /_replacementMapsMigrated|_legacyTemplatesIgnored|_charSettingsBaseState|_syncCacheId/);
+
+    const imported = parseSettingsImport(JSON.stringify({
+        version: 7,
+        activeSettings: {
+            width: 768,
+            _replacementMapsMigrated: true,
+            _legacyTemplatesIgnored: true,
+            _charSettingsBaseState: { width: 512 },
+        },
+    }));
+    assert.deepEqual(imported.activeSettings, { width: 768 });
+});
+
+test("settings export reports data omissions without reporting intentional privacy omissions", () => {
+    const omissions = [];
+    const huge = "x".repeat(3 * 1024 * 1024);
+    const exported = createSettingsExport({
+        activeSettings: {
+            prompt: huge,
+            proxyKey: "private-but-expected",
+            proxyRefImages: ["data:image/png;base64,private"],
+            _syncCacheId: "internal-cache-owner",
+        },
+        generationPresets: Array.from({ length: 2001 }, (_, index) => ({ id: `preset-${index}`, provider: "proxy" })),
+    }, { onOmission: (items) => omissions.push(...items) });
+
+    assert.equal(exported.activeSettings.prompt, undefined);
+    assert.equal(exported.generationPresets.length, 2000);
+    assert.ok(omissions.length >= 2, `expected at least 2 omissions, got ${omissions.length}`);
+    assert.match(omissions.join("\n"), /prompt: string over/);
+    assert.match(omissions.join("\n"), /generationPresets: array truncated from 2001 to 2000 items/);
+    assert.doesNotMatch(omissions.join("\n"), /proxyKey|_syncCacheId|base64/);
+});
+
+test("settings export without omissions does not invoke the callback", () => {
+    let called = false;
+    const exported = createSettingsExport({ activeSettings: { width: 768, prompt: "short" } }, { onOmission: () => { called = true; } });
+    assert.equal(exported.activeSettings.prompt, "short");
+    assert.equal(called, false);
 });

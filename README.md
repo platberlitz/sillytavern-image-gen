@@ -411,7 +411,7 @@ An active preset is highlighted only while the covered settings still match it. 
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-Quick Image Gen `3.1.1` ships optional server relay protocol `0.2.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
+Quick Image Gen `3.2.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
 
 Setup:
 
@@ -436,6 +436,24 @@ If an update breaks your setup, switch back to the previous version line without
 `main` is always the current release. When a new version line starts, a `v<major.minor>` branch is kept at the last release of the previous line. Rolling back does not delete your settings; options added by newer versions are ignored until you return to `main`.
 
 ## Changelog
+
+### 3.2.0
+
+No breaking changes.
+
+**Fixed**
+
+- Reverse-proxy bases like `/v1` now post to `/v1/images/generations` as documented instead of chat completions.
+- A failed separate-AI profile no longer falls back to the main chat AI, so private text is never disclosed to another provider. Hidden/system messages are excluded from automation and separate-AI history; normal replies with attached images stay in history.
+- Multi-image palette inject with auto-insert opens the batch picker again instead of inserting every result.
+- Panel generation now honors the manual insert target, and result dialogs resolve the target from the current chat at click time, refusing cross-chat or changed-message inserts. Inserts and undos are transactional: failed saves roll back only their own changes and a failed undo keeps its retry token.
+- Cancelling an A1111 generation no longer interrupts a shared server unless the opt-in is enabled, and only after this run actually submitted work. ComfyUI cancellation is bounded by deadlines.
+- Custom async jobs retry transient poll failures (408/425/429/5xx); ComfyUI keeps successful outputs when a later download fails.
+- Seeds are bounded to the documented range and sequential batches wrap modulo 2^32; NovelAI-compatible proxy requests now send and record steps, CFG, and seed.
+- Forced proxy output retrieval fails closed instead of falling back to unchecked browser loading, forwards credentials only to trusted origins, and strips `key` query parameters from Nanobanana endpoints. Relay requests have a body-read deadline and single-copy response buffering.
+- Settings import merges records instead of deleting unmatched profiles and presets, and blocks edits while committing. Unsupported Context Media versions are quarantined instead of destroyed; legacy character references are preserved until ownership is chosen.
+- Settings and chat saves are only treated as durable when the host confirms them; first-run account storage stays session-only until the sync identity is confirmed.
+- Fixed teardown listener leaks and bfcache pagehide, added Space activation for icon buttons, consumed Ctrl+Enter while busy, appended `inUser` inject when no user message exists, stopped NanoGPT discovery per keystroke, and removed duplicate quiet-prompt requests.
 
 ### 3.1.1
 

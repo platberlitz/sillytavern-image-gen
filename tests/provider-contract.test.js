@@ -375,3 +375,17 @@ test("effective requests omit parameters that providers do not receive", () => {
         seed: 123,
     });
 });
+
+test("routeway effective dimensions survive above the generic UI ceiling", () => {
+    const routeway = sanitizeEffectiveRequest({
+        provider: "routeway",
+        parameters: { width: 2560, height: 1440 },
+    });
+    assert.deepEqual(routeway.parameters, { width: 2560, height: 1440 });
+
+    const generic = sanitizeEffectiveRequest({
+        provider: "pollinations",
+        parameters: { width: 3072, height: 1440 },
+    });
+    assert.deepEqual(generic.parameters, { width: 2048, height: 1440 });
+});

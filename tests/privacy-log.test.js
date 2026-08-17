@@ -49,3 +49,14 @@ test("privacy logs bound entry count, aggregate UTF-8 bytes, and individual entr
     assert.ok(buffer.entries.every(entry => !entry.includes("�")));
     assert.ok(utf8ByteLength(truncateLogEntry("é".repeat(40), 31)) <= 31);
 });
+
+test("privacy logs bound hostile input before redaction and bound the returned message", () => {
+    const buffer = new PrivacyLogBuffer({ maxEntryBytes: 64, formatTimestamp: () => "" });
+    const huge = "A".repeat(4 * 1024 * 1024);
+    const result = buffer.append(huge);
+
+    assert.ok(result, "append returns a record for non-diagnostic messages");
+    assert.ok(utf8ByteLength(result.message) <= 64 * 8 + 64, "returned redacted message is bounded for console output");
+    assert.ok(utf8ByteLength(result.entry) <= 64, "stored entry respects the per-entry limit");
+    assert.ok(buffer.entries.every(entry => utf8ByteLength(entry) <= 64));
+});

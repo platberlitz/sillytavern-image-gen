@@ -220,9 +220,89 @@ test("related synchronized stores commit with one acknowledgement and roll back 
         },
     }), /account save failed/);
 
-    assert.equal(saves, 1);
+    assert.equal(saves, 2, "the original save plus the rollback compensation save");
     assert.deepEqual(settings._backupContextualFilters, previousFilters);
     assert.deepEqual(settings._backupFilterPools, previousPools);
     assert.deepEqual(JSON.parse(storage.values.get("qig_contextual_filters")), previousFilters);
     assert.deepEqual(JSON.parse(storage.values.get("qig_filter_pools")), previousPools);
+});
+
+test("an unconfirmed resolved save keeps the local cache authoritative via a pending marker", async () => {
+    const storage = createStorage({ qig_profiles: JSON.stringify({ old: true }) });
+    const settings = { _backupProfiles: { old: true } };
+    const next = { proxy: { Shared: { model: "flux" } } };
+
+    const result = await persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: next,
+        save: async () => {},
+        acknowledge: async () => false,
+    });
+
+    assert.equal(result.confirmed, false);
+    assert.equal(storage.values.get("qig_sync_pending:qig_profiles"), "1");
+    assert.deepEqual(settings._backupProfiles, next);
+    assert.deepEqual(JSON.parse(storage.values.get("qig_profiles")), next);
+});
+
+test("a positively confirmed save clears the pending marker", async () => {
+    const storage = createStorage({
+        qig_profiles: JSON.stringify({ old: true }),
+        "qig_sync_pending:qig_profiles": "1",
+    });
+    const settings = { _backupProfiles: { old: true } };
+    const next = { proxy: { Shared: { model: "flux" } } };
+
+    const result = await persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: next,
+        save: async () => {},
+        acknowledge: async () => true,
+    });
+
+    assert.equal(result.confirmed, true);
+    assert.equal(storage.values.get("qig_sync_pending:qig_profiles"), undefined);
+});
+
+test("a thrown save still rolls back without leaving a pending marker", async () => {
+    const previous = { old: true };
+    const storage = createStorage({ qig_profiles: JSON.stringify(previous) });
+    const settings = { _backupProfiles: structuredClone(previous) };
+
+    await assert.rejects(() => persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: { new: true },
+        save: async () => { throw new Error("boom"); },
+        acknowledge: async () => true,
+    }), /boom/);
+
+    assert.equal(storage.values.get("qig_sync_pending:qig_profiles"), undefined);
+    assert.deepEqual(JSON.parse(storage.values.get("qig_profiles")), previous);
+});
+
+test("acknowledge rejection counts as unconfirmed", async () => {
+    const storage = createStorage();
+    const settings = { _backupProfiles: null };
+
+    const result = await persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: { proxy: {} },
+        save: async () => {},
+        acknowledge: async () => { throw new Error("probe failed"); },
+    });
+
+    assert.equal(result.confirmed, false);
+    assert.ok(result.confirmationError instanceof Error);
 });

@@ -55,7 +55,7 @@ test("Gemini candidate failures take precedence over placeholder image data", ()
     assert.equal(getGeminiCandidateFailure({}), null);
 });
 
-test("blank pixel detection rejects transparent and uniform placeholders", () => {
+test("blank pixel detection rejects transparent placeholders but accepts opaque uniform images", () => {
     assert.equal(isEffectivelyBlankPixels(new Uint8ClampedArray(4 * 16)), true);
 
     const white = new Uint8ClampedArray(4 * 16);
@@ -65,7 +65,7 @@ test("blank pixel detection rejects transparent and uniform placeholders", () =>
         white[i + 2] = 255;
         white[i + 3] = 255;
     }
-    assert.equal(isEffectivelyBlankPixels(white), true);
+    assert.equal(isEffectivelyBlankPixels(white), false);
 
     const solidRed = new Uint8ClampedArray(4 * 16);
     for (let i = 0; i < solidRed.length; i += 4) {

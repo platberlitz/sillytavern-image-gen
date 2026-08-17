@@ -1,6 +1,6 @@
 # Quick Image Gen Relay Server Plugin
 
-This optional SillyTavern server plugin (protocol version `0.2.0`, shipped with Quick Image Gen `3.1.1`) lets Quick Image Gen use CivitAI and Replicate when SillyTavern is running with `basicAuthMode: true`.
+This optional SillyTavern server plugin (protocol version `0.3.0`, shipped with Quick Image Gen `3.2.0`) lets Quick Image Gen use CivitAI and Replicate when SillyTavern is running with `basicAuthMode: true`.
 
 ## Install
 

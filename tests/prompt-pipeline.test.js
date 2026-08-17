@@ -69,9 +69,20 @@ test("dedupePromptTags drops exact repeats and keeps first occurrence", () => {
     );
     assert.equal(dedupePromptTags("Lowres, bad hands, lowres, BAD HANDS"), "Lowres, bad hands");
     assert.equal(dedupePromptTags("(masterpiece:1.2), masterpiece"), "(masterpiece:1.2), masterpiece");
-    assert.equal(dedupePromptTags("  a,  , b , a "), "a, b");
+    assert.equal(dedupePromptTags("  x,  , y , x "), "x, y");
     assert.equal(dedupePromptTags(""), "");
     assert.equal(dedupePromptTags(null), "");
+});
+
+test("dedupePromptTags preserves deliberate short prose repeats", () => {
+    assert.equal(
+        dedupePromptTags("A bell rings, a bell rings, echoes fill the hall"),
+        "A bell rings, a bell rings, echoes fill the hall",
+    );
+    assert.equal(
+        dedupePromptTags("She turns, he waits, she turns"),
+        "She turns, he waits, she turns",
+    );
 });
 
 test("dedupePromptTags leaves prose clauses and multi-line prompts untouched", () => {

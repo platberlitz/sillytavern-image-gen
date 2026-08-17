@@ -40,19 +40,19 @@ test('manifest metadata and package versions are valid and aligned', async () =>
   assert.match(manifest.version, semverPattern);
   assert.match(packageJson.version, semverPattern);
   assert.equal(manifest.version, packageJson.version);
-  assert.equal(packageJson.version, '3.1.1');
+  assert.equal(packageJson.version, '3.2.0');
   assert.equal(packageLock.version, packageJson.version);
   assert.equal(packageLock.packages[''].version, packageJson.version);
   assert.equal(packageJson.engines.node, '^20.19.0 || ^22.13.0 || >=24.0.0');
   assert.equal(packageLock.packages[''].engines.node, packageJson.engines.node);
   assert.match(readmeText, /\^20\.19\.0 \|\| \^22\.13\.0 \|\| >=24\.0\.0/);
-  assert.equal(serverPackage.version, '0.2.0');
+  assert.equal(serverPackage.version, '0.3.0');
   assert.match(serverIndexText, /protocolVersion: PROTOCOL_VERSION/);
   assert.match(serverIndexText, /require\("\.\/package\.json"\)\.version/);
   assert.match(serverPackage.version, semverPattern);
-  assert.match(readmeText, /server relay protocol `0\.2\.0`/);
-  assert.match(serverReadmeText, /protocol version `0\.2\.0`/);
-  assert.match(serverReadmeText, /Quick Image Gen `3\.1\.1`/);
+  assert.match(readmeText, /server relay protocol `0\.3\.0`/);
+  assert.match(serverReadmeText, /protocol version `0\.3\.0`/);
+  assert.match(serverReadmeText, /Quick Image Gen `3\.2\.0`/);
 
   for (const releasePath of ['lib/', 'server-plugin/', 'scripts/', 'tests/']) {
     assert.ok(packageJson.files.includes(releasePath), `package files must include ${releasePath}`);

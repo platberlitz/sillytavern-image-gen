@@ -421,6 +421,51 @@ test("conversation checkpoints detect append-only advancement and generated imag
     assert.equal(isGeneratedImageMessage({ is_user: false, mes: "normal reply" }), false);
 });
 
+test("generated-image predicate retains text-bearing replies with attachments and drops only media-only messages", () => {
+    assert.equal(isGeneratedImageMessage({
+        is_user: false,
+        mes: "A thoughtful roleplay reply with words",
+        extra: { inline_image: true },
+    }), false);
+    assert.equal(isGeneratedImageMessage({
+        is_user: false,
+        mes: "A thoughtful roleplay reply with words",
+        extra: { media: [{ url: "blob:gen", source: "generated" }] },
+    }), false);
+    assert.equal(isGeneratedImageMessage({ is_user: false, mes: "", extra: { inline_image: true } }), true);
+    assert.equal(isGeneratedImageMessage({ is_user: false, mes: "   ", extra: { inline_image: true } }), true);
+    assert.equal(isGeneratedImageMessage({
+        is_user: false,
+        mes: "Generated image",
+        extra: { inline_image: true },
+    }), true);
+    assert.equal(isGeneratedImageMessage({
+        is_user: false,
+        mes: "Generated image",
+        extra: { media: [{ url: "blob:gen", source: "generated" }] },
+    }), true);
+    assert.equal(isGeneratedImageMessage({ is_user: true, extra: { inline_image: true } }), false);
+    assert.equal(isGeneratedImageMessage({ is_user: false, mes: "reply with a linked upload", extra: { media: [{ url: "blob:up", source: "upload" }] } }), false);
+});
+
+test("preset overrides reject profiles whose endpoint cannot be isolated", async () => {
+    const profile = { id: "proxy-profile", api: "openai", model: "model", preset: "base", "api-url": "https://proxy.example/v1" };
+    const service = {
+        getProfile: () => profile,
+        validateProfile: () => ({ selected: "openai", source: "openai" }),
+        sendRequest: async () => assert.fail("endpoint-isolated override must not reach the live service"),
+    };
+    await assert.rejects(sendIsolatedConnectionManagerRequest({
+        service,
+        context: { ChatCompletionService: { processRequest: async () => assert.fail("endpoint-isolated override must not reach the host service") } },
+        profileId: profile.id,
+        messages: [{ role: "user", content: "prompt" }],
+        maxTokens: 10,
+        preset: "temporary",
+    }), /cannot be isolated for a preset override/);
+    assert.equal(profile.preset, "base");
+});
+
 test("conversation checkpoints accept only registered contiguous owned insertions", () => {
     const source = { mes: "reply", is_user: false };
     const chat = [source];

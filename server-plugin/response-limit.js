@@ -37,8 +37,11 @@ async function readResponseBufferWithLimit(response, maxBytes = MAX_IMAGE_RESPON
     }
 
     const reader = response.body.getReader();
-    const chunks = [];
     let total = 0;
+    // ponytail: with a truthful content-length we can fill one preallocated buffer (single
+    // copy, no concat). Unknown lengths fall back to referenced chunks with one final concat.
+    let direct = Number.isFinite(declaredLength) && declaredLength >= 0 ? Buffer.allocUnsafe(declaredLength) : null;
+    let chunks = direct ? null : [];
     try {
         while (true) {
             const { done, value } = await reader.read();
@@ -48,12 +51,23 @@ async function readResponseBufferWithLimit(response, maxBytes = MAX_IMAGE_RESPON
                 await reader.cancel("Upstream response is too large");
                 throw new Error("Upstream response is too large");
             }
-            chunks.push(Buffer.from(value));
+            if (direct) {
+                if (total <= direct.length) {
+                    direct.set(value, total - value.byteLength);
+                    continue;
+                }
+                // The upstream understated its content-length; switch to the chunk path.
+                chunks = [direct.subarray(0, total - value.byteLength), value];
+                direct = null;
+            } else {
+                chunks.push(value);
+            }
         }
     } finally {
         reader.releaseLock();
     }
-    return Buffer.concat(chunks, total);
+    if (direct) return direct.subarray(0, total);
+    return chunks.length ? Buffer.concat(chunks, total) : Buffer.alloc(0);
 }
 
 async function readResponseTextWithLimit(response, maxBytes = DEFAULT_MAX_RESPONSE_BYTES) {

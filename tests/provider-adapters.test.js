@@ -462,16 +462,14 @@ test('forced hosted output materialization enforces host allowlists and byte con
   }), /untrusted host/);
 });
 
-test('forced output retrieval can fall back to browser loading after CORS failures', async () => {
-  const source = await materializeProviderImageSource('https://cdn.proxy.example/image.png', {
+test('forced output retrieval fails closed instead of falling back to unchecked browser loading', async () => {
+  await assert.rejects(materializeProviderImageSource('https://cdn.proxy.example/image.png', {
     requestUrl: 'https://proxy.example/v1/images/generations',
     forceFetch: true,
     allowedHostSuffixes: ['proxy.example'],
     allowBrowserFallback: true,
     fetchImpl: async () => { throw new TypeError('Failed to fetch'); },
-  });
-
-  assert.equal(source, 'https://cdn.proxy.example/image.png');
+  }), /Could not retrieve generated image/);
 });
 
 test('forced output credentials can be restricted to an exact origin', async () => {
@@ -510,4 +508,50 @@ test('materialization reports authenticated URL and corrupt image failures', asy
   await assert.rejects(materializeProviderImageSource('data:image/png;base64,not-valid-base64', {
     requestUrl: 'https://proxy.example/v1/images/generations',
   }), /malformed|empty or incomplete/);
+});
+
+test('failed materialization fetches cancel their response bodies', async () => {
+  let cancelled = 0;
+  const makeBody = () => ({
+    cancel: async () => { cancelled += 1; },
+  });
+  await assert.rejects(materializeProviderImageSource('/private.png', {
+    requestUrl: 'https://proxy.example/v1/images/generations',
+    headers: { Authorization: 'Bearer canary-key' },
+    fetchImpl: async () => ({ ok: false, status: 404, statusText: 'Not Found', headers: { get: () => '' }, body: makeBody() }),
+  }), /HTTP 404/);
+  await assert.rejects(materializeProviderImageSource('/wrong-type', {
+    requestUrl: 'https://proxy.example/v1/images/generations',
+    headers: { Authorization: 'Bearer canary-key' },
+    fetchImpl: async () => ({ ok: true, status: 200, statusText: 'OK', headers: { get: () => 'text/html' }, body: makeBody() }),
+  }), /text\/html/);
+  assert.equal(cancelled, 2, 'both rejected responses cancelled their bodies');
+});
+
+test('nanobanana endpoints strip key parameters from absolute, relative, and built proxy URLs', () => {
+  assert.equal(
+    getNanobananaApiUrl('https://proxy.example/v1beta/models/gemini:generateContent?key=secret&x=1', 'gemini'),
+    'https://proxy.example/v1beta/models/gemini:generateContent?x=1',
+  );
+  assert.equal(
+    getNanobananaApiUrl('/v1beta/models/gemini:generateContent?key=secret&x=1', 'gemini'),
+    '/v1beta/models/gemini:generateContent?x=1',
+  );
+  assert.equal(
+    getNanobananaApiUrl('https://proxy.example/base?key=secret&x=1', 'gemini'),
+    'https://proxy.example/base/v1beta/models/gemini:generateContent?x=1',
+  );
+  assert.equal(
+    getNanobananaApiUrl('/proxy/base?key=secret&x=1', 'gemini'),
+    '/proxy/base/v1beta/models/gemini:generateContent?x=1',
+  );
+});
+
+test('provider image extraction survives arbitrarily deep nested arrays', () => {
+  let nested = 'https://deep.example/image.png';
+  for (let depth = 0; depth < 10000; depth += 1) nested = [nested];
+  assert.equal(extractProviderImageSource({ output: nested }), null, 'depth-limited traversal returns null instead of overflowing');
+
+  const shallow = [[[[['https://real.example/image.png']]]]];
+  assert.equal(extractProviderImageSource({ output: shallow }), 'https://real.example/image.png');
 });

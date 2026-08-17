@@ -34,6 +34,24 @@ test("icon actions can use host-native div controls", () => {
     assert.equal(button.hasAttribute("type"), false);
 });
 
+test("host-native div controls activate on Space", () => {
+    const dom = new JSDOM();
+    const button = createAccessibleIconButton(dom.window.document, {
+        tagName: "div",
+        label: "Generate image",
+    });
+    let clicks = 0;
+    button.addEventListener("click", () => { clicks += 1; });
+    const space = new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true });
+    button.dispatchEvent(space);
+    assert.equal(space.defaultPrevented, true);
+    assert.equal(clicks, 1);
+
+    const enter = new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    button.dispatchEvent(enter);
+    assert.equal(clicks, 1, "Enter is left to the host interactable handler");
+});
+
 test("the main generation control remains an enabled Cancel action without a palette", () => {
     const hiddenPalette = resolveMainGenerationControlState({
         active: true,

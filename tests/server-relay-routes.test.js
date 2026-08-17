@@ -624,3 +624,46 @@ test("relay upload concurrency is acquired by address before content checks and 
     assert.equal(competingRes.statusCode, 429);
     slowRequests.forEach(({ req }) => req.emit("aborted"));
 });
+
+test("relay body-read deadline answers 408 and drops the socket for stalled clients", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const [,, deadline] = preParser.createRelayPreParser({ bodyReadTimeoutMs: 50 });
+
+    const socketDestroyed = { value: false };
+    const req = new EventEmitter();
+    req.method = "POST";
+    req.socket = { destroy: () => { socketDestroyed.value = true; } };
+    const res = new MockResponse({ autoFinish: false });
+
+    let advanced = false;
+    deadline(req, res, () => { advanced = true; });
+
+    req.emit("data", Buffer.from("{\"x\":"));
+    t.mock.timers.tick(30);
+    assert.equal(res.statusCode, 200, "activity re-armed the deadline");
+
+    t.mock.timers.tick(60);
+    assert.equal(res.statusCode, 408, "stalled body times out");
+    assert.match(res.body, /timed out/);
+    assert.equal(advanced, true, "middleware advances the chain; the deadline guards the body read");
+    res.emit("finish");
+    assert.equal(socketDestroyed.value, true, "socket dropped after the 408 flushed");
+});
+
+test("relay body-read deadline clears when the body completes", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const [,, deadline] = preParser.createRelayPreParser({ bodyReadTimeoutMs: 50 });
+
+    const req = new EventEmitter();
+    req.method = "POST";
+    const res = new MockResponse({ autoFinish: false });
+
+    let advanced = false;
+    deadline(req, res, () => { advanced = true; });
+    req.emit("data", Buffer.from("{\"x\":1}"));
+    req.emit("end");
+    t.mock.timers.tick(500);
+
+    assert.equal(res.statusCode, 200, "completed body never times out");
+    assert.equal(advanced, true, "deadline middleware advances the chain immediately");
+});

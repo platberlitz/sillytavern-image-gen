@@ -551,3 +551,60 @@ test("rejects deeply nested templates with a controlled validation error", () =>
     for (let i = 0; i < 30; i++) nested = `{"child":${nested}}`;
     assert.throws(() => normalizeCustomBackendConfig({ ...baseConfig, requestTemplate: nested }), /nested too deeply/);
 });
+
+test("retries transient poll HTTP failures within the overall timeout", async () => {
+    const calls = [];
+    const result = await executeCustomBackend({
+        ...baseConfig,
+        mode: "async",
+        jobIdPath: "/id",
+        pollUrl: "https://images.example.test/jobs/{{jobId}}",
+        pollMethod: "GET",
+        statusPath: "/status",
+        successValues: "succeeded",
+        pollIntervalMs: 5,
+    }, {}, {
+        sleep: async () => {},
+        fetchImpl: async (url) => {
+            calls.push(url);
+            if (calls.length === 1) {
+                return new Response(JSON.stringify({ id: "job/1" }), { headers: { "Content-Type": "application/json" } });
+            }
+            if (calls.length === 2) {
+                return new Response("rate limited", { status: 429, headers: { "Retry-After": "0" } });
+            }
+            if (calls.length === 3) {
+                return new Response(JSON.stringify({ status: "running" }), { headers: { "Content-Type": "application/json" } });
+            }
+            if (calls.length === 4) {
+                return new Response(JSON.stringify({ status: "succeeded", result: { image: "https://cdn.example.test/final.png" } }), { headers: { "Content-Type": "application/json" } });
+            }
+            return new Response(JPEG_BYTES, { headers: { "Content-Type": "image/jpeg" } });
+        },
+    });
+    assert.ok(result.buffer instanceof ArrayBuffer);
+    assert.equal(calls.length, 5, "429 poll retried instead of failing the job");
+});
+
+test("poll retries honor Retry-After bounds and treat terminal 4xx as failures", async () => {
+    let pollCalls = 0;
+    await assert.rejects(() => executeCustomBackend({
+        ...baseConfig,
+        mode: "async",
+        jobIdPath: "/id",
+        pollUrl: "https://images.example.test/jobs/{{jobId}}",
+        pollMethod: "GET",
+        statusPath: "/status",
+        pollIntervalMs: 5,
+    }, {}, {
+        sleep: async () => {},
+        fetchImpl: async () => {
+            pollCalls += 1;
+            if (pollCalls === 1) {
+                return new Response(JSON.stringify({ id: "job/1" }), { headers: { "Content-Type": "application/json" } });
+            }
+            return new Response("forbidden", { status: 403 });
+        },
+    }), /Custom API error 403: forbidden/);
+    assert.equal(pollCalls, 2, "terminal 4xx fails immediately without a retry");
+});

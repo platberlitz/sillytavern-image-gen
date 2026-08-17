@@ -300,7 +300,7 @@ test("rejects unsupported, mismatched, malformed, and oversized media", () => {
     assert.match(validateContextMediaFile({ name: "clip.mp4", mimeType: "video/mp4", mediaType: "image", size: 1 }).errors.join(" "), /Media type image does not match video/);
     assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "", size: 1 }).errors.join(" "), /Unsupported media MIME type/);
     assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 1.5 }).errors.join(" "), /non-negative safe integer/);
-    assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 11 }, { maxBytes: 10 }).errors.join(" "), /10 byte limit/);
+    assert.match(validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 11 }, { maxBytes: 10 }).errors.join(" "), /Images cannot exceed 10 bytes/);
     assert.throws(() => validateContextMediaFile({ name: "photo.png", mimeType: "image/png", size: 1 }, { maxBytes: -1 }), /maxBytes/);
     assert.equal(DEFAULT_CONTEXT_MEDIA_MAX_BYTES, 50 * 1024 * 1024);
 });
@@ -342,19 +342,19 @@ test("validates bounded Context Media file selections before reading files", () 
     assert.throws(() => validateContextMediaFileSelection([], { maxFiles: -1 }), /maxFiles/);
 });
 
-test("requires bounded MP4 and WebM container structure, not header magic", () => {
+test("requires bounded MP4 and WebM container structure, not header magic", async () => {
     const mp4Format = { mimeType: "video/mp4", type: "video" };
     const webmFormat = { mimeType: "video/webm", type: "video" };
-    assert.equal(contextMediaBytesMatchFormat(validMp4(), mp4Format), true);
-    assert.equal(contextMediaBytesMatchFormat(validWebm(), webmFormat), true);
+    assert.equal(await contextMediaBytesMatchFormat(validMp4(), mp4Format), true);
+    assert.equal(await contextMediaBytesMatchFormat(validWebm(), webmFormat), true);
 
     const ftypData = new Uint8Array(12);
     ftypData.set(new TextEncoder().encode("isom"));
     ftypData.set(new TextEncoder().encode("isom"), 8);
-    assert.equal(contextMediaBytesMatchFormat(mp4Box("ftyp", ftypData), mp4Format), false);
+    assert.equal(await contextMediaBytesMatchFormat(mp4Box("ftyp", ftypData), mp4Format), false);
     const webmHeaderOnly = ebmlElement([0x1a, 0x45, 0xdf, 0xa3], ebmlElement([0x42, 0x82], new TextEncoder().encode("webm")));
-    assert.equal(contextMediaBytesMatchFormat(webmHeaderOnly, webmFormat), false);
-    assert.equal(contextMediaBytesMatchFormat(Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]), webmFormat), false);
+    assert.equal(await contextMediaBytesMatchFormat(webmHeaderOnly, webmFormat), false);
+    assert.equal(await contextMediaBytesMatchFormat(Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3]), webmFormat), false);
 });
 
 test("accepts credential-free public HTTPS media URLs", () => {
