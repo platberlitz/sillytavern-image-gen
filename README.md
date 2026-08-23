@@ -307,7 +307,7 @@ Custom API fields are synchronized to the current SillyTavern account, including
 
 | Command | Arguments | Description |
 | --- | --- | --- |
-| `/qig` | `mode=direct\|palette\|inject`, trailing text as one-off prompt | Generate from current settings. Trailing text overrides the prompt for this run only. |
+| `/qig` | `mode=direct\|palette\|inject`, `quiet=true`, trailing text as one-off prompt | Generate from current settings. Trailing text overrides the prompt for this run only. `quiet=true` with a prompt generates one image, saves it, posts nothing and returns the saved image path (for other extensions, such as Hopper, and Quick Replies). |
 | `/qig-auto` | `state=on\|off\|toggle`, `every=N`, `delay=ms` | Show current auto-gen state or change it. `/qig-auto` alone prints current state. |
 | `/qig-cancel` | (none) | Cancel the active generation request. |
 
@@ -411,7 +411,7 @@ An active preset is highlighted only while the covered settings still match it. 
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-Quick Image Gen `3.2.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
+Quick Image Gen `3.3.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
 
 Setup:
 
@@ -436,6 +436,14 @@ If an update breaks your setup, switch back to the previous version line without
 `main` is always the current release. When a new version line starts, a `v<major.minor>` branch is kept at the last release of the previous line. Rolling back does not delete your settings; options added by newer versions are ignored until you return to `main`.
 
 ## Changelog
+
+### 3.3.0
+
+No breaking changes.
+
+**Added**
+
+- `/qig quiet=true <prompt>` generates one image from the prompt, saves it to the server, touches nothing in the chat, opens no dialog and returns the saved image path through the pipe. Other extensions can ask Quick Image Gen for a picture with it (Hopper uses it for its timeline posts); a prompt is required, and `mode=inject` is not quiet.
 
 ### 3.2.0
 
