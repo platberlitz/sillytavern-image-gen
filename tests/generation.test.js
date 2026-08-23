@@ -8,7 +8,30 @@ import {
     collectSequentialResults,
     getResultFailures,
     normalizeBatchCount,
+    formatQuietSlashResult,
+    getQuietSlashOverrides,
 } from "../lib/generation.js";
+
+test("a quiet slash run is one saved image from the prompt with nothing in the chat", () => {
+    const overrides = getQuietSlashOverrides("a lighthouse at dusk");
+    assert.equal(overrides.prompt, "a lighthouse at dusk");
+    assert.equal(overrides.useLastMessage, false);
+    assert.equal(overrides.autoInsert, false);
+    assert.equal(overrides.confirmBeforeGenerate, false);
+    assert.equal(overrides.enableParagraphPicker, false);
+    assert.equal(overrides.batchCount, 1);
+    assert.equal(overrides.saveToServer, true);
+    assert.equal(overrides.__qigQuiet, true);
+});
+
+test("a quiet slash run hands back the saved path, or says why not", () => {
+    assert.equal(formatQuietSlashResult({ status: "success", urls: ["/user/images/qig/a.png"] }), "/user/images/qig/a.png");
+    assert.equal(formatQuietSlashResult({ status: "partial", urls: ["", "/user/images/qig/b.png"] }), "/user/images/qig/b.png");
+    assert.equal(formatQuietSlashResult({ status: "busy" }), "QIG: generation is already running.");
+    assert.equal(formatQuietSlashResult({ status: "cancelled" }), "QIG: generation cancelled.");
+    assert.equal(formatQuietSlashResult({ status: "failed", message: "provider said no" }), "QIG failed: provider said no");
+    assert.equal(formatQuietSlashResult({ status: "success", urls: [] }), "QIG failed: no image was produced");
+});
 
 test("nullable message indices remain unresolved", () => {
     assert.equal(clampChatMessageIndex(null, 3), null);

@@ -27,6 +27,8 @@ test("registers slash commands and subscribes to host events", async (t) => {
     assert.ok(h.host.eventSource.listenerCount >= 3, "host events subscribed");
     const names = commands.map((command) => command.name);
     assert.ok(names.includes("qig"), names.join(", "));
+    const qig = commands.find((command) => command.name === "qig");
+    assert.ok(qig.namedArgumentList.some((argument) => argument.name === "quiet"), "/qig advertises quiet=true, which other extensions look for");
 });
 
 test("first boot claims a durable account sync identity when the server confirms it", async (t) => {
