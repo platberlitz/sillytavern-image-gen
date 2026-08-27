@@ -34,7 +34,7 @@ test("settings exports include active state but omit secrets and private images"
     assert.equal(exported.activeSettings.width, 768);
     assert.equal(exported.activeSettings.comfyWorkflow, undefined);
     assert.equal(exported.connectionProfiles.proxy.Home.proxyModel, "flux");
-    assert.equal(exported.connectionProfiles.proxy.Home.proxyUrl, "https://images.example/v1?model=flux");
+    assert.equal(exported.connectionProfiles.proxy.Home.proxyUrl, undefined);
     assert.equal(exported.contextualFilters[0].cardKey, "character:one");
     assert.equal(exported.charRefImages, undefined);
     assert.doesNotMatch(JSON.stringify(exported), /canary|base64|_backupProfiles|internal-cache-owner/);
@@ -58,7 +58,7 @@ test("settings transfer fails closed for normalized credential fields and malfor
     assert.doesNotMatch(JSON.stringify(exported), /canary/);
 });
 
-test("Comfy executable graphs are omitted and workflow presets are not imported", () => {
+test("Comfy executable graphs are omitted while portable legacy workflow fields can migrate", () => {
     const exported = createSettingsExport({
         activeSettings: {
             comfyWorkflow: '{"export-active-canary":true}',
@@ -103,7 +103,11 @@ test("Comfy executable graphs are omitted and workflow presets are not imported"
     }));
 
     assert.deepEqual(imported.activeSettings, { height: 1024 });
-    assert.equal(imported.comfyWorkflows, undefined);
+    assert.deepEqual(imported.comfyWorkflows, [{
+        id: "workflow-2",
+        name: "Landscape",
+        localModel: "sdxl-safe",
+    }]);
     assert.doesNotMatch(JSON.stringify(imported), /canary/);
 });
 
@@ -123,6 +127,48 @@ test("legacy Comfy interruption remains local trust configuration", () => {
     assert.deepEqual(exported.activeSettings, { width: 768 });
     assert.deepEqual(imported.activeSettings, { width: 1024 });
     assert.deepEqual(merged, { comfyAllowLegacyInterrupt: false, width: 1024 });
+});
+
+test("A1111 server interruption and trusted endpoints never cross settings files", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            a1111InterruptServer: true,
+            localUrl: "http://private-host.example:7860",
+            callbackUri: "https://private-host.example/callback",
+            width: 768,
+        },
+    });
+    const imported = parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        activeSettings: {
+            a1111InterruptServer: true,
+            localUrl: "http://untrusted.example:7860",
+            callbackUri: "https://untrusted.example/callback",
+            width: 1024,
+        },
+    }));
+
+    assert.deepEqual(exported.activeSettings, { width: 768 });
+    assert.deepEqual(imported.activeSettings, { width: 1024 });
+});
+
+test("portable endpoint feature flags are not mistaken for trusted URLs", () => {
+    const exported = createSettingsExport({
+        activeSettings: {
+            proxyChatImageAllowImagesEndpoint: true,
+            proxyUrl: "https://private.example/v1",
+        },
+    });
+    const imported = parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        activeSettings: {
+            proxyChatImageAllowImagesEndpoint: false,
+            proxyUrl: "https://untrusted.example/v1",
+        },
+    }));
+
+    assert.deepEqual(exported.activeSettings, { proxyChatImageAllowImagesEndpoint: true });
+    assert.deepEqual(imported.activeSettings, { proxyChatImageAllowImagesEndpoint: false });
 });
 
 test("Context Media exports retain taxonomy but omit all local media details", () => {
@@ -248,7 +294,7 @@ test("imports cannot pair custom mappings or authentication behavior with local 
 
     assert.deepEqual(imported.activeSettings, {});
     assert.equal(imported.connectionProfiles.custom, undefined);
-    assert.deepEqual(imported.generationPresets, []);
+    assert.deepEqual(imported.generationPresets, [{ id: "custom-1", name: "Shared", provider: "custom" }]);
 });
 
 test("version 5 imports are migrated and private profile fields are ignored", () => {
@@ -266,6 +312,7 @@ test("version 5 imports are migrated and private profile fields are ignored", ()
     assert.equal(imported.connectionProfiles.proxy.Home.proxyKey, undefined);
     assert.equal(imported.connectionProfiles.proxy.Home.proxyModel, "flux");
     assert.match(imported.generationPresets[0].id, /^generationPresets-/);
+    assert.equal(imported.generationPresets[0].provider, "pollinations");
     assert.match(imported.contextualFilters[0].id, /^contextualFilters-/);
 });
 
@@ -455,9 +502,10 @@ test("export parse and commit merge preserve unmatched local records while impor
         Old: { proxyModel: "old-model", proxyKey: "old-secret" },
     });
     assert.deepEqual(committed.connectionProfiles.custom, current.connectionProfiles.custom);
-    assert.deepEqual(committed.generationPresets.map(record => record.id), ["portable-new", "portable-old", "custom-private"]);
+    assert.deepEqual(committed.generationPresets.map(record => record.id), ["custom-export", "portable-new", "custom-private", "portable-old"]);
+    assert.deepEqual(committed.generationPresets[0], { id: "custom-export", name: "Custom", provider: "custom" });
     assert.equal(committed.generationPresets[2].customApiKey, "preset-secret");
-    assert.doesNotMatch(JSON.stringify(exported), /must-not-export|custom-export|ExportCanary/);
+    assert.doesNotMatch(JSON.stringify(exported), /must-not-export|ExportCanary/);
 });
 
 test("import shadowing replaces a matching local portable record without dropping others", () => {
@@ -478,6 +526,116 @@ test("import shadowing replaces a matching local portable record without droppin
     assert.deepEqual(committed.connectionProfiles.proxy.Alone, { proxyModel: "solo" });
     assert.deepEqual(committed.generationPresets.map(record => record.id), ["shared", "alone"]);
     assert.equal(committed.generationPresets[0].name, "Imported Shared");
+});
+
+test("same-ID Configuration import preserves every local trust field recursively", () => {
+    const currentRecord = {
+        id: "shared",
+        name: "Local name",
+        provider: "local",
+        localType: "comfyui",
+        localUrl: "http://trusted.example:8188",
+        comfyWorkflow: '{"local-graph":true}',
+        comfyWorkflowComponentOverrides: { version: 1, entries: [{ nodeId: "1", value: "local" }] },
+        localRefImage: "data:image/png;base64,local",
+        a1111InterruptServer: true,
+        comfyAllowLegacyInterrupt: true,
+        nested: { apiKey: "local-secret", model: "old" },
+        steps: 20,
+    };
+    const exported = createSettingsExport({
+        generationPresets: [{ ...currentRecord, name: "Portable name", steps: 30, nested: { apiKey: "export-secret", model: "new" } }],
+    });
+    const parsed = parseSettingsImport(JSON.stringify(exported));
+    const merged = mergeSettingsImportStores({ generationPresets: [currentRecord] }, parsed).generationPresets[0];
+
+    assert.equal(exported.generationPresets[0].localUrl, undefined);
+    assert.equal(exported.generationPresets[0].a1111InterruptServer, undefined);
+    assert.equal(merged.name, "Portable name");
+    assert.equal(merged.steps, 30);
+    assert.equal(merged.localUrl, currentRecord.localUrl);
+    assert.equal(merged.comfyWorkflow, currentRecord.comfyWorkflow);
+    assert.deepEqual(merged.comfyWorkflowComponentOverrides, currentRecord.comfyWorkflowComponentOverrides);
+    assert.equal(merged.localRefImage, currentRecord.localRefImage);
+    assert.equal(merged.a1111InterruptServer, true);
+    assert.equal(merged.comfyAllowLegacyInterrupt, true);
+    assert.deepEqual(merged.nested, { apiKey: "local-secret", model: "new" });
+    assert.doesNotMatch(JSON.stringify(exported), /trusted\.example|local-graph|base64|local-secret|a1111InterruptServer/);
+});
+
+test("same-ID provider collisions retain the trusted local Configuration", () => {
+    const local = { id: "shared", name: "Trusted", provider: "local", localUrl: "http://trusted", steps: 20 };
+    const merged = mergeSettingsImportStores(
+        { generationPresets: [local] },
+        { generationPresets: [{ id: "shared", name: "Foreign", provider: "proxy", steps: 40 }] },
+    );
+
+    assert.deepEqual(merged.generationPresets, [local]);
+});
+
+test("same-ID Local backend collisions retain the trusted Configuration", () => {
+    const local = {
+        id: "shared-local",
+        name: "Trusted A1111",
+        provider: "local",
+        localType: "a1111",
+        localUrl: "http://trusted:7860",
+        a1111Model: "trusted.safetensors",
+        comfyWorkflow: "LOCAL_GRAPH",
+    };
+    for (const imported of [
+        { id: "shared-local", name: "Foreign Comfy", provider: "local", localType: "comfyui" },
+        { id: "shared-local", name: "Missing backend", provider: "local" },
+    ]) {
+        const merged = mergeSettingsImportStores(
+            { generationPresets: [local] },
+            { generationPresets: [imported] },
+        );
+        assert.deepEqual(merged.generationPresets, [local]);
+    }
+});
+
+test("Custom Configuration shells preserve same-ID local trust without duplicating IDs", () => {
+    const local = {
+        id: "custom-shared",
+        name: "Trusted custom",
+        provider: "custom",
+        customApiUrl: "https://trusted.example/generate",
+        customApiKey: "local-secret",
+        customApiRequestTemplate: '{"prompt":"{{prompt}}"}',
+        steps: 20,
+    };
+    const exported = createSettingsExport({
+        generationPresets: [{ ...local, name: "Portable custom", steps: 30 }],
+    });
+    const parsed = parseSettingsImport(JSON.stringify(exported));
+    const merged = mergeSettingsImportStores({ generationPresets: [local] }, parsed).generationPresets;
+
+    assert.deepEqual(exported.generationPresets, [{
+        id: "custom-shared",
+        name: "Portable custom",
+        provider: "custom",
+        steps: 30,
+    }]);
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0].name, "Portable custom");
+    assert.equal(merged[0].customApiUrl, local.customApiUrl);
+    assert.equal(merged[0].customApiKey, local.customApiKey);
+    assert.equal(merged[0].customApiRequestTemplate, local.customApiRequestTemplate);
+});
+
+test("configuration imports reject unsupported providers and fail closed when identity lacks one", () => {
+    assert.throws(() => parseSettingsImport(JSON.stringify({
+        version: SETTINGS_TRANSFER_VERSION,
+        generationPresets: [{ id: "bad-provider", name: "Bad", provider: "unknown" }],
+    })), /unsupported provider/);
+
+    const local = { id: "shared", name: "Trusted", provider: "local", localUrl: "http://trusted" };
+    const merged = mergeSettingsImportStores(
+        { generationPresets: [local] },
+        { generationPresets: [{ id: "shared", name: "Missing provider" }] },
+    );
+    assert.deepEqual(merged.generationPresets, [local]);
 });
 
 test("storage staging rolls back every key when a write fails", () => {

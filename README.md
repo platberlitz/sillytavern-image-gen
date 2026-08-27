@@ -54,7 +54,7 @@ QIG synchronizes active settings, Configurations, character overrides and refere
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
 5. Save the whole setup as a [configuration](#configurations) with the Save As button next to the Configuration dropdown.
 
-The panel shows the essentials (configuration, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Presets & Prompting, Context Rules & Media, then Automation & Delivery. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+The panel shows the essentials (configuration, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Prompting Tools, Context Rules & Media, then Automation & Delivery. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
 
 ### Prompt source
 
@@ -62,7 +62,7 @@ One selector controls where prompts come from:
 
 - **Manual**: the prompt box is sent as-is (optional LLM rewrite still applies).
 - **Chat scene**: the selected chat message(s) become the scene; message selection and LLM rewrite options apply.
-- **AI-tagged (auto)**: inject mode. Your Text AI is instructed to emit image tags in replies and QIG generates from them. Selecting this keeps Auto-generate on and switches the palette button to inject mode.
+- **AI-tagged**: inject mode. Your Text AI is instructed to emit image tags in replies. Turn on `Auto-generate after AI response` separately for QIG to generate from them.
 
 ## Generation Workflows
 
@@ -182,7 +182,7 @@ An optional `Scene-specific house direction` field adds per-scene instructions o
 
 ## Inject Mode
 
-Inject is auto-only. It activates when **Prompt source** is set to `AI-tagged (auto)` (which keeps `Auto-generate after AI response` on):
+Inject is auto-only. Set **Prompt source** to `AI-tagged`, then enable `Auto-generate after AI response`:
 
 1. QIG injects instructions asking your Text AI to emit image tags inside chat replies.
 2. QIG extracts those tags from the AI reply.
@@ -226,7 +226,7 @@ Extra controls:
 - **Upscale model** (built-in workflow)
 - **LoRAs** (comma-separated `name:weight` pairs; built-in workflow)
 - **Diffusion/UNET support**: explicit model loader, optional negative-prompt skipping, one or two text encoders, VAE model, CLIP type. Refresh lists the encoders and VAEs your server actually has; a configured file that the server does not report stays selected instead of being silently replaced.
-- **Custom workflow components**: when Custom Workflow JSON is filled in, QIG lists every literal model/VAE/encoder filename in the graph and lets you override each one without editing the JSON. Overrides are applied after placeholder substitution and never change node classes or connections. They are dropped if the graph changes.
+- **Custom workflow choices**: when Custom Workflow JSON is filled in, click Inspect workflow choices. QIG asks only the node classes used by that graph, then exposes direct text inputs that those nodes advertise as dropdown choices. That covers third-party model loaders and other custom-node options without guessing at free-text fields. Custom nodes define what each choice does, so review them before changing one. Overrides run after placeholder substitution, never change node classes or connections, and drop when the graph's own value changes.
 
 Custom graphs receive only values represented by placeholders; QIG does not inject its built-in LoRA or upscale nodes into them. Comfy graphs are executable programs and may invoke custom nodes with filesystem or network side effects. Full settings exports omit executable Comfy graph bodies and custom-workflow component overrides, and settings imports ignore both; your local graph and overrides remain unchanged. Review workflow JSON before saving or running it.
 
@@ -301,7 +301,7 @@ Use RFC 6901 JSON Pointers such as `/data/0/url` for the image, job ID, and job 
 
 Authentication is limited to no auth, Bearer, a named header, a named query parameter, or Basic auth (`username:password`). Credentials cannot be embedded in request templates. Custom requests run directly in the browser, reject redirects, enforce bounded JSON/image responses, and never use a generic SillyTavern server relay. The endpoint must allow your SillyTavern origin through CORS.
 
-Custom API fields are synchronized to the current SillyTavern account, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are excluded from portable settings exports, reproducible image metadata, and imported configurations so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions in each account instead of relying on an export.
+Custom API fields are synchronized to the current SillyTavern account, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. Those trust fields are excluded from portable settings exports and reproducible image metadata. A named Custom Configuration can travel only as an inert shell; importing the same Configuration ID preserves an existing local definition but cannot supply or replace it. Recreate or review Custom API definitions in each account instead of relying on an export.
 
 ## Slash Commands
 
@@ -405,7 +405,7 @@ Not part of a Configuration: automation and delivery settings, character overrid
 
 The selection means "the configuration you are editing". Changing a value does not deselect it; press Update to write the change back, or Save As to branch a new one.
 
-Because Configurations hold credentials and endpoints, they synchronize to your SillyTavern account but are stripped from portable settings exports. An imported file can only fill in the safe fields of a configuration whose ID already exists locally; it can never attach an imported endpoint or key.
+Because Configurations hold credentials and endpoints, they synchronize to your SillyTavern account but those private values are stripped from portable settings exports. A matching imported ID updates safe fields while retaining its local endpoint, key, reference images, and workflow. An unmatched imported record creates a safe shell with no private values.
 
 ### Migration from profiles and presets
 
@@ -453,7 +453,7 @@ If an update breaks your setup, switch back to the previous version line without
 **Added**
 
 - ComfyUI Refresh now lists the text encoders and VAEs your server reports, not just checkpoints and UNET models.
-- Custom ComfyUI graphs get a **Workflow components** list that lets you swap any literal filename in the graph without editing JSON. Overrides apply after placeholder replacement and drop themselves when the graph's own value changes. They never leave the browser: exports omit them and imports ignore them.
+- Custom ComfyUI graphs get explicit **Custom workflow choices** discovery. QIG asks only the classes in that graph and exposes direct text inputs that each node advertises as dropdown choices, including supported third-party loaders. Overrides apply after placeholder replacement and drop when the graph's own value changes. They stay with your local SillyTavern account; portable exports omit them and imports ignore them.
 - Sampler and the applicable scheduler now sit together in one **Sampling** group under Advanced Settings.
 - The Contextual Filters summary is back to three cards: Visible Filters, Active Now, and Seed Overrides.
 

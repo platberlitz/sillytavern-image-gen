@@ -6,14 +6,18 @@ import {
     buildComfyPromptRequest,
     buildComfyViewUrl,
     cancelComfyPrompt,
+    collectComfyWorkflowStringInputCandidates,
     getComfyWorkflowCapabilities,
     normalizeComfyModelLoader,
     normalizeComfySettings,
+    normalizeComfyWorkflowComponentOverrides,
     parseComfyHistoryEntry,
+    parseComfyObjectInfoComboInputs,
     parseComfyPromptResponse,
     parseComfyWebSocketMessage,
     parseComfyWorkflow,
     pollComfyHistory,
+    pruneComfyWorkflowComponentOverrides,
     renderComfyWorkflow,
     selectComfyModelList,
     supportsComfyJobsCancel,
@@ -318,6 +322,192 @@ test("detects capabilities from known token usage only", () => {
         "prompt",
         "reference_image_2",
     ]);
+});
+
+test("collects direct workflow string candidates, including placeholders, but not links", () => {
+    const candidates = collectComfyWorkflowStringInputCandidates({
+        "7": {
+            class_type: "AcmeThirdPartySelector",
+            inputs: {
+                arbitrary_option: "cinematic",
+                placeholder_option: "%model%",
+                connection: ["2", 0],
+                count: 3,
+                config: { nested: "not a direct input" },
+            },
+            _meta: { title: "Acme selector" },
+        },
+        "2": { class_type: "Source", inputs: {} },
+    });
+
+    assert.deepEqual(candidates, [
+        {
+            nodeId: "7",
+            classType: "AcmeThirdPartySelector",
+            inputName: "arbitrary_option",
+            rawValue: "cinematic",
+            title: "Acme selector",
+        },
+        {
+            nodeId: "7",
+            classType: "AcmeThirdPartySelector",
+            inputName: "placeholder_option",
+            rawValue: "%model%",
+            title: "Acme selector",
+        },
+    ]);
+});
+
+test("parses required and optional COMBO inputs for an exact third-party class", () => {
+    const objectInfo = {
+        AcmeThirdPartySelector: {
+            input: {
+                required: {
+                    arbitrary_option: [["cinematic", "documentary"], { default: "cinematic" }],
+                },
+                optional: {
+                    decoder: [["fast", "quality"], { forceInput: false }],
+                },
+                hidden: {
+                    secret: [["must not be exposed"]],
+                },
+            },
+        },
+        DifferentClass: {
+            input: { required: { wrong: [["other class"]] } },
+        },
+    };
+
+    assert.deepEqual(parseComfyObjectInfoComboInputs(objectInfo, "AcmeThirdPartySelector"), [
+        { inputName: "arbitrary_option", required: true, choices: ["cinematic", "documentary"] },
+        { inputName: "decoder", required: false, choices: ["fast", "quality"] },
+    ]);
+    assert.deepEqual(parseComfyObjectInfoComboInputs(objectInfo, "MissingClass"), []);
+});
+
+test("rejects malformed, STRING, forced, mixed, and unbounded COMBO declarations", () => {
+    const manyValidChoices = Array.from({ length: 257 }, (_value, index) => `choice-${index}`);
+    const tooManyChoices = Array.from({ length: 10_001 }, (_value, index) => `choice-${index}`);
+    const objectInfo = {
+        AcmeThirdPartySelector: {
+            input: {
+                required: {
+                    malformed: { type: [["one"]] },
+                    string_widget: ["STRING", { multiline: false }],
+                    forced: [["one"], { forceInput: true }],
+                    mixed: [["one", 2], {}],
+                    malformed_options: [["one"], "not an options object"],
+                    many_valid: [manyValidChoices],
+                    too_many: [tooManyChoices],
+                    too_long: [["x".repeat(4097)]],
+                    valid: [["one"], { forceInput: false }],
+                },
+            },
+        },
+    };
+
+    assert.deepEqual(parseComfyObjectInfoComboInputs(objectInfo, "AcmeThirdPartySelector"), [
+        { inputName: "many_valid", required: true, choices: manyValidChoices },
+        { inputName: "valid", required: true, choices: ["one"] },
+    ]);
+    assert.deepEqual(parseComfyObjectInfoComboInputs(null, "AcmeThirdPartySelector"), []);
+});
+
+test("prunes stale overrides using node, class, input, and raw value identity", () => {
+    const stale = {
+        nodeId: "7",
+        classType: "AcmeThirdPartySelector",
+        inputName: "arbitrary_option",
+        rawValue: "old",
+        value: "old-override",
+        verified: true,
+    };
+    const current = { ...stale, rawValue: "current", value: "current-override" };
+    const overrides = { version: 1, entries: [stale, current] };
+
+    assert.equal(normalizeComfyWorkflowComponentOverrides(overrides).entries.length, 2);
+    assert.deepEqual(pruneComfyWorkflowComponentOverrides({
+        "7": {
+            class_type: "AcmeThirdPartySelector",
+            inputs: { arbitrary_option: "current" },
+        },
+    }, overrides), { version: 1, entries: [current] });
+});
+
+test("applies overrides after placeholders as literals without replacing links", () => {
+    const customWorkflow = {
+        "7": {
+            class_type: "AcmeThirdPartySelector",
+            inputs: {
+                arbitrary_option: "%model%",
+                connection: ["2", 0],
+            },
+        },
+        "2": { class_type: "Source", inputs: {} },
+    };
+    const overrides = {
+        version: 1,
+        entries: [{
+            nodeId: "7",
+            classType: "AcmeThirdPartySelector",
+            inputName: "arbitrary_option",
+            rawValue: "%model%",
+            value: "%negative%",
+            verified: true,
+        }],
+    };
+
+    const request = buildComfyPromptRequest(customWorkflow, {
+        modelName: "rendered-model",
+        negativePrompt: "must not replace the override",
+    }, overrides);
+    assert.equal(request.prompt["7"].inputs.arbitrary_option, "%negative%");
+    assert.deepEqual(request.prompt["7"].inputs.connection, ["2", 0]);
+
+    const topologyRequest = buildComfyPromptRequest(customWorkflow, { model: ["2", 0] }, overrides);
+    assert.deepEqual(topologyRequest.prompt["7"].inputs.arbitrary_option, ["2", 0]);
+});
+
+test("applies only verified overrides and permits an advertised empty value", () => {
+    const workflow = {
+        "7": {
+            class_type: "AcmeThirdPartySelector",
+            inputs: { arbitrary_option: "cinematic" },
+        },
+    };
+    const base = {
+        nodeId: "7",
+        classType: "AcmeThirdPartySelector",
+        inputName: "arbitrary_option",
+        rawValue: "cinematic",
+    };
+
+    const unverified = buildComfyPromptRequest(workflow, {}, {
+        version: 1,
+        entries: [{ ...base, value: "documentary" }],
+    });
+    assert.equal(unverified.prompt["7"].inputs.arbitrary_option, "cinematic");
+
+    const empty = buildComfyPromptRequest(workflow, {}, {
+        version: 1,
+        entries: [{ ...base, value: "", verified: true }],
+    });
+    assert.equal(empty.prompt["7"].inputs.arbitrary_option, "");
+
+    const unsupportedVersion = buildComfyPromptRequest(workflow, {}, {
+        version: 999,
+        entries: [{ ...base, value: "documentary", verified: true }],
+    });
+    assert.equal(unsupportedVersion.prompt["7"].inputs.arbitrary_option, "cinematic");
+});
+
+test("collects a loader after more than 256 ordinary text inputs", () => {
+    const inputs = Object.fromEntries(Array.from({ length: 300 }, (_value, index) => [`text_${index}`, `value-${index}`]));
+    inputs.model_name = "loader.safetensors";
+    const candidates = collectComfyWorkflowStringInputCandidates({
+        "1": { class_type: "LargeSelector", inputs },
+    });
+    assert.ok(candidates.some(candidate => candidate.inputName === "model_name"));
 });
 
 test("validates prompt submission responses and preserves queue metadata", () => {

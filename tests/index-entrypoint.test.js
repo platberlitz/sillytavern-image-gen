@@ -858,7 +858,16 @@ test("inUser injection appends the instruction when the prompt has no user messa
 
 test("merges same-name profile, preset and workflow records into one configuration without touching the legacy stores", async (t) => {
     const profiles = { local: { Krea: { localUrl: "http://127.0.0.1:8188", localType: "comfyui", a1111Model: "ignored.safetensors" } } };
-    const presets = [{ id: "preset-krea", name: "Krea", provider: "local", steps: 30, cfgScale: 3.5, sampler: "dpmpp_2m" }];
+    const presets = [{
+        id: "preset-krea",
+        name: "Krea",
+        provider: "local",
+        steps: 30,
+        cfgScale: 3.5,
+        sampler: "dpmpp_2m",
+        a1111Scheduler: "Automatic",
+        comfyScheduler: "normal",
+    }];
     const workflows = [{ id: "cwf-krea", name: "Krea", localModel: "krea.safetensors", comfyModelLoader: "unet", comfyFluxVaeModel: "ae.safetensors" }];
     const rawProfiles = JSON.stringify(profiles);
     const rawPresets = JSON.stringify(presets);
@@ -887,6 +896,7 @@ test("merges same-name profile, preset and workflow records into one configurati
     const configs = JSON.parse(h.localStorage.getItem("qig_configurations"));
     assert.equal(configs.length, 1, "one merged configuration");
     const [config] = configs;
+    assert.equal(config.id, "preset-krea", "the generation preset remains the stable merged id");
     assert.equal(config.name, "Krea");
     assert.equal(config.provider, "local");
     assert.equal(config.localType, "comfyui", "workflow forces the ComfyUI backend");
@@ -904,4 +914,765 @@ test("merges same-name profile, preset and workflow records into one configurati
     assert.ok(select, "configuration selector rendered");
     assert.ok([...select.options].some((option) => option.textContent.startsWith("Krea")), "merged configuration is selectable");
     assert.equal(h.document.getElementById("qig-profile-select"), null, "old connection profile control is gone");
+});
+
+test("keeps an A1111-only legacy profile separate from a same-name Comfy workflow", async (t) => {
+    const profiles = { local: { Shared: { localUrl: "http://127.0.0.1:7860", a1111Model: "pony.safetensors" } } };
+    const workflows = [{ id: "cwf-shared", name: "Shared", localModel: "flux.safetensors", comfyModelLoader: "unet" }];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupProfiles: profiles,
+                    _backupComfyWorkflows: workflows,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                },
+            },
+        },
+        localStorage: {
+            qig_profiles: JSON.stringify(profiles),
+            qig_comfy_workflows: JSON.stringify(workflows),
+            qig_sync_cache_id: "owner-1",
+        },
+    });
+    t.after(() => h.dispose());
+
+    const configs = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(configs.length, 2);
+    const a1111 = configs.find(config => config.name === "Shared");
+    const comfy = configs.find(config => config.name === "Shared (Comfy workflow)");
+    assert.equal(a1111.localType, "a1111");
+    assert.equal(a1111.a1111Model, "pony.safetensors");
+    assert.equal(comfy.localType, "comfyui");
+    assert.equal(comfy.localModel, "flux.safetensors");
+});
+
+test("completes a sparse legacy preset from active settings after an interrupted migration", async (t) => {
+    const workflow = JSON.stringify({
+        "1": { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: "baseline.safetensors" } },
+    });
+    const presets = [{
+        id: "preset-only",
+        name: "Only recipe",
+        provider: "local",
+        steps: 30,
+        autoGenerate: false,
+    }];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupGenPresets: presets,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "comfyui",
+                    localUrl: "http://private-comfy.example:8188",
+                    localModel: "baseline.safetensors",
+                    comfyWorkflow: workflow,
+                    autoGenerate: true,
+                },
+            },
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_gen_presets: JSON.stringify(presets),
+            qig_configurations: "[]",
+        },
+    });
+    t.after(() => h.dispose());
+
+    const [config] = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(config.id, "preset-only");
+    assert.equal(config.localType, "comfyui");
+    assert.equal(config.localUrl, "http://private-comfy.example:8188");
+    assert.equal(config.localModel, "baseline.safetensors");
+    assert.equal(config.comfyWorkflow, workflow);
+    assert.equal(config.steps, 30);
+    assert.equal(Object.hasOwn(config, "autoGenerate"), false, "automation is not owned by configurations");
+
+    const settings = h.host.extension_settings["quick-image-gen"];
+    assert.equal(settings._configurationMigrationVersion, 1);
+    assert.equal(settings._backupConfigurations[0].id, "preset-only");
+    settings.localUrl = "http://temporary.example:8188";
+    settings.localModel = "temporary.safetensors";
+    settings.comfyWorkflow = "";
+    settings.autoGenerate = true;
+    const select = h.document.getElementById("qig-config-select");
+    select.value = "preset-only";
+    h.fireEvent(select, "change");
+    assert.equal(settings.localUrl, "http://private-comfy.example:8188");
+    assert.equal(settings.localModel, "baseline.safetensors");
+    assert.equal(settings.comfyWorkflow, workflow);
+    assert.equal(settings.autoGenerate, true, "loading a configuration does not alter automation");
+});
+
+test("does not resurrect legacy records after a server-backed configuration store was emptied", async (t) => {
+    const presets = [{ id: "legacy", name: "Deleted", provider: "pollinations", steps: 20 }];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _backupGenPresets: presets,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                },
+            },
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_configurations: "[]",
+            qig_gen_presets: JSON.stringify(presets),
+        },
+    });
+    t.after(() => h.dispose());
+
+    assert.deepEqual(JSON.parse(h.localStorage.getItem("qig_configurations")), []);
+    assert.deepEqual(h.host.extension_settings["quick-image-gen"]._backupConfigurations, []);
+    assert.equal(h.host.extension_settings["quick-image-gen"]._configurationMigrationVersion, 1);
+});
+
+test("switching configurations cancels queued automatic generation without changing automation", async (t) => {
+    const chat = [assistantMessage("first reply")];
+    const context = {
+        chat,
+        characters: {},
+        characterId: null,
+        name1: "Char",
+        name2: "You",
+        groupId: null,
+        chatId: "qig-test-chat",
+        chatMetadata: {},
+        saveChat: async () => {},
+        powerUserSettings: {},
+        persona: {},
+        getPresetManager: () => null,
+        chatCompletionSettings: {},
+        getCurrentChatId: () => "qig-test-chat",
+    };
+    const configurations = [{
+        id: "config-b",
+        name: "B",
+        provider: "pollinations",
+        pollinationsModel: "flux",
+        prompt: "configuration B",
+        autoGenerate: false,
+    }];
+    const requests = [];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: configurations,
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "pollinations",
+                    pollinationsModel: "flux",
+                    prompt: "configuration A",
+                    autoGenerate: true,
+                    autoGenerateDelayMs: 80,
+                    autoInsert: false,
+                    saveToServer: false,
+                    useLastMessage: false,
+                },
+            },
+            getContext: () => context,
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_configurations: JSON.stringify(configurations),
+        },
+        fetch: async (url) => {
+            requests.push(String(url));
+            return pollinationsFetch(url);
+        },
+    });
+    t.after(() => h.dispose());
+    seedChatDom(h, chat);
+
+    h.host.eventSource.emit(h.host.eventTypes.MESSAGE_RECEIVED, 0);
+    const select = h.document.getElementById("qig-config-select");
+    select.value = "config-b";
+    h.fireEvent(select, "change");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(requests.filter((url) => url.includes("image.pollinations.ai")).length, 0, "old queued request was cancelled");
+    assert.equal(h.host.extension_settings["quick-image-gen"].autoGenerate, true, "stale configuration field was ignored");
+
+    chat.push(assistantMessage("second reply"));
+    seedChatDom(h, chat);
+    h.host.eventSource.emit(h.host.eventTypes.MESSAGE_RECEIVED, 1);
+    await h.waitFor(() => requests.some((url) => url.includes("image.pollinations.ai")), 5000, "new automatic request used current settings");
+});
+
+test("discovers only advertised custom Comfy workflow choices and prunes stale overrides", async (t) => {
+    const workflow = JSON.stringify({
+        "1": {
+            class_type: "Third Party/Loader",
+            inputs: {
+                model_name: "a.safetensors",
+                free_text: "not a choice",
+                linked: ["2", 0],
+            },
+        },
+        "2": { class_type: "Source", inputs: {} },
+    });
+    const requests = [];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "comfyui",
+                    localUrl: "http://127.0.0.1:8188",
+                    comfyWorkflow: workflow,
+                },
+            },
+        },
+        fetch: async (url) => {
+            requests.push(String(url));
+            assert.equal(String(url), "http://127.0.0.1:8188/object_info/Third%20Party%2FLoader");
+            return new Response(JSON.stringify({
+                "Third Party/Loader": {
+                    input: {
+                        required: {
+                            model_name: [["a.safetensors", "b.safetensors"], {}],
+                            free_text: ["STRING", {}],
+                        },
+                    },
+                },
+            }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+    });
+    t.after(() => h.dispose());
+
+    const inspect = h.document.querySelector("#qig-comfy-component-overrides .qig-comfy-discovery-actions button");
+    assert.ok(inspect, "explicit discovery action rendered");
+    inspect.click();
+    const choice = await h.waitFor(
+        () => h.document.querySelector("#qig-comfy-component-overrides .qig-comfy-override select"),
+        5000,
+        "third-party COMBO rendered",
+    );
+    assert.equal(requests.length, 1, "one request per graph class");
+    assert.equal(h.document.querySelectorAll("#qig-comfy-component-overrides .qig-comfy-override select").length, 1, "free text and linked inputs excluded");
+    assert.deepEqual([...choice.options].map((option) => option.value), ["a.safetensors", "b.safetensors"]);
+
+    choice.value = "b.safetensors";
+    h.fireEvent(choice, "change");
+    const settings = h.host.extension_settings["quick-image-gen"];
+    assert.deepEqual(settings.comfyWorkflowComponentOverrides.entries, [{
+        nodeId: "1",
+        classType: "Third Party/Loader",
+        inputName: "model_name",
+        rawValue: "a.safetensors",
+        value: "b.safetensors",
+        verified: true,
+    }]);
+
+    const nextWorkflow = JSON.stringify({
+        "1": { class_type: "Third Party/Loader", inputs: { model_name: "c.safetensors" } },
+    });
+    const textarea = h.document.getElementById("qig-comfy-workflow");
+    textarea.value = nextWorkflow;
+    h.fireEvent(textarea, "input");
+    h.fireEvent(textarea, "change");
+    assert.deepEqual(settings.comfyWorkflowComponentOverrides.entries, [], "changed graph source invalidated the override");
+});
+
+test("shows saved workflow overrides before inspection and deactivates choices the node no longer advertises", async (t) => {
+    const workflow = JSON.stringify({
+        "1": { class_type: "ThirdPartySelector", inputs: { mode: "safe" } },
+    });
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "comfyui",
+                    localUrl: "http://127.0.0.1:8188",
+                    comfyWorkflow: workflow,
+                    comfyWorkflowComponentOverrides: {
+                        version: 1,
+                        entries: [{
+                            nodeId: "1",
+                            classType: "ThirdPartySelector",
+                            inputName: "mode",
+                            rawValue: "safe",
+                            value: "dangerous",
+                            verified: true,
+                        }],
+                    },
+                },
+            },
+        },
+        fetch: async () => new Response(JSON.stringify({
+            ThirdPartySelector: { input: { required: { mode: ["STRING", {}] } } },
+        }), { status: 200, headers: { "content-type": "application/json" } }),
+    });
+    t.after(() => h.dispose());
+
+    const container = h.document.getElementById("qig-comfy-component-overrides");
+    assert.match(container.textContent, /Saved active override.*dangerous/, "active saved value is never invisible");
+    container.querySelector(".qig-comfy-discovery-actions button").click();
+    const settings = h.host.extension_settings["quick-image-gen"];
+    await h.waitFor(
+        () => settings.comfyWorkflowComponentOverrides.entries[0]?.verified === false,
+        5000,
+        "non-COMBO override deactivated",
+    );
+    assert.match(container.textContent, /Inactive saved override.*dangerous/);
+    container.querySelector(".qig-comfy-override button").click();
+    assert.deepEqual(settings.comfyWorkflowComponentOverrides.entries, []);
+});
+
+test("keeps the Comfy model selection truthful when discovery fails", async (t) => {
+    const comfyRequests = [];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "comfyui",
+                    localUrl: "http://127.0.0.1:8188",
+                    localModel: "",
+                },
+            },
+        },
+        fetch: async (url) => {
+            comfyRequests.push(String(url));
+            const classType = decodeURIComponent(String(url).split("/").at(-1));
+            const inputs = {
+                CheckpointLoaderSimple: { ckpt_name: [["first.safetensors"], {}] },
+                UNETLoader: { unet_name: [["unet.safetensors"], {}] },
+                CLIPLoader: { clip_name: [["clip.safetensors"], {}] },
+                DualCLIPLoader: {
+                    clip_name1: [["clip.safetensors"], {}],
+                    clip_name2: [["t5.safetensors"], {}],
+                },
+                VAELoader: { vae_name: [["vae.safetensors"], {}] },
+            };
+            return new Response(JSON.stringify({ [classType]: { input: { required: inputs[classType] || {} } } }), {
+                status: 200,
+                headers: { "content-type": "application/json" },
+            });
+        },
+    });
+    t.after(() => h.dispose());
+
+    h.document.getElementById("qig-comfy-model-refresh").click();
+    const modelSelect = h.document.getElementById("qig-local-model");
+    await h.waitFor(() => [...modelSelect.options].some((option) => option.value === "first.safetensors"), 5000, "Comfy models loaded");
+    assert.equal(modelSelect.value, "", "blank saved model remains visibly blank");
+    assert.equal(modelSelect.options[0].textContent, "-- Select model --");
+    assert.deepEqual([...h.document.getElementById("qig-comfy-clip-catalog").options].map((option) => option.value), ["clip.safetensors", "t5.safetensors"]);
+    assert.deepEqual([...h.document.getElementById("qig-comfy-vae-catalog").options].map((option) => option.value), ["vae.safetensors"]);
+
+    h.setFetch(async () => new Response("Forbidden", { status: 403 }));
+    h.document.getElementById("qig-comfy-model-refresh").click();
+    assert.equal(h.document.getElementById("qig-comfy-clip-catalog").options.length, 0, "old encoder catalogue cleared immediately");
+    assert.equal(h.document.getElementById("qig-comfy-vae-catalog").options.length, 0, "old VAE catalogue cleared immediately");
+    await h.waitFor(() => modelSelect.textContent.includes("403 Forbidden"), 5000, "Comfy error shown");
+    assert.ok(comfyRequests.length >= 5, "all built-in catalogues were queried before the failure check");
+});
+
+test("aborts a superseded built-in Comfy catalogue refresh", async (t) => {
+    let staleSignal = null;
+    let staleCalls = 0;
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "comfyui",
+                    localUrl: "http://127.0.0.1:8188",
+                },
+            },
+        },
+        fetch: async (url, init) => {
+            staleCalls += 1;
+            staleSignal = init?.signal;
+            return hangUntilAborted(url, init);
+        },
+    });
+    t.after(() => h.dispose());
+
+    const refresh = h.document.getElementById("qig-comfy-model-refresh");
+    refresh.click();
+    await h.waitFor(() => staleCalls === 6, 5000, "first Comfy catalogue batch started");
+    h.setFetch(async (url) => {
+        const classType = decodeURIComponent(String(url).split("/").at(-1));
+        const required = classType === "CheckpointLoaderSimple" ? { ckpt_name: [["latest.safetensors"], {}] } : {};
+        return new Response(JSON.stringify({ [classType]: { input: { required } } }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+        });
+    });
+    refresh.click();
+    assert.equal(staleSignal?.aborted, true, "superseded catalogue requests were aborted");
+    const model = h.document.getElementById("qig-local-model");
+    await h.waitFor(() => [...model.options].some(option => option.value === "latest.safetensors"), 5000, "latest catalogue committed");
+});
+
+test("keeps configured A1111 checkpoint and VAE visible while offline", async (t) => {
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "a1111",
+                    localUrl: "http://127.0.0.1:7860",
+                    a1111Model: "missing-checkpoint.safetensors",
+                    a1111Vae: "missing-vae.safetensors",
+                },
+            },
+        },
+        fetch: async () => new Response("offline", { status: 503 }),
+    });
+    t.after(() => h.dispose());
+
+    const model = h.document.getElementById("qig-a1111-model");
+    const vae = h.document.getElementById("qig-a1111-vae");
+    assert.equal(model.value, "missing-checkpoint.safetensors");
+    assert.equal(vae.value, "missing-vae.safetensors");
+    h.document.getElementById("qig-a1111-model-refresh").click();
+    assert.equal(model.value, "missing-checkpoint.safetensors", "loading state retains configured checkpoint");
+    await h.waitFor(() => model.textContent.includes("Failed to load"), 5000, "offline state shown");
+    assert.equal(model.value, "missing-checkpoint.safetensors");
+    await h.waitFor(() => vae.value === "missing-vae.safetensors", 5000, "configured VAE retained");
+});
+
+test("selecting an A1111 checkpoint stays local and uses no global options POST", async (t) => {
+    const requests = [];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "a1111",
+                    localUrl: "http://127.0.0.1:7860",
+                    a1111Model: "first.safetensors",
+                },
+            },
+        },
+        fetch: async (url, init = {}) => {
+            requests.push({ url: String(url), method: init.method || "GET" });
+            const path = String(url);
+            let payload = {};
+            if (path.endsWith("/sdapi/v1/sd-models")) payload = [
+                { title: "first.safetensors", model_name: "First" },
+                { title: "second.safetensors", model_name: "Second" },
+            ];
+            else if (path.endsWith("/sdapi/v1/options")) payload = { sd_model_checkpoint: "first.safetensors" };
+            else if (path.endsWith("/sdapi/v1/upscalers")) payload = [];
+            else if (path.endsWith("/sdapi/v1/sd-vae")) payload = [];
+            else if (path.includes("controlnet/model_list")) payload = { model_list: [] };
+            return new Response(JSON.stringify(payload), { status: 200, headers: { "content-type": "application/json" } });
+        },
+    });
+    t.after(() => h.dispose());
+
+    h.document.getElementById("qig-a1111-model-refresh").click();
+    const model = h.document.getElementById("qig-a1111-model");
+    await h.waitFor(() => [...model.options].some(option => option.value === "second.safetensors"), 5000, "checkpoint catalogue loaded");
+    const requestsBeforeSelection = requests.length;
+    model.value = "second.safetensors";
+    h.fireEvent(model, "change");
+    assert.equal(h.host.extension_settings["quick-image-gen"].a1111Model, "second.safetensors");
+    assert.equal(requests.length, requestsBeforeSelection, "selection made no network request");
+    assert.equal(requests.some(request => request.method === "POST" && request.url.endsWith("/sdapi/v1/options")), false);
+});
+
+test("configuration UI rejects duplicate identities and keeps search and summaries accurate", async (t) => {
+    const configurations = [
+        { id: "home-local", name: "Home", provider: "local", localType: "a1111" },
+        { id: "home-poll", name: "Home", provider: "pollinations", pollinationsModel: "flux" },
+    ];
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: configurations,
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "local",
+                    localType: "a1111",
+                },
+            },
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_configurations: JSON.stringify(configurations),
+        },
+    });
+    t.after(() => h.dispose());
+
+    assert.deepEqual(
+        [...h.document.querySelectorAll(".qig-filter-summary-label")].map((label) => label.textContent),
+        ["Visible Filters", "Active Now", "Seed Overrides"],
+    );
+
+    const configSelect = h.document.getElementById("qig-config-select");
+    configSelect.value = "home-poll";
+    h.fireEvent(configSelect, "change");
+    const provider = h.document.getElementById("qig-provider");
+    provider.value = "local";
+    h.fireEvent(provider, "change");
+    h.document.getElementById("qig-config-update").click();
+    await h.waitFor(() => h.toastrCalls.some((call) => call.type === "warning" && /already exists/.test(call.message)), 5000, "duplicate update rejected");
+    assert.equal(JSON.parse(h.localStorage.getItem("qig_configurations")).find((entry) => entry.id === "home-poll").provider, "pollinations");
+
+    const search = h.document.getElementById("qig-settings-search");
+    search.value = "kl_optimal";
+    h.fireEvent(search, "input");
+    assert.match(h.document.getElementById("qig-settings-search-status").textContent, /^No settings/);
+    const localType = h.document.getElementById("qig-local-type");
+    localType.value = "comfyui";
+    h.fireEvent(localType, "change");
+    assert.match(h.document.getElementById("qig-settings-search-status").textContent, /^Found /, "active search reran after backend switch");
+    assert.equal(h.document.getElementById("qig-comfy-scheduler-wrap").classList.contains("qig-search-hidden"), false);
+
+    h.document.getElementById("qig-input-btn").dispatchEvent(new h.window.MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 10,
+        clientY: 10,
+    }));
+    const labels = [...h.document.querySelectorAll(".qig-palette-preset-menu__item")].map((item) => item.textContent);
+    assert.ok(labels.some((label) => label.includes("Home · Local")));
+    assert.ok(labels.some((label) => label.includes("Home · Pollinations")));
+});
+
+test("filter summary combines pools from every active group character", async (t) => {
+    const filterPools = [
+        { id: "qig_pool_default_global", name: "Default", scope: "global" },
+        { id: "alice-pool", name: "Alice", scope: "char", charId: "alice" },
+        { id: "bob-pool", name: "Bob", scope: "char", charId: "bob" },
+    ];
+    const activeGlobal = ["qig_pool_default_global"];
+    const activeByChar = {
+        alice: ["alice-pool"],
+        bob: ["bob-pool"],
+    };
+    const context = {
+        chat: [],
+        characters: {
+            alice: { id: "alice", name: "Alice", avatar: "alice.png" },
+            bob: { id: "bob", name: "Bob", avatar: "bob.png" },
+        },
+        characterId: null,
+        name1: "You",
+        name2: "",
+        groupId: "g1",
+        groups: { g1: { id: "g1", members: ["alice", "bob"] } },
+        chatId: "qig-group-chat",
+        chatMetadata: {},
+        saveChat: async () => {},
+        powerUserSettings: {},
+        persona: {},
+        getPresetManager: () => null,
+        chatCompletionSettings: {},
+        getCurrentChatId: () => "qig-group-chat",
+    };
+    const h = await createQigHarness({
+        host: {
+            getContext: () => context,
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: [],
+                    _backupFilterPools: filterPools,
+                    _backupActiveFilterPoolIdsGlobal: activeGlobal,
+                    _backupActiveFilterPoolIdsByChar: activeByChar,
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                },
+            },
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_configurations: "[]",
+            qig_filter_pools: JSON.stringify(filterPools),
+            qig_active_pool_ids_global: JSON.stringify(activeGlobal),
+            qig_active_pool_ids_by_char: JSON.stringify(activeByChar),
+        },
+    });
+    t.after(() => h.dispose());
+
+    assert.equal(h.document.querySelector('[data-qig-summary="scope"]').textContent, "2 active characters in group context");
+    assert.equal(h.document.querySelector('[data-qig-summary="enabled-pools"]').textContent, "3 enabled pools");
+    assert.equal(h.document.querySelector('[data-qig-summary="total-pools"]').textContent, "3 pools available");
+});
+
+test("loading a configuration updates the global base beneath a character override", async (t) => {
+    const characterSettings = {
+        "card:alice.png": {
+            prompt: "character prompt",
+            negativePrompt: "character negative",
+            style: "anime",
+            width: 640,
+            height: 960,
+        },
+    };
+    const configurations = [{
+        id: "global-b",
+        name: "Global B",
+        provider: "custom",
+        customApiUrl: "https://global-custom.example/v1/images",
+        customApiRefImages: ["data:image/png;base64,global-custom"],
+        prompt: "global B prompt",
+        negativePrompt: "global B negative",
+        style: "photorealistic",
+        width: 896,
+        height: 1152,
+    }];
+    const characterReferences = {
+        "card:alice.png": {
+            proxyRefImages: ["data:image/png;base64,character-proxy"],
+            customApiRefImages: ["data:image/png;base64,character-custom"],
+        },
+    };
+    const context = {
+        chat: [],
+        characters: { alice: { name: "Alice", avatar: "alice.png" } },
+        characterId: "alice",
+        name1: "You",
+        name2: "Alice",
+        groupId: null,
+        chatId: "qig-test-chat",
+        chatMetadata: {},
+        saveChat: async () => {},
+        powerUserSettings: {},
+        persona: {},
+        getPresetManager: () => null,
+        chatCompletionSettings: {},
+        getCurrentChatId: () => "qig-test-chat",
+    };
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupConfigurations: configurations,
+                    _backupCharSettings: characterSettings,
+                    _backupCharRefImages: characterReferences,
+                    _configurationMigrationVersion: 1,
+                    setupWizardSeen: true,
+                    starterPresetsSeeded: true,
+                    provider: "proxy",
+                    proxyRefImages: ["data:image/png;base64,global-proxy"],
+                    prompt: "old global prompt",
+                    negativePrompt: "old global negative",
+                    style: "none",
+                    width: 512,
+                    height: 512,
+                    _charSettingsBaseState: {
+                        prompt: "old global prompt",
+                        negativePrompt: "old global negative",
+                        style: "none",
+                        width: 512,
+                        height: 512,
+                        proxyRefImages: ["data:image/png;base64,global-proxy"],
+                        customApiRefImages: [],
+                        nanobananaRefImages: [],
+                        nanogptRefImages: [],
+                        localRefImage: "",
+                    },
+                },
+            },
+            getContext: () => context,
+            callGenericPopup: async () => 1,
+            POPUP_TYPE: { CONFIRM: 1, TEXT: 2, INPUT: 3 },
+            POPUP_RESULT: { AFFIRMATIVE: 1 },
+        },
+        localStorage: {
+            qig_sync_cache_id: "owner-1",
+            qig_configurations: JSON.stringify(configurations),
+            qig_char_settings: JSON.stringify(characterSettings),
+            qig_char_ref_images: JSON.stringify(characterReferences),
+        },
+    });
+    t.after(() => h.dispose());
+
+    const settings = h.host.extension_settings["quick-image-gen"];
+    assert.equal(settings.prompt, "character prompt", "character override active after boot");
+    assert.deepEqual(settings.proxyRefImages, ["data:image/png;base64,character-proxy"]);
+    const select = h.document.getElementById("qig-config-select");
+    select.value = "global-b";
+    h.fireEvent(select, "change");
+    await h.waitFor(() => settings.prompt === "character prompt", 5000, "character override reapplied after configuration load");
+    assert.equal(settings.prompt, "character prompt", "character override remains visible");
+    assert.equal(settings.style, "anime");
+    assert.equal(settings.provider, "custom");
+    assert.deepEqual(settings.proxyRefImages, [], "old-provider character references were cleared");
+    assert.deepEqual(settings.customApiRefImages, ["data:image/png;base64,character-custom"], "new-provider character references were loaded");
+
+    h.document.getElementById("qig-config-update").click();
+    await h.waitFor(() => {
+        const [saved] = JSON.parse(h.localStorage.getItem("qig_configurations"));
+        return saved?.prompt === "global B prompt";
+    }, 5000, "configuration updated from global base");
+    const [updated] = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(updated.prompt, "global B prompt", "Update did not capture the character prompt");
+    assert.deepEqual(updated.customApiRefImages, ["data:image/png;base64,global-custom"], "Update retained global provider references");
+
+    let exportedBlob = null;
+    URL.createObjectURL = (blob) => {
+        exportedBlob = blob;
+        return "blob:qig-export-test";
+    };
+    URL.revokeObjectURL = () => {};
+    h.document.getElementById("qig-export-btn").click();
+    await h.waitFor(() => exportedBlob, 5000, "settings export created");
+    const exported = JSON.parse(await exportedBlob.text());
+    assert.equal(exported.activeSettings.prompt, "global B prompt", "export used the global prompt");
+    assert.equal(exported.activeSettings.width, 896, "export used the global dimensions");
+
+    h.document.getElementById("qig-reset-char-btn").click();
+    await h.waitFor(() => !JSON.parse(h.localStorage.getItem("qig_char_settings"))["card:alice.png"], 5000, "character override removed");
+    assert.equal(settings.prompt, "global B prompt", "new configuration became the recoverable global base");
+    assert.equal(settings.negativePrompt, "global B negative");
+    assert.equal(settings.style, "photorealistic");
+    assert.equal(settings.width, 896);
+    assert.equal(settings.height, 1152);
+    assert.deepEqual(settings.customApiRefImages, ["data:image/png;base64,global-custom"]);
 });

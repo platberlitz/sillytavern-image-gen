@@ -75,16 +75,20 @@ test("A1111 model refresh guards reject stale requests and changed base URLs", (
         requestId: 4,
         latestRequestId: 4,
         baseUrl: "http://127.0.0.1:7860/",
-        settings: { localType: "a1111", localUrl: "http://127.0.0.1:7860" },
+        settings: { provider: "local", localType: "a1111", localUrl: "http://127.0.0.1:7860" },
     };
     assert.equal(isCurrentA1111ModelRefresh(current), true);
     assert.equal(isCurrentA1111ModelRefresh({ ...current, latestRequestId: 5 }), false);
     assert.equal(isCurrentA1111ModelRefresh({
         ...current,
-        settings: { localType: "a1111", localUrl: "http://127.0.0.1:7861" },
+        settings: { provider: "local", localType: "a1111", localUrl: "http://127.0.0.1:7861" },
     }), false);
     assert.equal(isCurrentA1111ModelRefresh({
         ...current,
-        settings: { localType: "comfyui", localUrl: "http://127.0.0.1:7860" },
+        settings: { provider: "local", localType: "comfyui", localUrl: "http://127.0.0.1:7860" },
+    }), false);
+    assert.equal(isCurrentA1111ModelRefresh({
+        ...current,
+        settings: { provider: "pollinations", localType: "a1111", localUrl: "http://127.0.0.1:7860" },
     }), false);
 });

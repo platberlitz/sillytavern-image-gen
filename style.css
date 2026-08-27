@@ -1000,6 +1000,19 @@
     overflow-wrap: anywhere;
 }
 
+.qig-comfy-discovery-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.qig-comfy-discovery-error {
+    margin-top: 6px;
+    color: var(--fullred);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+}
+
 .qig-toggle-list {
     display: grid;
     gap: 4px;
@@ -1750,6 +1763,10 @@
     .qig-form-field--full,
     .qig-field--full {
         grid-column: auto;
+    }
+
+    .qig-sampling {
+        grid-column: 1 / -1;
     }
 
     .qig-menu-hero {

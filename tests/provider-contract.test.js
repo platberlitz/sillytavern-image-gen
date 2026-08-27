@@ -59,6 +59,29 @@ test("reproducible settings are compact and exclude internal or executable state
     assert.doesNotMatch(JSON.stringify(sanitized), /secret|workflow|backup|private|localUrl|autoInsert/i);
 });
 
+test("A1111 snapshots omit server interrupt controls but retain recipe fields", () => {
+    const source = {
+        provider: "local",
+        localType: "a1111",
+        localModel: "stale-comfy.safetensors",
+        localDenoise: 0.65,
+        a1111ControlNetGuidanceEnd: 0.75,
+        a1111InterruptServer: true,
+        a1111SaveToWebUI: true,
+    };
+    const settingsSnapshot = sanitizeReproducibleSettings(source);
+    const metadataSnapshot = sanitizeEffectiveRequest({ provider: "local", settings: source });
+
+    assert.deepEqual(settingsSnapshot, {
+        provider: "local",
+        localType: "a1111",
+        localDenoise: 0.65,
+        a1111ControlNetGuidanceEnd: 0.75,
+    });
+    assert.deepEqual(metadataSnapshot.settings, settingsSnapshot);
+    assert.doesNotMatch(JSON.stringify({ metadataSnapshot, settingsSnapshot }), /a1111InterruptServer|a1111SaveToWebUI|stale-comfy/);
+});
+
 test("effective requests snapshot only the selected provider recipe", () => {
     const request = createEffectiveRequest({
         provider: "proxy",
