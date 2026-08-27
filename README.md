@@ -31,9 +31,9 @@ Requires SillyTavern 1.14.0 or newer (extension manifest v3 and media-array supp
 | `proxy` | Reverse Proxy (OpenAI-compatible) | No |
 | `custom` | Custom API (JSON, multipart, async polling) | Optional |
 
-Image-provider keys are stored in QIG extension settings and Connection Profiles. Treat browser/server profile storage as sensitive. This account data is not end-to-end encrypted by QIG. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
+Image-provider keys are stored in QIG extension settings and Configurations. Treat browser/server configuration storage as sensitive. This account data is not end-to-end encrypted by QIG. Settings exports omit credentials and private reference images by default. SillyTavern Secrets are used for supported Text AI override profiles.
 
-QIG synchronizes active settings, Connection Profiles, generation presets, Comfy workflows, character overrides and references, Contextual Filters, filter pools, and Context Media through the current SillyTavern server user. Browser storage is only a local cache for those stores. Gallery images and prompt history remain local to each browser, are isolated by the current SillyTavern account, and do not follow you to another device. Runtime logs are session-local.
+QIG synchronizes active settings, Configurations, character overrides and references, Contextual Filters, filter pools, and Context Media through the current SillyTavern server user. Browser storage is only a local cache for those stores. Gallery images and prompt history remain local to each browser, are isolated by the current SillyTavern account, and do not follow you to another device. Runtime logs are session-local.
 
 ### Provider notes
 
@@ -49,12 +49,12 @@ QIG synchronizes active settings, Connection Profiles, generation presets, Comfy
 ## Quick Start
 
 1. Open the QIG panel in SillyTavern. On a fresh install a Quick Setup wizard opens: pick a provider, paste a key if needed, choose a style. Re-open it any time with the `Quick Setup` button.
-2. Fresh installs also get three starter presets for free Pollinations models in the Preset dropdown.
+2. Fresh installs also get three starter configurations for free Pollinations models in the Configuration dropdown.
 3. Fresh installs default **Prompt source** to `Chat scene`, which pulls context from the current chat. Switch it to `Manual` to type your own prompt.
 4. Click `Generate` (or press `Ctrl+Enter`; the shortcut is configurable in settings).
-5. Save the generation setup as a [preset](#generation-presets). Save provider credentials and model configuration separately as a [connection profile](#connection-profiles).
+5. Save the whole setup as a [configuration](#configurations) with the Save As button next to the Configuration dropdown.
 
-The panel shows the essentials (preset, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Presets & Prompting, Context Rules & Media, then Automation & Delivery. Connection profiles still keep credentials and models separate from portable generation presets. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
+The panel shows the essentials (configuration, prompt, prompt source, style) up front. **More settings** follows the generation workflow: Image Provider & Output, Presets & Prompting, Context Rules & Media, then Automation & Delivery. A status line summarizes the active provider, model, size, and prompt source, and warns about incomplete configuration (missing API key, inactive pipelines).
 
 ### Prompt source
 
@@ -225,10 +225,10 @@ Extra controls:
 - **CLIP skip**, **denoise**, **scheduler**, **timeout**, **output selection**
 - **Upscale model** (built-in workflow)
 - **LoRAs** (comma-separated `name:weight` pairs; built-in workflow)
-- **Diffusion/UNET support**: explicit model loader, optional negative-prompt skipping, one or two CLIP models, VAE model, CLIP type
-- **Workflow presets**: save and load custom workflow JSON configs
+- **Diffusion/UNET support**: explicit model loader, optional negative-prompt skipping, one or two text encoders, VAE model, CLIP type. Refresh lists the encoders and VAEs your server actually has; a configured file that the server does not report stays selected instead of being silently replaced.
+- **Custom workflow components**: when Custom Workflow JSON is filled in, QIG lists every literal model/VAE/encoder filename in the graph and lets you override each one without editing the JSON. Overrides are applied after placeholder substitution and never change node classes or connections. They are dropped if the graph changes.
 
-Custom graphs receive only values represented by placeholders; QIG does not inject its built-in LoRA or upscale nodes into them. Comfy graphs are executable programs and may invoke custom nodes with filesystem or network side effects. Full settings exports omit executable Comfy graph bodies, and settings imports ignore workflow preset records; local trusted presets remain unchanged. Review workflow JSON before saving or running it.
+Custom graphs receive only values represented by placeholders; QIG does not inject its built-in LoRA or upscale nodes into them. Comfy graphs are executable programs and may invoke custom nodes with filesystem or network side effects. Full settings exports omit executable Comfy graph bodies and custom-workflow component overrides, and settings imports ignore both; your local graph and overrides remain unchanged. Review workflow JSON before saving or running it.
 
 Cancellation first uses ComfyUI's targeted Jobs API when available, then safely removes pending work through the queue API on older servers. QIG never sends a bodyless global interrupt. **Allow targeted legacy interrupt** is an explicit shared-server risk opt-in because older `/interrupt` implementations may still stop another user's work.
 
@@ -289,7 +289,7 @@ Select `Custom API` when an image service is not covered by a built-in provider 
 - **Async job API**: submits a JSON job, reads its ID, then polls a URL containing `{{jobId}}` until a configured success or failure status.
 - **Multipart upload**: sends scalar fields and an optional reference image as multipart form data.
 
-Connection Profiles store the trusted request/poll URLs, authentication mode and credential, model, and reference images. Generation Presets store the request template, response pointers, timeout, and polling behavior. This lets multiple named backends share one provider without adding code for each API.
+A Configuration stores the trusted request/poll URLs, authentication mode and credential, model, reference images, request template, response pointers, timeout, and polling behavior together. This lets multiple named backends share one provider without adding code for each API.
 
 ### Request templates
 
@@ -301,7 +301,7 @@ Use RFC 6901 JSON Pointers such as `/data/0/url` for the image, job ID, and job 
 
 Authentication is limited to no auth, Bearer, a named header, a named query parameter, or Basic auth (`username:password`). Credentials cannot be embedded in request templates. Custom requests run directly in the browser, reject redirects, enforce bounded JSON/image responses, and never use a generic SillyTavern server relay. The endpoint must allow your SillyTavern origin through CORS.
 
-Custom API fields are synchronized to the current SillyTavern account, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are excluded from portable settings exports, reproducible image metadata, and imported presets so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions in each account instead of relying on an export.
+Custom API fields are synchronized to the current SillyTavern account, including endpoints, credentials, authentication behavior, request mappings, polling rules, and reference images. They are excluded from portable settings exports, reproducible image metadata, and imported configurations so an imported file cannot attach an untrusted request to a local credential. Recreate or review Custom API definitions in each account instead of relying on an export.
 
 ## Slash Commands
 
@@ -395,23 +395,29 @@ Auto-insert target (when `Auto-insert` is on):
 
 Manual insert target: same options, applied when using Insert from the result popup.
 
-## Presets and Profiles
+## Configurations
 
-### Connection Profiles
+One named Configuration is one complete setup. Save As, Update and Delete sit next to the Configuration dropdown at the top of the panel; right-clicking the palette button opens the same list.
 
-Store provider connection settings (API keys, model IDs, URLs, provider-specific options). Profiles belong to one provider and do not change the active provider. Select the provider first, then load one of its profiles without re-entering credentials.
+A Configuration stores the selected provider and everything that provider needs: API key, endpoint URL, model, VAE and text encoders, loader mode, workflow, LoRAs and other provider options, plus style, prompt behavior, size, image count, steps, guidance, sampler, scheduler, seed, reference images and the inject options. Loading one resets those values to the record and leaves every other provider's settings alone, so switching between a Krea setup, an Anima setup and a Pony/Illustrious setup takes one selection.
 
-### Generation Presets
+Not part of a Configuration: automation and delivery settings, character overrides, Contextual Filters and Context Media.
 
-Store the core generation setup: selected provider and style, prompt behavior, size, image count, steps, guidance, sampler, seed, and selected inject options. Reverse Proxy presets store the Proxy values that are actually sent. Custom API presets store the declarative request/response and polling mapping, while the connection profile keeps URLs, auth, model, and reference images local. Credentials, model IDs, most provider-specific options, automation/delivery settings, character overrides, and contextual filters are not part of a preset.
+The selection means "the configuration you are editing". Changing a value does not deselect it; press Update to write the change back, or Save As to branch a new one.
 
-An active preset is highlighted only while the covered settings still match it. Editing a covered value returns the selector to **Current settings**.
+Because Configurations hold credentials and endpoints, they synchronize to your SillyTavern account but are stripped from portable settings exports. An imported file can only fill in the safe fields of a configuration whose ID already exists locally; it can never attach an imported endpoint or key.
+
+### Migration from profiles and presets
+
+On first load after upgrading, QIG merges your old Connection Profiles, Generation Presets and ComfyUI Workflow Presets into Configurations. Records that shared the exact same name and a compatible provider become one Configuration, with the workflow preset winning over the generation preset, which wins over the connection profile. Records that did not match anything become their own Configuration, and same-name extras get a suffix such as `Krea (Comfy workflow 2)`.
+
+The three old stores are copied, not moved. They are left byte-identical as a rollback copy and are never written to again.
 
 ## Server Plugin
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
 
-Quick Image Gen `3.3.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
+Quick Image Gen `3.4.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
 
 Setup:
 
@@ -436,6 +442,25 @@ If an update breaks your setup, switch back to the previous version line without
 `main` is always the current release. When a new version line starts, a `v<major.minor>` branch is kept at the last release of the previous line. Rolling back does not delete your settings; options added by newer versions are ignored until you return to `main`.
 
 ## Changelog
+
+### 3.4.0
+
+**Breaking**
+
+- Connection Profiles, Generation Presets, and ComfyUI Workflow Presets are replaced by one **Configuration** per named setup. Existing records with the same exact name and a compatible provider are merged into one configuration on first load; the three old stores are left byte-identical as a rollback copy and are no longer written to.
+- New settings exports carry configurations under the existing `generationPresets` property, so the transfer schema stays at v7. They no longer contain a separate `connectionProfiles` or `comfyWorkflows` store.
+
+**Added**
+
+- ComfyUI Refresh now lists the text encoders and VAEs your server reports, not just checkpoints and UNET models.
+- Custom ComfyUI graphs get a **Workflow components** list that lets you swap any literal filename in the graph without editing JSON. Overrides apply after placeholder replacement and drop themselves when the graph's own value changes. They never leave the browser: exports omit them and imports ignore them.
+- Sampler and the applicable scheduler now sit together in one **Sampling** group under Advanced Settings.
+- The Contextual Filters summary is back to three cards: Visible Filters, Active Now, and Seed Overrides.
+
+**Fixed**
+
+- A saved ComfyUI model the server does not report is no longer silently replaced by the first model in the list and written back to your settings. It stays selected and is marked `(not on server)`.
+- A saved A1111 checkpoint or VAE missing from the server list stays selected instead of showing blank.
 
 ### 3.3.0
 
@@ -556,6 +581,7 @@ Earlier versions predate this changelog; see the commit history.
 - Legacy Prompt Templates are ignored and cleaned up.
 - Exported settings no longer include templates or prompt replacement maps.
 - Settings exports use schema v7 and omit credentials, private/reference images, and all Custom API trust or request-definition fields. Schema v5 imports remain supported and retain local credentials.
+- Connection Profiles, Generation Presets, and ComfyUI Workflow Presets merge into Configurations once, on first load after upgrading. The three legacy stores are never rewritten afterwards, so downgrading restores the previous behaviour with your old records intact.
 - Unscoped legacy `qig_gallery` and `qig_prompt_history` data is left untouched and is not assigned to the current account because its owner cannot be verified.
 
 ## Development

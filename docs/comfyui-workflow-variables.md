@@ -70,7 +70,7 @@ QIG reads every image in completed history, in deterministic node and image orde
 
 ## Safety and Cancellation
 
-ComfyUI workflows are executable programs. Custom nodes can perform filesystem, network, or process side effects. Review imported JSON before running it. Executable Comfy workflow bodies are omitted from full QIG settings exports, and settings imports ignore workflow preset records rather than pairing them with an existing trusted local endpoint. Locally saved workflow presets remain unchanged.
+ComfyUI workflows are executable programs. Custom nodes can perform filesystem, network, or process side effects. Review imported JSON before running it. Executable Comfy workflow bodies and custom-workflow component overrides are omitted from full QIG settings exports, and settings imports ignore them rather than pairing them with an existing trusted local graph. Locally saved configurations remain unchanged.
 
 QIG tracks each submitted prompt ID. Cancellation uses the targeted Jobs API when available and falls back to removing pending work through the queue API. It never sends a bodyless global interrupt. The optional targeted legacy interrupt can still be interpreted globally by older ComfyUI versions, so enable it only when that shared-server risk is acceptable.
 
@@ -82,4 +82,5 @@ If history polling times out, QIG makes the same safe targeted-or-queue cleanup 
 - Use API-format JSON, not the regular visual workflow export.
 - Invalid, oversized, deeply nested, or visual-format workflow JSON is rejected before submission. Clear the custom workflow field to use QIG's built-in workflow.
 - Settings such as LoRAs and built-in upscaling are not injected into custom graphs. Add the corresponding nodes and placeholders to the graph itself.
+- QIG lists the literal filename-like values it finds in a custom graph under **Workflow components** so you can swap a model, VAE, or text encoder without editing JSON. Overrides are applied after placeholder replacement, so an override value is never treated as a placeholder, and an override is dropped when the graph's own value for that node input changes.
 - Runtime ComfyUI or proxy JSON errors are reported as runtime errors instead of being relabeled as invalid workflow JSON.

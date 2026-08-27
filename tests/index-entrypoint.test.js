@@ -855,3 +855,53 @@ test("inUser injection appends the instruction when the prompt has no user messa
     await h.waitFor(() => prompts.length === 3, 5000, "inject instruction appended");
     assert.deepEqual(prompts[2], { role: "system", content: "SYSTEM INSTR" });
 });
+
+test("merges same-name profile, preset and workflow records into one configuration without touching the legacy stores", async (t) => {
+    const profiles = { local: { Krea: { localUrl: "http://127.0.0.1:8188", localType: "comfyui", a1111Model: "ignored.safetensors" } } };
+    const presets = [{ id: "preset-krea", name: "Krea", provider: "local", steps: 30, cfgScale: 3.5, sampler: "dpmpp_2m" }];
+    const workflows = [{ id: "cwf-krea", name: "Krea", localModel: "krea.safetensors", comfyModelLoader: "unet", comfyFluxVaeModel: "ae.safetensors" }];
+    const rawProfiles = JSON.stringify(profiles);
+    const rawPresets = JSON.stringify(presets);
+    const rawWorkflows = JSON.stringify(workflows);
+
+    const h = await createQigHarness({
+        host: {
+            extension_settings: {
+                "quick-image-gen": {
+                    _syncCacheId: "owner-1",
+                    _backupProfiles: profiles,
+                    _backupGenPresets: presets,
+                    _backupComfyWorkflows: workflows,
+                },
+            },
+        },
+        localStorage: {
+            qig_profiles: rawProfiles,
+            qig_gen_presets: rawPresets,
+            qig_comfy_workflows: rawWorkflows,
+            qig_sync_cache_id: "owner-1",
+        },
+    });
+    t.after(() => h.dispose());
+
+    const configs = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(configs.length, 1, "one merged configuration");
+    const [config] = configs;
+    assert.equal(config.name, "Krea");
+    assert.equal(config.provider, "local");
+    assert.equal(config.localType, "comfyui", "workflow forces the ComfyUI backend");
+    assert.equal(config.localUrl, "http://127.0.0.1:8188", "endpoint came from the connection profile");
+    assert.equal(config.steps, 30, "generation values came from the preset");
+    assert.equal(config.sampler, "dpmpp_2m");
+    assert.equal(config.localModel, "krea.safetensors", "model came from the workflow preset");
+    assert.equal(config.comfyFluxVaeModel, "ae.safetensors", "component selection survives the merge");
+
+    assert.equal(h.localStorage.getItem("qig_profiles"), rawProfiles, "legacy profile store untouched");
+    assert.equal(h.localStorage.getItem("qig_gen_presets"), rawPresets, "legacy preset store untouched");
+    assert.equal(h.localStorage.getItem("qig_comfy_workflows"), rawWorkflows, "legacy workflow store untouched");
+
+    const select = h.document.getElementById("qig-config-select");
+    assert.ok(select, "configuration selector rendered");
+    assert.ok([...select.options].some((option) => option.textContent.startsWith("Krea")), "merged configuration is selectable");
+    assert.equal(h.document.getElementById("qig-profile-select"), null, "old connection profile control is gone");
+});
