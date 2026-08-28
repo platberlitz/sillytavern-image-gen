@@ -252,8 +252,10 @@
 
 .qig-action-strip {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
-    gap: 6px;
+    /* Buttons share a row only when their labels fit; otherwise each takes a full row. */
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    grid-auto-rows: 1fr;
+    gap: 8px;
 }
 
 .qig-action-strip .menu_button,
@@ -264,12 +266,16 @@
     gap: 6px;
     min-width: 0;
     min-height: 40px;
-    padding: 6px 8px;
-    font-size: 12px;
+    padding: 6px 10px;
     line-height: 1.2;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+}
+
+.qig-action-strip .menu_button {
+    width: 100%;
+    margin: 0;
 }
 
 .qig-template-actions {
@@ -1283,7 +1289,10 @@
 
 .qig-popup-form input:not([type="checkbox"]),
 .qig-popup-form select,
-.qig-popup-form textarea {
+.qig-popup-form textarea,
+.qig-wizard input:not([type="checkbox"]),
+.qig-wizard select,
+.qig-wizard textarea {
     width: 100%;
     color: var(--SmartThemeBodyColor);
     background: var(--SmartThemeBlurTintColor);
@@ -1294,7 +1303,10 @@
 
 .qig-popup-form input:not([type="checkbox"]):focus,
 .qig-popup-form select:focus,
-.qig-popup-form textarea:focus {
+.qig-popup-form textarea:focus,
+.qig-wizard input:not([type="checkbox"]):focus,
+.qig-wizard select:focus,
+.qig-wizard textarea:focus {
     outline: 2px solid transparent;
     outline-offset: 1px;
     border-color: var(--SmartThemeQuoteColor);
@@ -1779,10 +1791,6 @@
     .qig-shortcut-hint,
     .qig-hero-note {
         display: none;
-    }
-
-    .qig-action-strip {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
     .qig-inline-control {
@@ -2363,6 +2371,8 @@
 }
 
 .qig-wizard label {
+    display: block;
+    margin-bottom: 4px;
     font-size: 12px;
     font-weight: 600;
 }
