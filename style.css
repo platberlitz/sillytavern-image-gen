@@ -263,10 +263,13 @@
     justify-content: center;
     gap: 6px;
     min-width: 0;
+    min-height: 40px;
     padding: 6px 8px;
     font-size: 12px;
     line-height: 1.2;
-    white-space: normal;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .qig-template-actions {
@@ -1783,7 +1786,17 @@
     }
 
     .qig-inline-control {
-        flex-direction: column;
+        flex-wrap: wrap;
+        align-items: stretch;
+    }
+
+    .qig-inline-control__main {
+        flex-basis: 100%;
+    }
+
+    .qig-inline-control .menu_button {
+        flex: 1 1 0;
+        min-width: 44px;
     }
 
     .qig-row,
