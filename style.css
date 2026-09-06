@@ -2444,10 +2444,15 @@ dialog.popup.qig-native-review .popup-content {
     gap: 6px;
 }
 
-.qig-prompt-source__option {
-    position: relative;
+#qig-settings .qig-prompt-source__option {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    text-align: center;
+}
+
+.qig-prompt-source__option {
+    position: relative;
     gap: 6px;
     padding: 5px 10px;
     border: 1px solid var(--qig-line);

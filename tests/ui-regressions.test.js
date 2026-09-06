@@ -10,6 +10,24 @@ function key(h, target, keyName, modifiers = {}) {
     return event;
 }
 
+test("prompt-source labels centre their text despite the general label styling", async t => {
+    const h = await uiHarness(t);
+    const stylesheet = h.document.createElement("style");
+    stylesheet.textContent = readFileSync(new URL("../style.css", import.meta.url), "utf8");
+    h.document.head.append(stylesheet);
+    const options = [...h.document.querySelectorAll(".qig-prompt-source__option")];
+    assert.equal(options.length, 3);
+    for (const option of options) {
+        const style = h.window.getComputedStyle(option);
+        assert.equal(style.display, "inline-flex");
+        assert.equal(style.alignItems, "center");
+        assert.equal(style.justifyContent, "center");
+        assert.equal(style.textAlign, "center");
+        option.click();
+        assert.equal(option.querySelector("input").checked, true);
+    }
+});
+
 test("cached windows keep paint order and focus without overriding the CSS viewport", async t => {
     const h = await uiHarness(t);
     const viewport = Object.assign(new h.window.EventTarget(), { height: 420, offsetTop: 12 });
