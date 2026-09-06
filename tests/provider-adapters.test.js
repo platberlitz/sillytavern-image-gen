@@ -555,3 +555,24 @@ test('provider image extraction survives arbitrarily deep nested arrays', () => 
   const shallow = [[[[['https://real.example/image.png']]]]];
   assert.equal(extractProviderImageSource({ output: shallow }), 'https://real.example/image.png');
 });
+
+test('provider image extraction bounds array access before queuing values', () => {
+  const image = 'https://real.example/image.png';
+  let accesses = 0;
+  const wide = new Proxy(new Array(100_000), {
+    get(target, key, receiver) {
+      if (/^\d+$/.test(String(key))) {
+        accesses += 1;
+        assert.ok(Number(key) < 4095, 'elements beyond the traversal budget must not be accessed');
+      }
+      return Reflect.get(target, key, receiver);
+    },
+  });
+  assert.equal(extractProviderImageSource({ output: wide }), null);
+  assert.equal(accesses, 4095);
+
+  wide[0] = [[image]];
+  accesses = 0;
+  assert.equal(extractProviderImageSource({ output: wide }), image);
+  assert.equal(accesses, 1, 'a nested first image must not cause siblings to be read');
+});

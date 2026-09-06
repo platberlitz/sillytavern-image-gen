@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { setImmediate as nextTurn } from "node:timers/promises";
 
 const require = createRequire(import.meta.url);
 const {
@@ -177,9 +179,55 @@ test("relay upload and account concurrency use separate identities", () => {
     assert.equal(bobStarted, true);
 });
 
-test("pre-aborted and pre-destroyed relay requests never acquire slots", () => {
+test("relay concurrency accepts consumed HTTP bodies after parser and authentication scheduling", async (t) => {
+    const uploads = createRelayConcurrencyLimiter({ getKey: getAddressKey });
+    const accounts = createRelayConcurrencyLimiter({ getKey: getAuthenticatedUserKey });
+    const server = createServer((req, res) => {
+        uploads.middleware(req, res, async () => {
+            try {
+                const chunks = [];
+                for await (const chunk of req) chunks.push(chunk);
+                req.body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+                await nextTurn();
+                req.user = { profile: { handle: "alice" } };
+                assert.equal(req.complete, true);
+                assert.equal(req.readableEnded, true);
+                assert.equal(req.destroyed, true);
+                assert.equal(req.aborted, false);
+                assert.equal(req.socket.destroyed, false);
+                assert.equal(uploads.getActiveCounts().global, 1);
+                accounts.middleware(req, res, () => {
+                    assert.equal(accounts.getActiveCounts().global, 1);
+                    res.end(JSON.stringify(req.body));
+                });
+            } catch (error) {
+                res.statusCode = 500;
+                res.end(error.message);
+            }
+        });
+    });
+    t.after(() => new Promise(resolve => {
+        server.closeAllConnections();
+        server.close(resolve);
+    }));
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/relay`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: '{"action":"getPrediction"}',
+        signal: AbortSignal.timeout(1_000),
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { action: "getPrediction" });
+    assert.equal(uploads.getActiveCounts().global, 0);
+    assert.equal(accounts.getActiveCounts().global, 0);
+});
+
+test("pre-aborted requests and closed relay connections never acquire slots", () => {
     const limiter = createRelayConcurrencyLimiter({ globalLimit: 1, perUserLimit: 1 });
-    for (const req of [new MockRequest({ aborted: true }), new MockRequest({ destroyed: true })]) {
+    const disconnected = new MockRequest();
+    disconnected.socket = { destroyed: true };
+    for (const req of [new MockRequest({ aborted: true }), disconnected]) {
         const res = new MockResponse();
         let started = false;
         limiter.middleware(req, res, () => { started = true; });
@@ -187,11 +235,13 @@ test("pre-aborted and pre-destroyed relay requests never acquire slots", () => {
         assert.equal(limiter.getActiveCounts().global, 0);
     }
 
-    const req = new MockRequest();
-    const res = new MockResponse();
-    res.destroyed = true;
-    limiter.middleware(req, res, () => assert.fail("closed response must not continue"));
-    assert.equal(limiter.getActiveCounts().global, 0);
+    for (const state of ["destroyed", "writableEnded"]) {
+        const req = new MockRequest();
+        const res = new MockResponse();
+        res[state] = true;
+        limiter.middleware(req, res, () => assert.fail("closed response must not continue"));
+        assert.equal(limiter.getActiveCounts().global, 0);
+    }
 });
 
 test("parser failures release an already acquired relay slot", () => {

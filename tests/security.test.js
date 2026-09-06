@@ -76,6 +76,22 @@ test('readResponseArrayBuffer cancels declared oversized response bodies', async
   assert.equal(cancelled, true);
 });
 
+test('response size errors survive rejected cancellation', async () => {
+  for (const headers of [{}, { 'content-length': '20' }]) {
+    let cancelled = false;
+    const body = new ReadableStream({
+      start(controller) { controller.enqueue(new Uint8Array(20)); },
+      cancel() {
+        cancelled = true;
+        return Promise.reject(new Error('cancellation failed'));
+      },
+    });
+    await assert.rejects(readResponseArrayBuffer(new Response(body, { headers }), 1), /too large|MB limit/);
+    assert.equal(cancelled, true);
+    assert.equal(body.locked, false);
+  }
+});
+
 test('readResponseArrayBuffer fails closed when streaming is unavailable', async () => {
   let buffered = false;
   const response = {

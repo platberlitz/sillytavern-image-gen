@@ -7,6 +7,8 @@ import {
     sanitizeEffectiveRequest,
     sanitizeReproducibleSettings,
 } from "../lib/provider-contract.js";
+import { attachResultFailures, collectBatchResults, collectSequentialResults, getResultFailures, reserveGenerationOutput } from "../lib/generation.js";
+import { getNanoGptModelCapabilities, getProviderGenerationCapabilities } from "../lib/provider-capabilities.js";
 
 test("reproducible settings omit credentials and private images", () => {
     const sanitized = sanitizeReproducibleSettings({
@@ -310,6 +312,65 @@ test("provider results preserve every image and merge shared metadata", () => {
     assert.equal(results[1].effectiveRequest.parameters.seed, 123);
 });
 
+test("partial provider failures survive normalization, validation and batch collection once", async () => {
+    const downloadError = new Error("output 1 download failed");
+    const validationError = new Error("output 2 validation failed");
+    const results = normalizeProviderResult({
+        images: attachResultFailures([
+            { url: "https://images.example/zero.png", outputIndex: 0 },
+            { url: "https://images.example/two.png", outputIndex: 2 },
+        ], [{ index: 1, error: downloadError }]),
+    }, { provider: "local" });
+    assert.deepEqual(results.map(result => result.outputIndex), [0, 2]);
+    assert.equal(getResultFailures(results)[0].error, downloadError);
+    const validated = await collectSequentialResults(results, async item => {
+        if (item.outputIndex === 2) throw validationError;
+        return item;
+    });
+    const outcome = await collectBatchResults(1, async () => attachResultFailures(validated.results, [
+        ...getResultFailures(results),
+        ...validated.errors,
+    ]));
+    assert.equal(outcome.results.length, 1);
+    assert.deepEqual(outcome.errors, [
+        { index: 0, outputIndex: 1, error: downloadError },
+        { index: 0, outputIndex: 2, error: validationError },
+    ]);
+});
+
+test("multi-output normalization reserves only the remaining run slots and reports every omitted output", async () => {
+    const budget = { count: 8, bytes: 0, error: null };
+    const outcome = await collectBatchResults(2, async () => normalizeProviderResult({
+        images: Array.from({ length: 5 }, (_, index) => `https://images.example/${index}.png`),
+    }, { provider: "civitai" }, { reserveOutput: () => reserveGenerationOutput(budget) }));
+    assert.equal(outcome.results.length, 2);
+    assert.deepEqual(outcome.errors.map(({ index, outputIndex }) => [index, outputIndex]), [
+        [0, 2], [0, 3], [0, 4], [1, 0], [1, 1], [1, 2], [1, 3], [1, 4],
+    ]);
+    assert.ok(outcome.errors.every(({ error }) => error.code === "GENERATION_OUTPUT_LIMIT"));
+});
+
+test("NanoGPT and simple Comfy proxy capabilities describe only transmitted controls", () => {
+    const metadata = { endpoints: [{ supported_parameters: { sampler: {}, scheduler: {}, steps: {}, seed: {} } }] };
+    assert.equal(getNanoGptModelCapabilities("advertised-sampler", metadata).sampler, false);
+    const settings = { width: 768, height: 1024, steps: 40, cfgScale: 7, sampler: "Euler", seed: 123 };
+    const nanoRequest = createEffectiveRequest({
+        ...settings,
+        provider: "nanogpt",
+        nanogptModel: "advertised-sampler",
+        __qigNanoGptModelMetadata: metadata,
+    });
+    assert.equal(nanoRequest.parameters.sampler, undefined);
+    assert.equal(nanoRequest.parameters.steps, 40);
+    for (const proxyComfyWorkflow of ["", '{"3":{"class_type":"KSampler","inputs":{"seed":42}}}']) {
+        const proxySettings = { ...settings, provider: "proxy", proxyComfyMode: true, proxyComfyWorkflow, proxyPayloadMode: "extended" };
+        assert.deepEqual(getProviderGenerationCapabilities("proxy", proxySettings), {
+            steps: false, cfgScale: false, sampler: false, seed: false, sequentialSeeds: false, referenceImages: false,
+        });
+        assert.deepEqual(createEffectiveRequest(proxySettings, { model: "unused-model" }).parameters, {});
+    }
+});
+
 test("effective requests omit parameters that providers do not receive", () => {
     const settings = {
         width: 768,
@@ -324,9 +385,6 @@ test("effective requests omit parameters that providers do not receive", () => {
         model: null,
         width: 768,
         height: 1024,
-        steps: 40,
-        cfgScale: 7,
-        seed: 123,
     });
     assert.deepEqual(createEffectiveRequest({ ...settings, provider: "pollinations" }).parameters, {
         model: null,

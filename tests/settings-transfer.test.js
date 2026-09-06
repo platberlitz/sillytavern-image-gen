@@ -283,6 +283,20 @@ test("legacy prompt editor setting migrates to review preflight on import", () =
     assert.deepEqual(explicit.activeSettings, { reviewBeforeGenerate: false });
 });
 
+test("Text AI role import accepts only default, user and system in settings and presets", () => {
+    for (const role of ["default", "user", "system", "assistant", "SYSTEM", null, 1]) {
+        const imported = parseSettingsImport(JSON.stringify({
+            version: 7,
+            activeSettings: { llmRequestRole: role, __qigReviewDisableRevision: 42 },
+            generationPresets: [{ id: "role", llmRequestRole: role }],
+        }));
+        const expected = ["default", "user", "system"].includes(role) ? role : undefined;
+        assert.equal(imported.activeSettings.llmRequestRole, expected);
+        assert.equal(imported.generationPresets[0].llmRequestRole, expected);
+        assert.equal(imported.activeSettings.__qigReviewDisableRevision, undefined);
+    }
+});
+
 test("private fields are stripped from every store except explicit legacy references", () => {
     const imported = parseSettingsImport(JSON.stringify({
         version: 5,

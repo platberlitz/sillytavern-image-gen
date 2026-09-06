@@ -367,6 +367,55 @@ test("identity-bound persistence rejects failed saves and skips stale compensati
     );
 });
 
+test("identity-bound persistence requires positive acknowledgement for undefined host results", async () => {
+    for (const result of [undefined, null, false]) {
+        await assert.rejects(persistIfCurrent({
+            persist: async () => undefined,
+            acknowledge: async () => result,
+        }), /Persistence reported failure/);
+    }
+    assert.equal(await persistIfCurrent({ persist: async () => undefined, acknowledge: async () => true }), true);
+    assert.equal(await persistIfCurrent({ persist: async () => true, acknowledge: () => assert.fail("explicit host acknowledgement needs no readback") }), true);
+    for (const result of [true, false]) {
+        let current = true;
+        await assert.rejects(persistIfCurrent({
+            persist: async () => undefined,
+            acknowledge: async () => { current = false; return result; },
+            isCurrent: () => current,
+        }), error => error.name === "AbortError");
+    }
+});
+
+test("baseline Connection Manager requests need no getProfile and preserve instruct formatting", async () => {
+    const profile = { id: "text", api: "koboldcpp", preset: "base", instruct: "ChatML", "api-url": "http://localhost:5001" };
+    const messages = [{ role: "system", content: "instructions" }, { role: "user", content: "scene" }];
+    const calls = [];
+    const service = {
+        getSupportedProfiles: () => [profile],
+        validateProfile: () => ({ selected: "textgenerationwebui", type: "koboldcpp" }),
+        sendRequest: async (...args) => { calls.push(args); return "normal"; },
+    };
+    for (const preset of ["", "base"]) {
+        assert.equal(await sendIsolatedConnectionManagerRequest({ service, profileId: "text", messages, maxTokens: 50, preset }), "normal");
+    }
+    assert.ok(calls.every(([id, prompt, maxTokens, options]) => id === "text" && prompt === messages && maxTokens === 50 && options.includeInstruct === true));
+    const context = {
+        TextCompletionService: {
+            async processRequest(request, options) {
+                assert.equal(request.prompt, messages);
+                assert.equal(request.api_server, profile["api-url"]);
+                assert.equal(options.instructName, "ChatML");
+                assert.equal(options.presetName, "override");
+                return "isolated";
+            },
+        },
+    };
+    assert.equal(await sendIsolatedConnectionManagerRequest({ service, context, profileId: "text", messages, maxTokens: 50, preset: "override" }), "isolated");
+    assert.equal(profile.preset, "base");
+    assert.equal(calls.length, 2, "the override must not request through the live profile");
+    await assert.rejects(sendIsolatedConnectionManagerRequest({ service, profileId: "missing", preset: "override" }), /profile was not found/);
+});
+
 test("rollback persistence preserves the original failure and aggregates compensation failures", async () => {
     const original = new DOMException("commit cancelled", "AbortError");
     let persisted = 0;

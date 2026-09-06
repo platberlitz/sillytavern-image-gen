@@ -364,6 +364,55 @@ test('reads bounded compressed zTXt and rejects decompression bombs', async () =
   await assert.rejects(() => readPngMetadata(png(chunk('zTXt', bombData))), /exceeds/);
 });
 
+test('reads newest PNG metadata without inflating superseded duplicate chunks', async (t) => {
+  const NativeDecompressionStream = globalThis.DecompressionStream;
+  let decompressions = 0;
+  t.mock.method(globalThis, 'DecompressionStream', function (format) {
+    assert.ok(++decompressions <= 2, 'only the newest decodable value of each keyword needs inflation');
+    return new NativeDecompressionStream(format);
+  });
+  const oldText = deflateSync(Buffer.alloc(MAX_PNG_METADATA_BYTES, 65));
+  const old = [
+    chunk('zTXt', joinBytes(Buffer.from('parameters\0\0'), oldText)),
+    chunk('iTXt', joinBytes(Buffer.from('qig\0\x01\0\0\0'), oldText)),
+  ];
+  const structured = JSON.stringify({ version: 1, data: { provider: 'local' } });
+  const source = png(
+    ...Array.from({ length: MAX_PNG_CHUNKS - 6 }, (_, index) => old[index % old.length]),
+    chunk('zTXt', joinBytes(Buffer.from('parameters\0\0'), deflateSync(Buffer.from('newest prompt')))),
+    chunk('iTXt', joinBytes(Buffer.from('qig\0\x01\0\0\0'), deflateSync(Buffer.from(structured)))),
+    chunk('zTXt', Buffer.from('parameters\0\x01unsupported method')),
+  );
+  assert.deepEqual(await readPngMetadataBundle(source), {
+    parameters: 'newest prompt',
+    structured: { version: 1, data: { provider: 'local' } },
+  });
+  assert.equal(decompressions, 2);
+});
+
+test('PNG text chunks share one aggregate decoded metadata budget', async () => {
+  const half = MAX_PNG_METADATA_BYTES / 2;
+  const structured = Buffer.from(JSON.stringify({ version: 1, data: { provider: 'local' } }).padEnd(half, ' '));
+  for (const [type, suffix, encode] of [
+    ['tEXt', '\0', bytes => bytes],
+    ['zTXt', '\0\0', deflateSync],
+    ['iTXt', '\0\0\0\0\0', bytes => bytes],
+    ['iTXt', '\0\x01\0\0\0', deflateSync],
+  ]) {
+    const textChunk = (keyword, bytes) => chunk(type, joinBytes(Buffer.from(keyword + suffix), encode(bytes)));
+    const accepted = await readPngMetadataBundle(png(
+      textChunk('parameters', Buffer.alloc(half, 65)),
+      textChunk('qig', structured),
+    ));
+    assert.equal(accepted.parameters.length, half);
+    assert.equal(accepted.structured.data.provider, 'local');
+    await assert.rejects(readPngMetadataBundle(png(
+      textChunk('parameters', Buffer.alloc(half + 1, 65)),
+      textChunk('qig', structured),
+    )), /metadata.*(?:exceeds|limit)/i);
+  }
+});
+
 test('clamps imported parameters and sanitizes server subfolders', () => {
   const parsed = parseGenerationParameters('prompt\nSteps: 99999, CFG scale: -20, Seed: 999999999999, Size: 1x99999, Provider: local');
   assert.deepEqual({ steps: parsed.steps, cfg: parsed.cfgScale, seed: parsed.seed, width: parsed.width, height: parsed.height }, {

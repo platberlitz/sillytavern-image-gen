@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    persistChatState,
     persistLockedBackgroundState,
     removeInsertedMessage,
     rethrowAfterTransactionRollback,
@@ -55,6 +56,7 @@ test("locked backgrounds do not complete before immediate metadata persistence",
             saveStarted.resolve();
             await saveGate.promise;
             durableMetadata = structuredClone(metadata);
+            return true;
         },
     };
     let settled = false;
@@ -123,7 +125,7 @@ test("locked-background false save results trigger rollback compensation", async
         async saveMetadata() {
             saveCalls += 1;
             durableMetadata = structuredClone(metadata);
-            return saveCalls === 1 ? false : undefined;
+            return saveCalls !== 1;
         },
     };
 
@@ -152,6 +154,7 @@ test("failed locked-background saves restore and durably compensate exact metada
             saveCalls += 1;
             durableMetadata = structuredClone(metadata);
             if (saveCalls === 1) throw originalFailure;
+            return true;
         },
     };
 
@@ -176,6 +179,7 @@ test("post-save locked-background invalidation rolls back the durable metadata",
         async saveMetadata() {
             saveCalls += 1;
             durableMetadata = structuredClone(metadata);
+            return true;
         },
     };
 
@@ -226,6 +230,61 @@ test("locked-background rollback persistence and CSS rollback failures are surfa
             && error.cause === originalFailure
             && error.errors[1] === cssFailure,
     );
+});
+
+test("baseline swallowed metadata failures roll back and confirm the original durable background", async () => {
+    const metadata = { custom_background: "old-css", chat_backgrounds: ["/old.png"] };
+    let durableMetadata = structuredClone(metadata);
+    let saves = 0;
+    const context = {
+        chatId: "chat-a",
+        characterId: 0,
+        characters: [{ name: "A", avatar: "a.png" }],
+        chatMetadata: metadata,
+        async saveMetadata() {
+            if (++saves > 1) durableMetadata = structuredClone(metadata);
+        },
+    };
+    await assert.rejects(persistLockedBackgroundState(context, {
+        cssUrl: "new-css",
+        path: "/new.png",
+        fetchImpl: async () => Response.json([{ chat_metadata: durableMetadata }]),
+    }), /persistence reported failure/);
+    assert.equal(saves, 2);
+    assert.deepEqual(metadata, durableMetadata);
+    assert.equal(metadata.custom_background, "old-css");
+});
+
+test("chat saves read back baseline undefined success and never compensate into a newly active chat", async () => {
+    const chat = [{ mes: "scene", extra: { image: "/new.png" } }];
+    let current = true;
+    let saves = 0;
+    let durableChat = [];
+    const context = {
+        chatId: "chat-a",
+        characterId: 0,
+        characters: [{ name: "A", avatar: "a.png" }],
+        chat,
+        async saveChat() {
+            saves++;
+            durableChat = structuredClone(chat);
+        },
+    };
+    const options = {
+        isCurrent: () => current,
+        fetchImpl: async () => Response.json([{ chat_metadata: {} }, ...durableChat]),
+    };
+    assert.equal(await persistChatState(context, options), true);
+    const stale = new DOMException("chat changed", "AbortError");
+    await assert.rejects(runDurableTransaction({
+        mutate: () => { chat[0].extra.image = "/second.png"; },
+        persist: () => persistChatState(context, options),
+        validate: () => { current = false; throw stale; },
+        rollback: () => { chat[0].extra.image = "/new.png"; },
+        persistRollback: () => persistChatState(context, { ...options, skipIfStale: true }),
+    }), error => error === stale);
+    assert.equal(saves, 2, "only the two original saves reached the host, not stale compensation");
+    assert.equal(chat[0].extra.image, "/new.png");
 });
 
 test("new and hidden Context Media insertions fail closed on an external append", async () => {

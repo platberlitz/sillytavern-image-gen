@@ -65,6 +65,26 @@ test("CORS 404 inspection leaves the original response body readable", async () 
     assert.equal(await response.text(), "ordinary provider 404 body");
 });
 
+test("oversized CORS 404 inspection settles before the original response is drained", async () => {
+    const body = "x".repeat(20);
+    for (const headers of [{}, { "content-length": String(body.length) }]) {
+        const response = new Response(body, { status: 404, headers });
+        const inspection = clonedResponseIncludes(response, "CORS proxy is disabled", 1);
+        let timer;
+        try {
+            assert.equal(await Promise.race([
+                inspection,
+                new Promise(resolve => { timer = setTimeout(() => resolve("pending"), 150); }),
+            ]), false);
+            assert.equal(response.bodyUsed, false);
+        } finally {
+            clearTimeout(timer);
+            assert.equal(await response.text(), body);
+            await inspection;
+        }
+    }
+});
+
 test("CORS guidance names the exact SillyTavern origin", () => {
     const message = getCorsFailureMessage("http://127.0.0.1:7860", "https://chat.example:8443");
     assert.match(message, /--cors-allow-origins=https:\/\/chat\.example:8443/);

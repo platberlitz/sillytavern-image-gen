@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
     appendWorldInfoToRequest,
+    buildTextAIRequestMessages,
     createPromptPipelineState,
     dedupePromptTags,
     getPromptPipelineResult,
@@ -10,6 +11,23 @@ import {
     setAuthoritativeFinalPrompt,
     updatePromptPipelineState,
 } from "../lib/prompt-pipeline.js";
+
+test("request roles preserve whole templates, history roles and assistant prefill", () => {
+    const instruction = "Rules: describe Alice\nScene: Alice meets User\nOutput: tags only";
+    const history = [{ role: "user", content: "Earlier question" }, { role: "assistant", content: "Earlier answer" }];
+    for (const role of ["default", "user", "system"]) {
+        const request = { role: role === "system" ? "system" : "user", content: instruction };
+        const messages = buildTextAIRequestMessages(instruction, { role, history, systemPrompt: "Connection rules", prefill: "Image prompt:" });
+        assert.deepEqual(messages, [
+            { role: "system", content: "Connection rules" },
+            ...(role === "system" ? [request, ...history] : [...history, request]),
+            { role: "assistant", content: "Image prompt:" },
+        ]);
+        messages.find(message => message.content === "Earlier answer").content = "changed";
+        assert.equal(history[1].content, "Earlier answer", "request copies cannot mutate history");
+    }
+    assert.deepEqual(buildTextAIRequestMessages(instruction), [{ role: "user", content: instruction }]);
+});
 
 test("World Info is appended as a visible labelled request block", () => {
     assert.equal(

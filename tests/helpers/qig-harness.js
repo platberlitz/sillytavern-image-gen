@@ -20,11 +20,12 @@ const host = globalThis.__QIG_TEST_HOST__;
 export const saveSettingsDebounced = (...args) => host.saveSettingsDebounced(...args);
 export const saveSettings = (...args) => host.saveSettings(...args);
 export const generateQuietPrompt = (...args) => host.generateQuietPrompt(...args);
-export const generateRaw = (...args) => host.generateRaw(...args);
-export const generateRawData = (...args) => host.generateRawData(...args);
+export const generateRaw = typeof host.generateRaw === "function" ? (...args) => host.generateRaw(...args) : undefined;
+export const generateRawData = typeof host.generateRawData === "function" ? (...args) => host.generateRawData(...args) : undefined;
 export const createRawPrompt = (...args) => host.createRawPrompt(...args);
 export const substituteParams = (...args) => host.substituteParams(...args);
 export const getRequestHeaders = (...args) => host.getRequestHeaders(...args);
+export const getMaxPromptTokens = (...args) => host.getMaxPromptTokens(...args);
 export const eventSource = host.eventSource;
 export const event_types = host.eventTypes;
 `,
@@ -126,6 +127,7 @@ function defaultHost() {
         createRawPrompt: async () => [],
         substituteParams: (text) => text,
         getRequestHeaders: () => ({}),
+        getMaxPromptTokens: () => 4096,
         checkWorldInfo: () => "",
         createGenerationParameters: () => {
             throw new Error("createGenerationParameters is not stubbed");
@@ -444,6 +446,7 @@ export async function createQigHarness(options = {}) {
     };
 
     install("window", window);
+    install("location", window.location);
     install("document", window.document);
     install("localStorage", window.localStorage);
     install("AbortController", window.AbortController);

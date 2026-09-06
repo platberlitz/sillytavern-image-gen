@@ -89,6 +89,8 @@ An optional `Scene description instruction` field lets you direct the first pass
 
 Set batch count (1 through 10) to generate multiple variants from the same prompt. Enable `Sequential seeds` to increment the seed between each image. The batch viewer shows thumbnails, per-image prompt editing, prev/next navigation, and bulk or single insert.
 
+Each run shares a limit of 10 output attempts and 25 MiB of image data, including multi-output workflows. Failed attempts still count. Completed images remain available when another output fails or reaches the limit, and QIG reports the missing outputs. Prompt edits stay with each image when you move between batch results.
+
 ### Auto-generation
 
 Enable `Auto-generate after AI response` to trigger generation automatically after each assistant reply.
@@ -106,7 +108,13 @@ When `Use LLM to create image prompt` is enabled, your Text AI rewrites the chat
 
 - **Tags (Danbooru)**: tag-list format (`1girl, long hair, blue eyes, ...`).
 - **Natural (Description)**: prose description.
-- **Custom instruction**: your own system prompt directs the conversion. `Insert Tags default` and `Insert Natural default` fill the editor with the exact built-in instruction text as a starting point; `Reset` clears the override so the built-in adaptive instruction is used again.
+- **Custom instruction**: your own instruction directs the conversion. `Insert Tags default` and `Insert Natural default` fill the editor with the exact built-in instruction text as a starting point; `Reset` clears the override so the built-in adaptive instruction is used again.
+
+### Text AI request role
+
+Choose **Default**, **User**, or **System** in the Text AI options. I left Default as the starting value so existing connections keep their role behaviour. User and System explicitly set the message role for scene summaries, image-prompt rewriting and missing-tag generation. This doesn't change the finished image's chat message or classifier requests.
+
+System requests go before optional chat history; history retains its own roles and assistant prefill stays last. Your expanded custom template, including its scene text and any review edits, stays together as one request. Providers and text-completion templates can still convert roles, so System isn't a guarantee of identical behaviour across models. QIG won't silently switch an explicit role to an incompatible helper or replay a failed Text AI request.
 
 ### Use-case guide
 
@@ -127,8 +135,9 @@ What each prompt option is for, with typical situations:
 ### Prompt review, identity, and World Info
 
 - **Review before generating** opens a staged editor for prompt-building Text AI requests, intermediate scene summaries, LLM Contextual Filter classification, and the final positive/negative image prompt. The final stage is after QIG styles, quality tags, SillyTavern Style, and Contextual Filters, but before wildcard expansion and provider-specific wrappers. Final edits are authoritative; QIG does not reapply those transformations afterward.
+- Turning review off skips stages that haven't opened yet, including queued work. Turning it back on applies to new runs, not work already queued. An open editor keeps your edits until you continue or cancel. Quiet commands never open review. Confirmation, paragraph selection and finished-image windows have separate controls.
 - **Preserve character identity** controls QIG's added name, skin tone, species, age, body-trait, and canonical-appearance requirements. It defaults on for compatibility. Turning it off removes those enforcement rules; it does not remove the selected scene, character profile, or persona context used to create the prompt.
-- **Include matched World Info in Text AI context** uses SillyTavern's active World Info match for the selected scene or explicit source text. Matched lore appears in the editable Text AI request and is not appended directly to the image-provider prompt. This option is off by default because private lore may be sent to the selected Text AI or override profile.
+- **Include matched World Info in Text AI context** uses SillyTavern's active World Info match for the selected scene or explicit source text. Matched lore goes into the Text AI request and is not appended directly to the image-provider prompt. It doesn't force review on: with review off, included lore is sent without an editor. This option is off by default because private lore may be sent to the selected Text AI or override profile.
 
 Cancel releases the QIG interface immediately and discards late results. QIG still requests provider-side cancellation where supported, but remote work may continue when a provider cannot cancel an accepted job. Cancelled and failed drafts are not added to prompt history.
 
@@ -313,6 +322,8 @@ Custom API fields are synchronized to the current SillyTavern account, including
 
 These work from Quick Replies. Example QR: `/qig mode=direct a close-up portrait`.
 
+Quiet generation only succeeds after a server save returns a valid saved-image path. If saving fails, the command fails instead of returning a temporary URL or inline image data.
+
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
@@ -373,6 +384,10 @@ SillyTavern Style composition follows SillyTavern's order: common prefix, charac
 - **Prompt History**: stored in account-scoped localStorage with bounded entry and total sizes. Reuse past prompts. Clear all option.
 - **Logs**: generation and provider diagnostics shown in the QIG panel.
 
+Permanent gallery writes and Clear require Web Locks, the browser feature that prevents two tabs from changing the gallery at once. Without it, existing images remain readable and new images are marked session-only; download or save them before closing the tab. Use HTTPS or localhost in a browser that supports Web Locks. Plain HTTP on a LAN address commonly lacks it.
+
+If the gallery index is corrupt, QIG leaves stored image bytes alone rather than guessing which images should return. I prefer an explicit recovery failure to bringing back images you deliberately cleared. Interrupted saves can still recover when their pending records are intact.
+
 ## Backgrounds
 
 Set a generated image as the current chat's SillyTavern background. Two modes:
@@ -410,6 +425,8 @@ An active preset is highlighted only while the covered settings still match it. 
 ## Server Plugin
 
 SillyTavern's built-in CORS proxy is blocked by `basicAuthMode` when a provider request also needs its own `Authorization` header. This affects CivitAI and Replicate in browser-only mode.
+
+For requests that create, upload or cancel work, QIG chooses direct access or the supported proxy before sending. It can use a credential-free HEAD probe to check access. An ambiguous network failure isn't automatically resubmitted: the provider might already have accepted it, so check its job history before trying again. Custom APIs remain direct-only.
 
 Quick Image Gen `3.3.0` ships optional server relay protocol `0.3.0` in `server-plugin/`. It relays only the fixed provider operations used by this extension: CivitAI v2 workflow creation, status, cancellation, and output retrieval, plus Replicate prediction creation, status, cancellation, and output retrieval. Provider output relaying is restricted to trusted CivitAI/Replicate HTTPS hosts (including `civitai.red`) and bounded to 25 MiB; JSON requests and responses are bounded separately. Output requests do not receive provider authorization unless explicitly requested and the URL has the exact provider API origin. Authenticated CivitAI blob redirects are validated and followed without forwarding authorization to the destination host.
 

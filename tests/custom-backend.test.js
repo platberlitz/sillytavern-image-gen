@@ -259,6 +259,28 @@ test("bounds iterative response image extraction without recursive stack overflo
     assert.equal(extractCustomBackendImage({ output: [excessive] }), null);
 });
 
+test("custom image extraction bounds array access before queuing values", () => {
+    const image = "https://images.example.test/result.png";
+    let accesses = 0;
+    const wide = new Proxy(new Array(100_000), {
+        get(target, key, receiver) {
+            if (/^\d+$/.test(String(key))) {
+                accesses += 1;
+                assert.ok(Number(key) < 9999, "elements beyond the traversal budget must not be accessed");
+            }
+            return Reflect.get(target, key, receiver);
+        },
+    });
+    assert.equal(extractCustomBackendImage({ image: wide }, "/image"), null);
+    assert.equal(accesses, 9999);
+
+    wide[0] = { data: [[image]] };
+    accesses = 0;
+    assert.equal(extractCustomBackendImage({ image: wide }, "/image"), image);
+    assert.equal(accesses, 1, "a nested first image must not cause siblings to be read");
+    assert.equal(extractCustomBackendImage({ image: [...Array.from({ length: 1_000 }, () => ({})), image] }, "/image"), image);
+});
+
 test("submits and polls bounded async jobs", async () => {
     const calls = [];
     const statuses = ["running", "succeeded"];

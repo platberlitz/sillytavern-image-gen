@@ -160,6 +160,61 @@ test("SSE parsing supports CR, CRLF, provisional previews, and terminal failures
     assert.equal(looksLikeSsePayload("data: https://cdn.example/final.png\r\n\r\n"), true);
 });
 
+test("SSE callback failures cancel the body without replacing the original error", async () => {
+    const failure = new Error("provider callback failed");
+    for (const onEvent of [() => { throw failure; }, async () => { throw failure; }]) {
+        let cancelled = false;
+        const body = new ReadableStream({
+            start(controller) { controller.enqueue(new TextEncoder().encode("data: event\n\n")); },
+            cancel() {
+                cancelled = true;
+                return Promise.reject(new Error("cancellation failed"));
+            },
+        });
+        await assert.rejects(readSseDataStream(new Response(body), onEvent), error => error === failure);
+        assert.equal(cancelled, true);
+        assert.equal(body.locked, false);
+    }
+});
+
+test("SSE early exits do not wait for cancellation to settle", async () => {
+    const failure = new Error("callback failed");
+    for (const mode of ["callback", "terminal", "done", "limit", "pre-aborted", "aborted"]) {
+        let cancelled = false;
+        const controller = new AbortController();
+        const body = new ReadableStream({
+            start(stream) {
+                if (mode !== "aborted") stream.enqueue(new TextEncoder().encode(mode === "done" ? "data: [DONE]\n\n" : "data: event\n\n"));
+            },
+            cancel() {
+                cancelled = true;
+                return new Promise(() => {});
+            },
+        });
+        if (mode === "pre-aborted") controller.abort(failure);
+        const reading = readSseDataStream(new Response(body), () => {
+            if (mode === "callback") throw failure;
+            return { value: "final", terminal: true };
+        }, { maxBytes: mode === "limit" ? 1 : 1024, signal: controller.signal });
+        if (mode === "aborted") controller.abort(failure);
+        let timer;
+        try {
+            const outcome = await Promise.race([
+                reading.then(value => ({ value }), error => ({ error })),
+                new Promise(resolve => { timer = setTimeout(() => resolve("pending"), 150); }),
+            ]);
+            assert.notEqual(outcome, "pending", mode);
+            if (["callback", "pre-aborted", "aborted"].includes(mode)) assert.equal(outcome.error, failure, mode);
+            else if (mode === "limit") assert.match(outcome.error.message, /too large/);
+            else assert.equal(outcome.value.value, mode === "terminal" ? "final" : undefined);
+            assert.equal(cancelled, true, mode);
+            assert.equal(body.locked, false, mode);
+        } finally {
+            clearTimeout(timer);
+        }
+    }
+});
+
 test("NovelAI endpoint path edits preserve query strings and fragments", () => {
     assert.equal(
         buildNovelAIProxyRequestUrl("https://proxy.example/v1?token=x#route", "chat"),

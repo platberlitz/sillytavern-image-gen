@@ -32,12 +32,17 @@ test("registers slash commands and subscribes to host events", async (t) => {
 });
 
 test("first boot claims a durable account sync identity when the server confirms it", async (t) => {
+    let savedSettings;
     const h = await createQigHarness({
+        host: {
+            saveSettings: async () => {
+                savedSettings = structuredClone(globalThis.__QIG_TEST_HOST__.extension_settings);
+            },
+        },
         fetch: async (url) => {
             assert.equal(url, "/api/settings/get");
-            const id = globalThis.__QIG_TEST_HOST__.extension_settings["quick-image-gen"]?._syncCacheId ?? "";
             return new Response(JSON.stringify({
-                settings: { "quick-image-gen": { _syncCacheId: id } },
+                settings: JSON.stringify({ extension_settings: savedSettings }),
             }), { status: 200, headers: { "content-type": "application/json" } });
         },
     });
@@ -159,7 +164,7 @@ test("auto-generation ignores system messages", async (t) => {
             },
         },
         fetch: async (url) => {
-            fetchCalls.push(String(url));
+            if (url !== "/api/settings/get") fetchCalls.push(String(url));
             return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
         },
     });
@@ -487,7 +492,7 @@ test("panel auto-insert honors manualInsertTarget instead of the scene's last me
         groupId: null,
         chatId: "qig-test-chat",
         chatMetadata: {},
-        saveChat: async () => {},
+        saveChat: async () => true,
         appendMediaToMessage: async () => {},
         powerUserSettings: {},
         persona: {},
@@ -692,8 +697,11 @@ test("proxy /v1 base defaults to the images endpoint instead of chat completions
             },
         },
         fetch: async (url, init) => {
-            captured.push({ url, init });
-            if (url.includes("proxy.example")) return pngResponse();
+            if (url.includes("proxy.example")) {
+                if (init?.method === "HEAD") return new Response(null, { status: 200 });
+                captured.push({ url, init });
+                return pngResponse();
+            }
             throw new Error(`unexpected fetch: ${url}`);
         },
     });
@@ -722,8 +730,11 @@ test("extended images payload includes proxy extra instructions", async (t) => {
             },
         },
         fetch: async (url, init) => {
-            captured.push({ url, init });
-            if (url.includes("proxy.example")) return pngResponse();
+            if (url.includes("proxy.example")) {
+                if (init?.method === "HEAD") return new Response(null, { status: 200 });
+                captured.push({ url, init });
+                return pngResponse();
+            }
             throw new Error(`unexpected fetch: ${url}`);
         },
     });

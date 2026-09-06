@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import test from "node:test";
+import { confirmSettingsValues, createSettingsSaveEventConfirmer } from "../lib/host-persistence.js";
 
 import {
     canSeedSynchronizedStoreFromLocal,
@@ -106,11 +108,17 @@ test("immediate persistence updates the account and local cache with independent
         localKey: "qig_profiles",
         backupKey: "_backupProfiles",
         value: next,
-        save: async () => { saves += 1; },
+        save: async () => {
+            assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), "1", "a tab closed during save must retain pending local data");
+            saves += 1;
+        },
+        acknowledge: async () => true,
     });
 
     assert.equal(saves, 1);
     assert.equal(result.cacheSaved, true);
+    assert.equal(result.confirmed, true);
+    assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), null);
     assert.deepEqual(JSON.parse(storage.values.get("qig_profiles")), next);
     assert.deepEqual(settings._backupProfiles, next);
     result.value.proxy.Shared.model = "changed";
@@ -148,10 +156,12 @@ test("local cache failure does not block an authoritative server save", async ()
         backupKey: "_backupProfiles",
         value: { proxy: {} },
         save: async () => { saved = true; },
+        acknowledge: async () => true,
     });
 
     assert.equal(saved, true);
     assert.equal(result.cacheSaved, false);
+    assert.equal(result.confirmed, true);
     assert.match(result.cacheError.message, /quota/);
     assert.deepEqual(settings._backupProfiles, { proxy: {} });
 });
@@ -168,6 +178,7 @@ test("immediate saves are serialized so a failed write cannot roll back a later 
             await firstGate;
             throw new Error("first save failed");
         }
+        return true;
     };
 
     const first = persistSynchronizedStore({
@@ -270,10 +281,11 @@ test("a positively confirmed save clears the pending marker", async () => {
     assert.equal(storage.values.get("qig_sync_pending:qig_profiles"), undefined);
 });
 
-test("a thrown save still rolls back without leaving a pending marker", async () => {
+test("a thrown save with confirmed compensation rolls back without leaving a pending marker", async () => {
     const previous = { old: true };
     const storage = createStorage({ qig_profiles: JSON.stringify(previous) });
     const settings = { _backupProfiles: structuredClone(previous) };
+    let saves = 0;
 
     await assert.rejects(() => persistSynchronizedStore({
         storage,
@@ -281,11 +293,12 @@ test("a thrown save still rolls back without leaving a pending marker", async ()
         localKey: "qig_profiles",
         backupKey: "_backupProfiles",
         value: { new: true },
-        save: async () => { throw new Error("boom"); },
+        save: async () => { if (++saves === 1) throw new Error("boom"); },
         acknowledge: async () => true,
     }), /boom/);
 
     assert.equal(storage.values.get("qig_sync_pending:qig_profiles"), undefined);
+    assert.equal(saves, 2);
     assert.deepEqual(JSON.parse(storage.values.get("qig_profiles")), previous);
 });
 
@@ -305,4 +318,190 @@ test("acknowledge rejection counts as unconfirmed", async () => {
 
     assert.equal(result.confirmed, false);
     assert.ok(result.confirmationError instanceof Error);
+});
+
+test("immediate store observers start inside the queue before events emitted during save", async () => {
+    const storage = createStorage();
+    const settings = {};
+    const eventSource = new EventEmitter();
+    let durable = {};
+    let releaseFirst;
+    let firstStarted;
+    const started = new Promise(resolve => { firstStarted = resolve; });
+    const gate = new Promise(resolve => { releaseFirst = resolve; });
+    const observed = [];
+    let saves = 0;
+    const options = {
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        acknowledge: expected => {
+            observed.push(structuredClone(expected));
+            return createSettingsSaveEventConfirmer({
+                eventSource,
+                eventTypes: { SETTINGS_UPDATED: "saved" },
+                timeoutMs: 500,
+                confirm: async () => JSON.stringify(durable) === JSON.stringify(expected),
+            })();
+        },
+        save: async () => {
+            if (++saves === 1) {
+                firstStarted();
+                await gate;
+            }
+            durable = structuredClone(settings);
+            eventSource.emit("saved");
+        },
+    };
+    const first = persistSynchronizedStore({ ...options, value: { first: true } });
+    const second = persistSynchronizedStore({ ...options, value: { second: true } });
+    await started;
+    assert.deepEqual(observed, [{ _backupProfiles: { first: true } }], "queued writes must not observe the previous write's event");
+    releaseFirst();
+    assert.equal((await first).confirmed, true);
+    assert.equal((await second).confirmed, true);
+    assert.deepEqual(observed, [{ _backupProfiles: { first: true } }, { _backupProfiles: { second: true } }]);
+    assert.equal(eventSource.listenerCount("saved"), 0);
+});
+
+test("bulk saves without positive acknowledgement retain every local store and pending marker", async () => {
+    for (const acknowledge of [undefined, async () => null, async () => undefined, async () => false]) {
+        const storage = createStorage();
+        const settings = {};
+        const stores = [
+            { localKey: "qig_char_settings", backupKey: "_backupCharSettings", value: { character: { prompt: "new" } } },
+            { localKey: "qig_char_ref_images", backupKey: "_backupCharRefImages", value: { character: { localRefImage: "image" } } },
+        ];
+        const result = await persistSynchronizedStores({ storage, settings, stores, save: async () => {}, acknowledge });
+        assert.equal(result.confirmed, false);
+        for (const { localKey, backupKey, value } of stores) {
+            assert.deepEqual(JSON.parse(storage.getItem(localKey)), value);
+            assert.deepEqual(settings[backupKey], value);
+            assert.equal(storage.getItem(`qig_sync_pending:${localKey}`), "1");
+        }
+    }
+});
+
+test("failed saves cancel their observer and an unconfirmed compensation preserves the original error", async () => {
+    const original = new Error("lost save response");
+    const storage = createStorage({ qig_profiles: "{}" });
+    const settings = { _backupProfiles: {} };
+    const eventSource = new EventEmitter();
+    let saves = 0;
+    await assert.rejects(persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: { new: true },
+        acknowledge: createSettingsSaveEventConfirmer({
+            eventSource,
+            eventTypes: { SETTINGS_UPDATED: "saved" },
+            confirm: async () => false,
+            timeoutMs: 20,
+        }),
+        save: async () => {
+            if (++saves === 1) throw original;
+        },
+    }), error => error instanceof AggregateError && error.cause === original && error.errors[0] === original && /rollback could not be confirmed/.test(error.errors[1].message));
+    assert.equal(saves, 2);
+    assert.equal(eventSource.listenerCount("saved"), 0);
+    assert.deepEqual(settings._backupProfiles, {});
+    assert.equal(storage.getItem("qig_profiles"), "{}");
+    assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), "1", "an unconfirmed rollback must not let a possibly newer server copy replace restored local data");
+});
+
+test("slow settings saves get fresh bounded readback after the early observer expires", async () => {
+    for (const readbackTimesOut of [false, true]) {
+        const storage = createStorage();
+        const settings = {};
+        const eventSource = new EventEmitter();
+        let observation;
+        let saved = false;
+        let aborted = false;
+        let saves = 0;
+        let reads = 0;
+        const result = await persistSynchronizedStore({
+            storage,
+            settings,
+            localKey: "qig_profiles",
+            backupKey: "_backupProfiles",
+            value: { next: true },
+            acknowledge: expectedValues => {
+                observation = createSettingsSaveEventConfirmer({
+                    eventSource,
+                    eventTypes: { SETTINGS_UPDATED: "saved" },
+                    timeoutMs: 10,
+                    confirm: () => confirmSettingsValues({
+                        settingsKey: "qig",
+                        expectedValues,
+                        timeoutMs: 10,
+                        fetchImpl: async (_url, { signal }) => {
+                            assert.equal(saved, true, "readback must follow the slow host save");
+                            reads++;
+                            if (readbackTimesOut) return new Promise((_resolve, reject) => {
+                                signal.addEventListener("abort", () => { aborted = true; reject(signal.reason); }, { once: true });
+                            });
+                            return Response.json({ settings: JSON.stringify({ extension_settings: { qig: settings } }) });
+                        },
+                    }),
+                })();
+                return observation;
+            },
+            save: async () => {
+                saves++;
+                assert.equal(eventSource.listenerCount("saved"), 1, "observation starts before save");
+                assert.equal(await observation, false, "host save outlasts the event deadline");
+                assert.equal(eventSource.listenerCount("saved"), 0);
+                eventSource.emit("saved");
+                saved = true;
+            },
+        });
+        assert.equal(saves, 1, "a slow successful save must not provoke compensation");
+        assert.equal(reads, 1, "expired observations still get a fresh readback");
+        assert.equal(result.confirmed, !readbackTimesOut);
+        assert.equal(aborted, readbackTimesOut);
+        assert.equal(eventSource.listenerCount("saved"), 0);
+        assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), readbackTimesOut ? "1" : null);
+    }
+});
+
+test("an early positive settings event cannot replace fresh post-save verification", async () => {
+    const eventSource = new EventEmitter();
+    let observation;
+    let durable = { _backupProfiles: { next: true } };
+    let reads = 0;
+    const storage = createStorage();
+    const result = await persistSynchronizedStore({
+        storage,
+        settings: {},
+        localKey: "qig_profiles",
+        backupKey: "_backupProfiles",
+        value: { next: true },
+        acknowledge: expectedValues => {
+            observation = createSettingsSaveEventConfirmer({
+                eventSource,
+                eventTypes: { SETTINGS_UPDATED: "saved" },
+                confirm: () => confirmSettingsValues({
+                    settingsKey: "qig",
+                    expectedValues,
+                    fetchImpl: async () => {
+                        reads++;
+                        return Response.json({ settings: { extension_settings: { qig: durable } } });
+                    },
+                }),
+            })();
+            return observation;
+        },
+        save: async () => {
+            eventSource.emit("saved");
+            assert.equal(await observation, true);
+            durable = { _backupProfiles: { stale: true } };
+        },
+    });
+    assert.equal(reads, 2);
+    assert.equal(result.confirmed, false);
+    assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), "1");
+    assert.equal(eventSource.listenerCount("saved"), 0);
 });

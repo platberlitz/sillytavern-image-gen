@@ -161,7 +161,8 @@ function createRelayConcurrencyLimiter({
     const activeByClient = new Map();
 
     function middleware(req, res, next) {
-        if (req.aborted || req.destroyed || res.destroyed || res.writableEnded) return;
+        // A consumed IncomingMessage can be destroyed while its connection is still live.
+        if (req.aborted || req.socket?.destroyed || res.destroyed || res.writableEnded) return;
         const clientKey = getKey(req);
         const activeForClient = activeByClient.get(clientKey) || 0;
         if (activeGlobal >= globalLimit) {
@@ -190,7 +191,7 @@ function createRelayConcurrencyLimiter({
         req.once?.("aborted", release);
         res.once?.("finish", release);
         res.once?.("close", release);
-        if (req.aborted || req.destroyed || res.destroyed || res.writableEnded) {
+        if (req.aborted || req.socket?.destroyed || res.destroyed || res.writableEnded) {
             release();
             return;
         }
