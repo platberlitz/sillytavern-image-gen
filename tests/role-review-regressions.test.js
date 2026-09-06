@@ -32,10 +32,11 @@ async function reviewHarness(t, { settings = {}, host = {}, context = {} } = {})
             checkbox.checked = value;
             h.fireEvent(checkbox, "input");
         },
-        loadPreset(id) {
-            const select = h.document.getElementById("qig-preset-select");
+        async loadConfiguration(id) {
+            const select = h.document.getElementById("qig-config-select");
             select.value = id;
             h.fireEvent(select, "change");
+            await h.waitFor(() => h.host.extension_settings["quick-image-gen"].lastLoadedPresetId === id, 5000, `loaded configuration ${id}`);
         },
     });
 }
@@ -96,35 +97,109 @@ test("separate AI keeps history and prefill roles around the selected request ro
     }
 });
 
-test("persisted malformed roles and old or invalid presets reset to default, saved roles round trip", async t => {
+test("persisted malformed roles and legacy presets migrate to configuration defaults without rewriting legacy copies", async t => {
     for (const persistedRole of [undefined, "assistant"]) {
+        const presets = [
+            { id: "old", name: "Old" }, { id: "bad", name: "Bad", llmRequestRole: "assistant" },
+            ...["default", "user", "system"].map(role => ({ id: role, name: role, llmRequestRole: role })),
+        ];
         const h = await reviewHarness(t, {
             settings: {
                 llmRequestRole: persistedRole,
-                _backupGenPresets: [
-                    { id: "old", name: "Old" }, { id: "bad", name: "Bad", llmRequestRole: "assistant" },
-                    ...["default", "user", "system"].map(role => ({ id: role, name: role, llmRequestRole: role })),
-                ],
+                _backupGenPresets: structuredClone(presets),
             },
         });
         const settings = h.host.extension_settings["quick-image-gen"];
         assert.equal(settings.llmRequestRole, "default");
         for (const id of ["user", "old", "system", "bad", "default"]) {
-            h.loadPreset(id);
+            await h.loadConfiguration(id);
             assert.equal(settings.llmRequestRole, ["old", "bad"].includes(id) ? "default" : id);
             assert.equal(h.document.getElementById("qig-llm-request-role").value, settings.llmRequestRole);
         }
-        h.loadPreset("system");
-        globalThis.prompt = () => "Saved role";
-        h.document.getElementById("qig-save-preset").click();
-        await h.waitFor(() => settings._backupGenPresets.some(preset => preset.name === "Saved role"));
-        const saved = settings._backupGenPresets.find(preset => preset.name === "Saved role");
-        assert.equal(saved.llmRequestRole, "system");
-        h.loadPreset("user");
-        h.loadPreset(saved.id);
-        assert.equal(settings.llmRequestRole, "system");
+        assert.deepEqual(settings._backupGenPresets, presets);
+        assert.equal(h.localStorage.getItem("qig_gen_presets"), null, "an absent legacy cache is not recreated");
         await h.dispose();
     }
+});
+
+test("legacy profiles and workflows gain default roles rather than inheriting the active system role", async t => {
+    const profiles = { local: { Old: { localType: "a1111" }, Invalid: { localType: "a1111", llmRequestRole: "assistant" } } };
+    const workflows = [{ id: "workflow", name: "Workflow", comfyModel: "old-model" }];
+    const h = await reviewHarness(t, {
+        settings: { llmRequestRole: "system", _backupProfiles: structuredClone(profiles), _backupComfyWorkflows: structuredClone(workflows) },
+    });
+    const settings = h.host.extension_settings["quick-image-gen"];
+    assert.equal(settings.llmRequestRole, "system", "migration leaves the active choice alone");
+    assert.equal(settings._backupConfigurations.length, 3);
+    for (const record of settings._backupConfigurations) assert.equal(record.llmRequestRole, "default", record.name);
+    assert.deepEqual(settings._backupProfiles, profiles);
+    assert.deepEqual(settings._backupComfyWorkflows, workflows);
+});
+
+test("configuration role survives Save As, Update, Load and the export/import round trip", async t => {
+    const h = await reviewHarness(t, {
+        settings: {
+            llmRequestRole: "system",
+            _backupConfigurations: [
+                { id: "old", name: "Old configuration", provider: "local" },
+                { id: "invalid", name: "Invalid configuration", provider: "local", llmRequestRole: "assistant" },
+            ],
+        },
+    });
+    const settings = h.host.extension_settings["quick-image-gen"];
+    for (const id of ["old", "invalid"]) {
+        await h.loadConfiguration(id);
+        assert.equal(settings.llmRequestRole, "default");
+        assert.equal(h.document.getElementById("qig-llm-request-role").value, "default");
+    }
+    const role = h.document.getElementById("qig-llm-request-role");
+    role.value = "system";
+    h.fireEvent(role, "input");
+    globalThis.prompt = () => "Saved role";
+    await h.document.getElementById("qig-config-save").onclick();
+    const saved = settings._backupConfigurations.find(record => record.name === "Saved role");
+    assert.equal(saved.llmRequestRole, "system");
+    await h.loadConfiguration("old");
+    await h.loadConfiguration(saved.id);
+    assert.equal(settings.llmRequestRole, "system");
+
+    role.value = "user";
+    h.fireEvent(role, "input");
+    assert.equal(settings.lastLoadedPresetId, saved.id, "editing keeps the configuration selected");
+    globalThis.confirm = () => true;
+    await h.document.getElementById("qig-config-update").onclick();
+    assert.equal(settings._backupConfigurations.find(record => record.id === saved.id).llmRequestRole, "user");
+    await h.loadConfiguration("old");
+    await h.loadConfiguration(saved.id);
+    assert.equal(settings.llmRequestRole, "user");
+
+    let exportedBlob;
+    const createObjectURL = URL.createObjectURL;
+    URL.createObjectURL = blob => { exportedBlob = blob; return "blob:role-export"; };
+    t.mock.method(h.window.HTMLAnchorElement.prototype, "click", () => {});
+    try {
+        h.document.getElementById("qig-export-btn").click();
+    } finally {
+        URL.createObjectURL = createObjectURL;
+    }
+    const exported = JSON.parse(await exportedBlob.text());
+    assert.equal(exported.activeSettings.llmRequestRole, "user");
+    assert.equal(exported.generationPresets.find(record => record.id === saved.id).llmRequestRole, "user");
+    assert.doesNotMatch(JSON.stringify(exported), /__qigReviewDisableRevision/);
+    exported.generationPresets.find(record => record.id === saved.id).llmRequestRole = "system";
+    exported.generationPresets.push({ id: "import-invalid", name: "Imported invalid", provider: "local", llmRequestRole: "assistant" });
+    exported.generationPresets.push({ id: "import-old", name: "Imported old", provider: "local", llmEditPrompt: true });
+    let fileInput;
+    const inputClick = t.mock.method(h.window.HTMLInputElement.prototype, "click", function () { if (this.type === "file") fileInput = this; });
+    h.document.getElementById("qig-import-btn").click();
+    inputClick.mock.restore();
+    await fileInput.onchange({ target: { files: [new Blob([JSON.stringify(exported)], { type: "application/json" })] } });
+    assert.ok(h.toastrCalls.some(call => call.message === "Settings imported successfully"));
+    for (const id of ["import-invalid", "import-old", saved.id]) {
+        await h.loadConfiguration(id);
+        assert.equal(settings.llmRequestRole, id === saved.id ? "system" : "default");
+    }
+    assert.equal(settings._backupConfigurations.find(record => record.id === "import-old").reviewBeforeGenerate, true);
 });
 
 test("raw empty replies and failures never replay or use quiet fallback, incompatible roles fail before submission", async t => {
@@ -223,21 +298,68 @@ test("off/on during a pending Text AI reply suppresses its unopened final review
     assert.equal(h.native.instances.length, 1);
 });
 
-test("queued direct and tagged runs cannot regain review after checkbox or preset off/on", async t => {
+test("rapid configuration off/on with a character override retains the open editor and suppresses later reviews", async t => {
+    const h = await reviewHarness(t, {
+        settings: {
+            reviewBeforeGenerate: true, llmRequestRole: "system",
+            _backupCharSettings: { "card:alice.png": { prompt: "character fox" } },
+            _backupConfigurations: [false, true].map(review => ({
+                id: review ? "on" : "off", name: review ? "On" : "Off", provider: "local", localType: "a1111",
+                reviewBeforeGenerate: review, llmRequestRole: "user", useLLMPrompt: true,
+            })),
+        },
+        context: { characterId: "alice", characters: { alice: { name: "Alice", avatar: "alice.png" } }, name2: "Alice" },
+    });
+    const settings = h.host.extension_settings["quick-image-gen"];
+    assert.equal(settings.prompt, "character fox", "the character override is active");
+    const pending = h.generate();
+    await h.waitFor(() => h.document.getElementById("qig-review-text"));
+    const editor = h.document.getElementById("qig-review-text");
+    editor.value = "Keep this exact approved request.";
+    const select = h.document.getElementById("qig-config-select");
+    for (const id of ["off", "on"]) {
+        select.value = id;
+        h.fireEvent(select, "change");
+    }
+    await h.waitFor(() => settings.lastLoadedPresetId === "on");
+    assert.equal(settings.llmRequestRole, "user");
+    assert.equal(settings.reviewBeforeGenerate, true);
+    assert.equal(editor.isConnected, true);
+    assert.equal(editor.value, "Keep this exact approved request.");
+    assert.equal(h.requests.length, 0);
+    h.document.getElementById("qig-review-primary").click();
+    await h.waitFor(() => h.images.length);
+    await pending;
+    assert.equal(h.native.instances.length, 1);
+    assert.deepEqual(h.requests[0].prompt, [{ role: "system", content: "Keep this exact approved request." }], "the active request keeps its captured role");
+});
+
+test("queued direct and tagged runs cannot regain review after checkbox or configuration off/on", async t => {
     for (const injectEnabled of [false, true]) {
-        for (const change of ["checkbox", "preset"]) {
+        for (const change of ["checkbox", "configuration"]) {
             const h = await reviewHarness(t, {
                 settings: {
                     autoGenerate: true, autoGenerateDelayMs: 150, reviewBeforeGenerate: true, injectEnabled,
-                    _backupGenPresets: [{ id: "off", name: "Off", reviewBeforeGenerate: false }, { id: "on", name: "On", reviewBeforeGenerate: true }],
+                    _backupConfigurations: [false, true].map(review => ({
+                        id: review ? "on" : "off", name: review ? "On" : "Off", provider: "local", localType: "a1111",
+                        reviewBeforeGenerate: review, useLLMPrompt: true, injectEnabled,
+                    })),
                 },
                 context: { chat: [{ name: "Character", mes: "<image>a red fox</image>" }] },
             });
             h.host.eventSource.emit(h.host.eventTypes.MESSAGE_RECEIVED, 0);
-            if (change === "checkbox") { h.setReview(false); h.setReview(false); h.setReview(true); }
-            else { h.loadPreset("off"); h.loadPreset("off"); h.loadPreset("on"); }
-            await h.waitFor(() => h.images.length, 5000, `${change} queued ${injectEnabled ? "tagged" : "direct"} image`);
-            await h.waitFor(() => h.document.getElementById("qig-input-btn").getAttribute("aria-label").startsWith("Generate image"));
+            if (change === "checkbox") {
+                h.setReview(false); h.setReview(false); h.setReview(true);
+                await h.waitFor(() => h.images.length, 5000, `queued ${injectEnabled ? "tagged" : "direct"} image`);
+                await h.waitFor(() => h.document.getElementById("qig-input-btn").getAttribute("aria-label").startsWith("Generate image"));
+            } else {
+                await h.loadConfiguration("off");
+                await h.loadConfiguration("off");
+                await h.loadConfiguration("on");
+                await delay(250);
+                assert.equal(h.images.length, 0, "loading a configuration cancels the old queued job");
+                assert.equal(h.requests.length, 0);
+            }
             assert.equal(h.native.instances.length, 0);
             assert.equal(h.host.extension_settings["quick-image-gen"].reviewBeforeGenerate, true);
             const fresh = h.generate();

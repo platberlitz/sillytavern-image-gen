@@ -139,6 +139,7 @@ test("successful GET proxy discovery selects one POST on the same origin, never 
         return jsonResponse([]);
     }, { getRequestHeaders: () => ({ AUTHORIZATION: "Basic host-canary", "X-CSRF-Token": "csrf-canary" }) });
     await h.document.getElementById("qig-a1111-model-refresh").onclick();
+    await h.waitFor(() => h.document.getElementById("qig-a1111-model").selectedOptions[0]?.textContent === "checkpoint", 1000, "model discovery completed");
     assert.match(await run(), /generation complete/);
     assert.deepEqual(requests.filter(request => request.method === "POST"), [
         { url: `/proxy/${firstOrigin}/sdapi/v1/txt2img`, method: "POST" },
@@ -607,3 +608,63 @@ for (const phase of ["download", "download and finalisation"]) {
         assert.equal(await run(), "QIG: generated 3 image(s); 3 generation(s) failed.");
     });
 }
+
+test("Comfy choice overrides keep run limits and failures without recording displaced panel controls", async t => {
+    const workflow = { "3": { class_type: "Selector", inputs: {
+        model: "%model%", sampler: "%sampler%", scheduler: "%scheduler%", steps: "%steps%", prompt: "%prompt%",
+    } } };
+    const overrides = { version: 1, entries: [
+        ["model", "chosen.safetensors"], ["sampler", "heun"], ["scheduler", "karras"],
+    ].map(([inputName, value]) => ({ nodeId: "3", classType: "Selector", inputName, rawValue: `%${inputName}%`, value, verified: true })) };
+    const requests = [];
+    const saved = [];
+    const downloads = [];
+    const fetchOutput = comfyFetch(Array.from({ length: 6 }, (_, index) => `${index}.png`), filename => {
+        downloads.push(filename);
+        return filename === "1.png" ? new Response("Missing", { status: 404 }) : pngResponse();
+    });
+    const { run, settings } = await providerHarness(t, {
+        ...COMFY_SETTINGS, batchCount: 3, localModel: "panel.safetensors", comfyScheduler: "normal",
+        comfyWorkflow: JSON.stringify(workflow), comfyWorkflowComponentOverrides: overrides,
+        saveToServer: true, saveToServerEmbedMetadata: true,
+    }, (url, init) => {
+        if (init?.method === "POST" && url.endsWith("/prompt")) requests.push(JSON.parse(init.body));
+        return fetchOutput(url, init);
+    }, { saveBase64AsFile: async base64 => { saved.push(base64); return "/user/images/qig/override.png"; } });
+    assert.equal(await run(), "QIG: generated 8 image(s); 5 generation(s) failed.");
+    assert.equal(requests.length, 2);
+    assert.equal(downloads.length, 10);
+    assert.equal(requests[0].prompt["3"].inputs.model, "chosen.safetensors");
+    assert.equal(requests[0].prompt["3"].inputs.sampler, "heun");
+    assert.equal(requests[0].prompt["3"].inputs.scheduler, "karras");
+    const metadata = await readPngMetadataBundle(Buffer.from(saved[0], "base64"));
+    const parameters = metadata.structured.data.effectiveRequest.parameters;
+    assert.equal(parameters.model, undefined);
+    assert.equal(parameters.sampler, undefined);
+    assert.equal(parameters.schedule, undefined);
+    assert.equal(parameters.steps, 25);
+    assert.doesNotMatch(metadata.parameters, /Model:|Sampler:|Scheduler:/);
+    settings.comfyWorkflowComponentOverrides = { version: 1, entries: [] };
+    settings.batchCount = 1;
+    saved.length = 0;
+    assert.equal(await run(), "QIG: generated 5 image(s); 1 generation(s) failed.");
+    const unoverridden = await readPngMetadataBundle(Buffer.from(saved[0], "base64"));
+    assert.equal(unoverridden.structured.data.effectiveRequest.parameters.model, "panel.safetensors");
+    assert.equal(unoverridden.structured.data.effectiveRequest.parameters.schedule, "normal");
+});
+
+test("A1111 effective metadata never falls back to an inactive Comfy model", async t => {
+    let saved;
+    const { run } = await providerHarness(t, {
+        provider: "local", localType: "a1111", localUrl: "http://127.0.0.1:7860",
+        a1111Model: "", localModel: "inactive-comfy.safetensors", saveToServerEmbedMetadata: true,
+    }, (_url, init) => {
+        if (init?.method === "HEAD") return new Response(null, { status: 405 });
+        assert.equal(JSON.parse(init.body).override_settings?.sd_model_checkpoint, undefined);
+        return jsonResponse({ images: [PNG_BASE64] });
+    }, { saveBase64AsFile: async base64 => { saved = base64; return "/user/images/qig/a1111.png"; } });
+    assert.equal(await run({ quiet: true }), "/user/images/qig/a1111.png");
+    const metadata = await readPngMetadataBundle(Buffer.from(saved, "base64"));
+    assert.equal(metadata.structured.data.effectiveRequest.parameters.model, null);
+    assert.doesNotMatch(JSON.stringify(metadata), /inactive-comfy/);
+});

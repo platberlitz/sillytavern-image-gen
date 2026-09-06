@@ -5,9 +5,9 @@ import { createQigHarness } from "./helpers/qig-harness.js";
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64");
 let harnessId = 0;
 
-async function persistenceHarness(t, { legacy = false, settings = {}, message = {} } = {}) {
+async function persistenceHarness(t, { legacy = false, settings = {}, message = {}, cached = {}, failInitialSettings = false } = {}) {
     const commands = new Map();
-    const owner = `persistence-${++harnessId}`;
+    const owner = settings._syncCacheId || `persistence-${++harnessId}`;
     const context = {
         chat: [{ name: "A", mes: "a scene", is_user: false, extra: { image: "/original.png", title: "Original", inline_image: false }, ...message }],
         chatId: "chat-a",
@@ -23,18 +23,34 @@ async function persistenceHarness(t, { legacy = false, settings = {}, message = 
         getPresetManager: () => null,
         getCurrentChatId: () => context.chatId,
     };
+    const initialSettings = {
+        _syncCacheId: owner,
+        setupWizardSeen: true,
+        provider: "pollinations",
+        autoInsert: false,
+        saveToServer: false,
+        saveToServerEmbedMetadata: false,
+        useLastMessage: false,
+        useLLMPrompt: false,
+        confirmBeforeGenerate: false,
+        reviewBeforeGenerate: false,
+        prompt: "a red fox",
+        ...settings,
+    };
     const state = {
         failChat: false,
         failMetadata: false,
-        failSettings: false,
+        failSettings: failInitialSettings,
         chatSaves: 0,
         chatSaveSnapshots: [],
         metadataSaves: 0,
         settingsSaves: 0,
+        settingsSaveSnapshots: [],
+        configurationName: "Saved configuration",
         readbacks: [],
         durableChat: structuredClone(context.chat),
         durableMetadata: structuredClone(context.chatMetadata),
-        durableSettings: {},
+        durableSettings: { "quick-image-gen": JSON.parse(JSON.stringify(initialSettings)) },
         afterChatSave: null,
         afterSettingsSave: null,
     };
@@ -57,26 +73,12 @@ async function persistenceHarness(t, { legacy = false, settings = {}, message = 
     const h = await createQigHarness({
         host: {
             getContext: () => ({ ...context }),
-            extension_settings: {
-                "quick-image-gen": {
-                    _syncCacheId: owner,
-                    setupWizardSeen: true,
-                    provider: "pollinations",
-                    autoInsert: false,
-                    saveToServer: false,
-                    saveToServerEmbedMetadata: false,
-                    useLastMessage: false,
-                    useLLMPrompt: false,
-                    confirmBeforeGenerate: false,
-                    reviewBeforeGenerate: false,
-                    prompt: "a red fox",
-                    ...settings,
-                },
-            },
+            extension_settings: { "quick-image-gen": initialSettings },
             saveSettings: async () => {
                 const host = globalThis.__QIG_TEST_HOST__;
                 state.settingsSaves++;
-                if (!state.failSettings) state.durableSettings = structuredClone(host.extension_settings);
+                state.settingsSaveSnapshots.push(JSON.parse(JSON.stringify(host.extension_settings["quick-image-gen"])));
+                if (!state.failSettings) state.durableSettings = JSON.parse(JSON.stringify(host.extension_settings));
                 // On failure this models a different save's uncorrelated event.
                 host.eventSource.emit(host.eventTypes.SETTINGS_UPDATED);
                 await state.afterSettingsSave?.();
@@ -86,9 +88,9 @@ async function persistenceHarness(t, { legacy = false, settings = {}, message = 
             addSlashCommand: command => commands.set(command.name, command),
             POPUP_TYPE: { CONFIRM: 1, TEXT: 2, INPUT: 3 },
             POPUP_RESULT: { AFFIRMATIVE: 1 },
-            callGenericPopup: async (_content, type) => type === 3 ? "Saved profile" : 1,
+            callGenericPopup: async (_content, type) => type === 3 ? state.configurationName : 1,
         },
-        localStorage: { qig_sync_cache_id: owner },
+        localStorage: { qig_sync_cache_id: owner, ...cached },
         fetch: async (url, init) => {
             if (url === "/api/settings/get") {
                 assert.equal(init.method, "POST");
@@ -359,10 +361,13 @@ test("locked backgrounds restore metadata and visible CSS when the baseline host
 test("single and bulk entrypoint saves retain pending local values until an exact settings readback", async t => {
     const { h, state, settings, click } = await persistenceHarness(t);
     state.failSettings = true;
-    await click("qig-profile-save");
-    assert.ok(JSON.parse(h.localStorage.getItem("qig_profiles")).pollinations["Saved profile"]);
-    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_profiles"), "1");
-    assert.equal(state.durableSettings["quick-image-gen"]._backupProfiles.pollinations?.["Saved profile"], undefined);
+    await click("qig-config-save");
+    const [configuration] = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(configuration.name, "Saved configuration");
+    assert.equal(configuration.provider, "pollinations");
+    assert.equal(settings.lastLoadedPresetId, configuration.id);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_configurations"), "1");
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, []);
 
     settings.prompt = "new character prompt";
     await click("qig-save-char-btn");
@@ -373,12 +378,13 @@ test("single and bulk entrypoint saves retain pending local values until an exac
     assert.equal(state.durableSettings["quick-image-gen"]._backupCharSettings["card:a.png"], undefined);
 
     state.failSettings = false;
-    await click("qig-profile-save");
+    await click("qig-config-save");
     await click("qig-save-char-btn");
-    for (const key of ["qig_profiles", "qig_char_settings", "qig_char_ref_images"]) {
+    for (const key of ["qig_configurations", "qig_char_settings", "qig_char_ref_images"]) {
         assert.equal(h.localStorage.getItem(`qig_sync_pending:${key}`), null);
     }
-    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupProfiles, settings._backupProfiles);
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, settings._backupConfigurations);
+    assert.equal(state.durableSettings["quick-image-gen"].lastLoadedPresetId, configuration.id);
     assert.deepEqual(state.durableSettings["quick-image-gen"]._backupCharSettings, settings._backupCharSettings);
 });
 
@@ -386,8 +392,13 @@ test("settings imports reject swallowed saves, preserve previous pending caches 
     const { h, state, settings, importSettings } = await persistenceHarness(t);
     const previous = structuredClone(settings);
     const previousLocal = h.localStorage.getItem("qig_char_settings");
+    const previousConfigurations = h.localStorage.getItem("qig_configurations");
     h.localStorage.setItem("qig_sync_pending:qig_char_settings", "1");
-    const data = { activeSettings: { width: 832 }, charSettings: { alice: { prompt: "imported" } } };
+    const data = {
+        activeSettings: { width: 832, lastLoadedPresetId: "imported-config" },
+        generationPresets: [{ id: "imported-config", name: "Imported", provider: "pollinations", prompt: "imported configuration" }],
+        charSettings: { alice: { prompt: "imported" } },
+    };
     state.failSettings = true;
     state.afterSettingsSave = () => { state.failSettings = false; state.afterSettingsSave = null; };
     const saves = state.settingsSaves;
@@ -396,6 +407,7 @@ test("settings imports reject swallowed saves, preserve previous pending caches 
     assert.deepEqual(settings, previous);
     assert.deepEqual(state.durableSettings["quick-image-gen"], previous);
     assert.equal(h.localStorage.getItem("qig_char_settings"), previousLocal);
+    assert.equal(h.localStorage.getItem("qig_configurations"), previousConfigurations);
     assert.equal(h.localStorage.getItem("qig_sync_pending:qig_char_settings"), "1");
     assert.ok(h.toastrCalls.some(call => call.type === "error" && /Settings save could not be confirmed/.test(call.message)));
     assert.equal(h.toastrCalls.some(call => /Settings imported successfully/.test(call.message)), false);
@@ -404,6 +416,11 @@ test("settings imports reject swallowed saves, preserve previous pending caches 
     await importSettings(data);
     assert.equal(settings.width, 832);
     assert.equal(settings._backupCharSettings.alice.prompt, "imported");
+    assert.equal(settings.lastLoadedPresetId, "imported-config");
+    assert.equal(settings._backupConfigurations[0].id, "imported-config");
+    assert.equal(state.durableSettings["quick-image-gen"].lastLoadedPresetId, "imported-config");
+    assert.deepEqual(JSON.parse(h.localStorage.getItem("qig_configurations")), settings._backupConfigurations);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_configurations"), null);
     assert.equal(JSON.parse(h.localStorage.getItem("qig_char_settings")).alice.prompt, "imported");
     assert.equal(h.localStorage.getItem("qig_sync_pending:qig_char_settings"), null);
     assert.ok(h.toastrCalls.some(call => /Settings imported successfully/.test(call.message)));
@@ -441,16 +458,27 @@ test("an unconfirmed import compensation retains the restored cache as pending",
     const { h, state, settings, importSettings } = await persistenceHarness(t);
     const previous = structuredClone(settings._backupCharSettings);
     const previousLocal = h.localStorage.getItem("qig_char_settings");
+    const previousConfigurations = h.localStorage.getItem("qig_configurations");
+    const previousActive = settings.lastLoadedPresetId;
     state.afterSettingsSave = () => {
         state.afterSettingsSave = null;
         state.failSettings = true;
         throw new Error("lost import response");
     };
-    await importSettings({ charSettings: { alice: { prompt: "imported" } } });
+    await importSettings({
+        activeSettings: { lastLoadedPresetId: "pending-import" },
+        generationPresets: [{ id: "pending-import", name: "Pending", provider: "pollinations" }],
+        charSettings: { alice: { prompt: "imported" } },
+    });
     assert.deepEqual(settings._backupCharSettings, previous);
     assert.equal(h.localStorage.getItem("qig_char_settings"), previousLocal);
     assert.equal(state.durableSettings["quick-image-gen"]._backupCharSettings.alice.prompt, "imported");
     assert.equal(h.localStorage.getItem("qig_sync_pending:qig_char_settings"), "1");
+    assert.equal(h.localStorage.getItem("qig_configurations"), previousConfigurations);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_configurations"), "1");
+    assert.equal(settings.lastLoadedPresetId, previousActive);
+    assert.equal(state.durableSettings["quick-image-gen"].lastLoadedPresetId, "pending-import");
+    assert.equal(state.durableSettings["quick-image-gen"]._backupConfigurations[0].id, "pending-import");
     assert.ok(h.toastrCalls.some(call => /could not be fully rolled back/.test(call.message)));
     assert.equal(h.toastrCalls.some(call => /Settings imported successfully/.test(call.message)), false);
 });
@@ -468,4 +496,150 @@ test("unconfirmed startup saves do not delete the legacy settings they were migr
     assert.equal(h.localStorage.getItem("qig_prompt_replacements"), legacy);
     assert.ok(h.host.extension_settings["quick-image-gen"]._backupContextualFilters.some(filter => filter.positive === "fox"));
     assert.ok(h.toastrCalls.some(call => call.type === "warning" && /could not be saved/.test(call.message)));
+});
+
+test("configuration migration, saving and import never rewrite the three legacy rollback stores", async t => {
+    const serverProfiles = { local: { Shared: { localType: "comfyui", localUrl: "http://server-original:8188", legacyOnly: "keep" } } };
+    const localProfiles = { local: { Shared: { localType: "comfyui", localUrl: "http://pending-local:8188", legacyOnly: "keep local" } } };
+    const presets = [{ id: "legacy-shared", name: "Shared", provider: "local", steps: 31, llmEditPrompt: true }];
+    const workflows = [{ id: "legacy-workflow", name: "Shared", localModel: "flux.safetensors", comfyWorkflow: '{ "local-graph": true }' }];
+    const originals = {
+        qig_profiles: `${JSON.stringify(localProfiles, null, 2)}\n`,
+        qig_gen_presets: `${JSON.stringify(presets, null, 4)}\n`,
+        qig_comfy_workflows: `${JSON.stringify(workflows, null, 2)}\n`,
+    };
+    const { h, state, settings, click, importSettings } = await persistenceHarness(t, {
+        settings: { _backupProfiles: serverProfiles, _backupGenPresets: presets, _backupComfyWorkflows: workflows },
+        cached: { ...originals, "qig_sync_pending:qig_profiles": "1" },
+    });
+    const [migrated] = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(migrated.id, "legacy-shared");
+    assert.equal(migrated.localUrl, "http://pending-local:8188", "owned pending legacy data is the migration source, not the stale server copy");
+    assert.equal(migrated.localModel, "flux.safetensors");
+    assert.equal(migrated.steps, 31);
+    assert.equal(migrated.comfyWorkflow, workflows[0].comfyWorkflow);
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, [migrated]);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_configurations"), null);
+    await click("qig-config-save");
+    await importSettings({ generationPresets: [{ id: "portable", name: "Portable", provider: "pollinations", prompt: "portable" }] });
+    for (const [key, value] of Object.entries(originals)) assert.equal(h.localStorage.getItem(key), value, key);
+    assert.deepEqual(settings._backupProfiles, serverProfiles);
+    assert.deepEqual(settings._backupGenPresets, presets);
+    assert.deepEqual(settings._backupComfyWorkflows, workflows);
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupProfiles, serverProfiles);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_profiles"), "1", "the old store was never confirmed or rewritten");
+});
+
+test("unconfirmed configuration migration retains its cache across a restart with stale server data", async t => {
+    const presets = [{ id: "legacy", name: "Legacy", provider: "pollinations", steps: 31 }];
+    const raw = `${JSON.stringify(presets, null, 2)}\n`;
+    const first = await persistenceHarness(t, {
+        settings: { _backupGenPresets: presets },
+        cached: { qig_gen_presets: raw },
+        failInitialSettings: true,
+    });
+    const migrated = JSON.parse(first.h.localStorage.getItem("qig_configurations"));
+    assert.equal(migrated.length, 1);
+    assert.equal(first.h.localStorage.getItem("qig_sync_pending:qig_configurations"), "1");
+    assert.equal(first.state.durableSettings["quick-image-gen"]._backupConfigurations, undefined);
+    const cached = Object.fromEntries(Array.from({ length: first.h.localStorage.length }, (_, index) => {
+        const key = first.h.localStorage.key(index);
+        return [key, first.h.localStorage.getItem(key)];
+    }));
+    const server = { ...first.state.durableSettings["quick-image-gen"], _backupConfigurations: [], prompt: "changed while offline" };
+    await first.h.dispose();
+    const second = await persistenceHarness(t, { settings: server, cached });
+    assert.deepEqual(JSON.parse(second.h.localStorage.getItem("qig_configurations")), migrated);
+    assert.deepEqual(second.state.durableSettings["quick-image-gen"]._backupConfigurations, migrated);
+    assert.equal(second.h.localStorage.getItem("qig_sync_pending:qig_configurations"), null);
+    assert.equal(second.h.localStorage.getItem("qig_gen_presets"), raw);
+    assert.equal(second.settings._configurationMigrationVersion, 1);
+});
+
+test("an owned pending empty configuration store does not resurrect legacy records", async t => {
+    const presets = [{ id: "deleted", name: "Deleted", provider: "pollinations" }];
+    const { h, state } = await persistenceHarness(t, {
+        settings: { _backupGenPresets: presets },
+        cached: { qig_configurations: "[]", "qig_sync_pending:qig_configurations": "1" },
+    });
+    assert.deepEqual(JSON.parse(h.localStorage.getItem("qig_configurations")), []);
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, []);
+    assert.equal(h.localStorage.getItem("qig_sync_pending:qig_configurations"), null);
+    assert.equal(h.localStorage.getItem("qig_gen_presets"), null, "missing legacy caches are not created");
+});
+
+test("configuration migration cannot seed a different account from preserved legacy caches", async t => {
+    const raw = JSON.stringify({ proxy: { Private: { proxyKey: "old-account-canary", proxyUrl: "https://private.example" } } }, null, 2);
+    const { h, state, settings } = await persistenceHarness(t, {
+        settings: { _syncCacheId: "new-account" },
+        cached: { qig_sync_cache_id: "old-account", qig_profiles: raw, "qig_sync_pending:qig_profiles": "1" },
+    });
+    assert.equal(h.localStorage.getItem("qig_profiles"), raw);
+    assert.deepEqual(settings._backupConfigurations, []);
+    assert.equal(settings._backupProfiles, undefined);
+    assert.doesNotMatch(JSON.stringify(state.durableSettings), /old-account-canary|private\.example/);
+});
+
+test("configuration Save As and Delete failures restore both records and the selected ID on the server", async t => {
+    const { h, state, settings, click } = await persistenceHarness(t);
+    await click("qig-config-save");
+    const previous = structuredClone(settings._backupConfigurations);
+    const activeId = settings.lastLoadedPresetId;
+    const previousLocal = h.localStorage.getItem("qig_configurations");
+    state.configurationName = "Second configuration";
+    for (const button of ["qig-config-save", "qig-config-del"]) {
+        const saves = state.settingsSaves;
+        state.afterSettingsSave = () => {
+            state.afterSettingsSave = null;
+            throw new Error("lost configuration response");
+        };
+        await click(button);
+        assert.equal(state.settingsSaves, saves + 2, button);
+        assert.equal(settings.lastLoadedPresetId, activeId, button);
+        assert.equal(state.durableSettings["quick-image-gen"].lastLoadedPresetId, activeId, button);
+        assert.deepEqual(settings._backupConfigurations, previous, button);
+        assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, previous, button);
+        assert.equal(h.localStorage.getItem("qig_configurations"), previousLocal, button);
+        assert.equal(h.document.getElementById("qig-config-select").value, activeId, button);
+    }
+    settings.steps = 31;
+    await click("qig-config-update");
+    assert.equal(state.durableSettings["quick-image-gen"]._backupConfigurations[0].steps, 31);
+    await click("qig-config-del");
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, []);
+    assert.equal(state.durableSettings["quick-image-gen"].lastLoadedPresetId, "");
+    assert.equal(h.localStorage.getItem("qig_configurations"), "[]");
+});
+
+test("legacy imports complete configurations before identity merging and preserve local private fields", async t => {
+    const trusted = { id: "existing", name: "Existing", provider: "local", localType: "comfyui", localUrl: "http://trusted:8188", comfyWorkflow: '{ "trusted": true }' };
+    const { h, state, settings, importSettings } = await persistenceHarness(t, {
+        settings: { _backupConfigurations: [trusted], _configurationMigrationVersion: 1, localUrl: "http://active-private:8188" },
+    });
+    await importSettings({
+        connectionProfiles: { local: {
+            Existing: { localType: "comfyui", localUrl: "https://untrusted.example" },
+            New: { localType: "comfyui", localUrl: "https://untrusted.example" },
+        } },
+        generationPresets: [
+            { id: "existing", name: "Existing", provider: "local", steps: 31 },
+            { id: "new", name: "New", provider: "local", steps: 37 },
+        ],
+        comfyWorkflows: [{ name: "New", localModel: "new-model.safetensors", comfyWorkflow: '{ "untrusted": true }' }],
+    });
+    const records = JSON.parse(h.localStorage.getItem("qig_configurations"));
+    assert.equal(records.length, 2, "each preset/profile/workflow identity produces one complete record");
+    const existing = records.find(record => record.id === "existing");
+    const added = records.find(record => record.id === "new");
+    assert.equal(existing.localUrl, trusted.localUrl);
+    assert.equal(existing.comfyWorkflow, trusted.comfyWorkflow);
+    assert.equal(existing.steps, 31);
+    assert.equal(added.localType, "comfyui");
+    assert.equal(added.localModel, "new-model.safetensors");
+    assert.equal(added.steps, 37);
+    assert.doesNotMatch(JSON.stringify(added), /active-private|untrusted/);
+    assert.deepEqual(JSON.parse(JSON.stringify(settings._backupConfigurations)), records);
+    assert.deepEqual(state.durableSettings["quick-image-gen"]._backupConfigurations, records);
+    assert.equal(h.localStorage.getItem("qig_gen_presets"), null);
+    assert.equal(settings._backupGenPresets, undefined);
 });

@@ -505,3 +505,39 @@ test("an early positive settings event cannot replace fresh post-save verificati
     assert.equal(storage.getItem("qig_sync_pending:qig_profiles"), "1");
     assert.equal(eventSource.listenerCount("saved"), 0);
 });
+
+test("configuration records and their active selection are confirmed and compensated together", async () => {
+    const old = [{ id: "old" }];
+    const storage = createStorage({ qig_configurations: JSON.stringify(old) });
+    const settings = { _backupConfigurations: old, lastLoadedPresetId: "old" };
+    const eventSource = new EventEmitter();
+    const original = new Error("lost configuration save response");
+    const saved = [];
+    const operation = persistSynchronizedStore({
+        storage,
+        settings,
+        localKey: "qig_configurations",
+        backupKey: "_backupConfigurations",
+        value: [{ id: "new" }],
+        settingsChanges: { lastLoadedPresetId: "new" },
+        acknowledge: expectedValues => createSettingsSaveEventConfirmer({
+            eventSource,
+            eventTypes: { SETTINGS_UPDATED: "saved" },
+            confirm: () => JSON.stringify(saved.at(-1)) === JSON.stringify(expectedValues),
+        })(),
+        save: async () => {
+            saved.push(structuredClone(settings));
+            if (saved.length === 1) throw original;
+            eventSource.emit("saved");
+        },
+    });
+    assert.equal(settings.lastLoadedPresetId, "old", "the selection is staged inside the serialized operation");
+    await assert.rejects(operation, error => error === original);
+    assert.deepEqual(saved, [
+        { _backupConfigurations: [{ id: "new" }], lastLoadedPresetId: "new" },
+        { _backupConfigurations: [{ id: "old" }], lastLoadedPresetId: "old" },
+    ]);
+    assert.deepEqual(settings, saved[1]);
+    assert.equal(storage.getItem("qig_configurations"), JSON.stringify(old));
+    assert.equal(eventSource.listenerCount("saved"), 0);
+});

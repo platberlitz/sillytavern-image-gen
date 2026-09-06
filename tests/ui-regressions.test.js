@@ -111,6 +111,35 @@ test("settings search finds loose review and World Info fields and moved control
     }
 });
 
+test("Configuration and Prompting Tools keep the merged controls and labelled Sampling group", async t => {
+    const h = await uiHarness(t);
+    const select = h.document.getElementById("qig-config-select");
+    assert.equal(select.labels[0].textContent, "Configuration");
+    assert.ok(select.closest(".qig-essentials"));
+    for (const [id, label] of [["qig-config-save", "Save As"], ["qig-config-update", "Update"], ["qig-config-del", "Delete"]]) {
+        const button = h.document.getElementById(id);
+        assert.equal(button.querySelector(".qig-sr-label").textContent, label, "icon control retains its accessible name");
+        assert.equal(button.disabled, id !== "qig-config-save", "selection-dependent actions start disabled");
+        assert.equal(typeof button.onclick, "function");
+    }
+    assert.equal(h.document.querySelector("#qig-save-preset, #qig-preset-select, .qig-preset-chip, #qig-profile-select"), null);
+    assert.equal(h.document.getElementById("qig-input-btn").getAttribute("aria-label"), "Generate image; right-click for configurations");
+    assert.equal(h.document.getElementById("qig-prompt-heading").textContent, "Prompting Tools");
+    assert.ok(h.document.getElementById("qig-plain-desc-btn").closest("#qig-section-create-content"));
+    const sampling = h.document.querySelector("#qig-output-settings .qig-sampling");
+    assert.equal(sampling.querySelector("legend").textContent, "Sampling");
+    for (const id of ["qig-sampler", "qig-a1111-scheduler", "qig-comfy-scheduler"]) {
+        const control = h.document.getElementById(id);
+        assert.ok(sampling.contains(control));
+        assert.equal(control.labels.length, 1);
+    }
+    const search = h.document.getElementById("qig-settings-search");
+    search.value = "kl_optimal";
+    h.fireEvent(search, "input");
+    assert.match(h.document.getElementById("qig-settings-search-status").textContent, /^No settings/, "the inactive backend's schedule is not a search result");
+    assert.equal(h.document.getElementById("qig-comfy-scheduler-wrap").hidden, true);
+});
+
 test("cancelling an optional folder or context description keeps both name and description", async t => {
     const library = { version: 1, profiles: [{ id: "profile", label: "Scenes", folders: [{
         id: "folder", label: "Fighting", description: "Original folder description", media: [],
@@ -248,7 +277,7 @@ test("native review cancellation and teardown send no image request", async t =>
         await delay(20);
         assert.equal(requests, 0);
         assert.notEqual(h.document.getElementById("qig-status")?.style.display, "block", "cancellation cannot restore a stale generating status");
-        if (dismiss !== "teardown") assert.match(h.document.getElementById("qig-input-btn").getAttribute("aria-label"), /^Generate image/);
+        if (dismiss !== "teardown") assert.equal(h.document.getElementById("qig-input-btn").getAttribute("aria-label"), "Generate image; right-click for configurations");
         await h.dispose();
     }
 });
@@ -304,24 +333,46 @@ test("batch navigation retains per-image prompt drafts and Reset only resets the
     assert.equal(prompt.value, original);
 });
 
-test("rebuilding settings reuses the existing floating status instead of creating a duplicate", async t => {
+test("configuration controls retain status reuse, selection state and destructive confirmations after Quick Setup", async t => {
     const h = await uiHarness(t);
-    const preset = h.document.getElementById("qig-save-preset");
-    let presetCount = 0;
-    globalThis.prompt = () => `UI preset ${++presetCount}`;
-    preset.click();
-    const status = await h.waitFor(() => h.document.getElementById("qig-status"), 5000, "preset save status");
+    const configurationCount = () => h.document.getElementById("qig-config-select").options.length - 1;
+    const initialCount = configurationCount();
+    let configurationNumber = 0;
+    globalThis.prompt = () => `UI configuration ${++configurationNumber}`;
+    await h.document.getElementById("qig-config-save").onclick();
+    const status = h.document.getElementById("qig-status");
+    assert.ok(status);
+    assert.equal(configurationCount(), initialCount + 1);
+    const firstId = h.document.getElementById("qig-config-select").value;
+    assert.ok(firstId);
     h.document.querySelector(".qig-wizard-btn").click();
-    h.document.getElementById("qig-wizard-provider").value = "pollinations";
+    const provider = h.document.getElementById("qig-wizard-provider");
+    provider.value = "pollinations";
+    h.fireEvent(provider, "change");
     h.document.getElementById("qig-wizard-save").click();
-    h.document.getElementById("qig-save-preset").click();
-    await h.waitFor(() => h.document.querySelectorAll(".qig-preset-chip__delete").length === 2, 5000, "second preset saved after rebuild");
+    assert.equal(h.document.getElementById("qig-provider").value, "pollinations");
+    await h.document.getElementById("qig-config-save").onclick();
+    assert.equal(configurationCount(), initialCount + 2);
     assert.equal(h.document.querySelectorAll("#qig-status").length, 1);
     assert.equal(h.document.getElementById("qig-status"), status);
-    const deleteButton = h.document.querySelector(".qig-preset-chip__delete");
+    const select = h.document.getElementById("qig-config-select");
+    assert.notEqual(select.value, firstId);
+    assert.match(select.selectedOptions[0].textContent, /UI configuration 2.*Pollinations/);
+    const deleteButton = h.document.getElementById("qig-config-del");
+    const updateButton = h.document.getElementById("qig-config-update");
+    assert.equal(deleteButton.disabled, false);
+    assert.equal(updateButton.disabled, false);
+    const questions = [];
+    globalThis.confirm = message => { questions.push(message); return false; };
+    await updateButton.onclick();
+    assert.match(questions.at(-1), /Overwrite "UI configuration 2"/);
     await deleteButton.onclick();
-    assert.equal(h.document.querySelectorAll(".qig-preset-chip__delete").length, 2, "dismissal preserves an individual preset");
+    assert.match(questions.at(-1), /Delete configuration "UI configuration 2"/);
+    assert.equal(configurationCount(), initialCount + 2, "dismissal preserves the selected configuration");
     globalThis.confirm = () => true;
     await deleteButton.onclick();
-    await h.waitFor(() => h.document.querySelectorAll(".qig-preset-chip__delete").length === 1, 5000, "confirmed preset deletion");
+    assert.equal(configurationCount(), initialCount + 1);
+    assert.equal(select.value, "");
+    assert.equal(deleteButton.disabled, true);
+    assert.equal(updateButton.disabled, true);
 });
