@@ -7023,7 +7023,11 @@ async function generateSceneDescription(s, sceneText, signal, options = {}) {
         const customInstruction = String(s.twoStepInstruction || "").trim();
         let instruction;
         if (customInstruction) {
-            instruction = customInstruction
+            let customTemplate = customInstruction;
+            if (typeof substituteParams === "function") {
+                customTemplate = substituteParams(customTemplate);
+            }
+            instruction = customTemplate
                 .replace(/\{\{scene\}\}/gi, selectedScene)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800))
@@ -7234,7 +7238,11 @@ async function generateLLMPrompt(s, basePrompt, signal, options = {}) {
         if (isCustom) {
             debugLog(`Custom macros: scene=${basePrompt.length}ch, char="${charName}", user="${userName}", charDesc=${charDesc.length}ch, userDesc=${userPersona.length}ch`);
             debugLog(`Using custom instruction: ${s.llmCustomInstruction.substring(0, 100)}...`);
-            instruction = s.llmCustomInstruction
+            let customTemplate = s.llmCustomInstruction;
+            if (typeof substituteParams === "function") {
+                customTemplate = substituteParams(customTemplate);
+            }
+            instruction = customTemplate
                 .replace(/\{\{scene\}\}/gi, basePrompt)
                 .replace(/\{\{charDesc\}\}/gi, charDesc.substring(0, 1500))
                 .replace(/\{\{userDesc\}\}/gi, userPersona.substring(0, 800))
